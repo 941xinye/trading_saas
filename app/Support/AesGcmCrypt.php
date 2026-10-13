@@ -110,20 +110,3 @@ final class AesGcmCrypt
     }
 }
 
-/**
- * 密钥解析器：从配置/租户上下文解析 KEK/DEK。
- *
- * 实现走 DI，避免 static 缓存（Octane 长驻下脏数据）。
- */
-interface KeyResolver
-{
-    /**
-     * 获取主密钥 KEK（32 字节原始二进制）。
-     */
-    public function masterKey(): string;
-
-    /**
-     * 获取指定租户的 DEK（先解密 tenants.exchange_dek，5 分钟缓存）。
-     */
-    public function tenantDek(int $tenantId): string;
-}

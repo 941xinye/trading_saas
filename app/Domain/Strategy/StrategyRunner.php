@@ -7,6 +7,7 @@ namespace App\Domain\Strategy;
 use App\Domain\Exchange\Contracts\ExchangeAdapter;
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
+use App\Domain\Exchange\ExchangeManager;
 use App\Domain\Risk\Breaker\BreakerStateMachine;
 use App\Domain\Risk\Breaker\CircuitBreaker;
 use App\Domain\Risk\RiskGuard;
@@ -134,8 +135,11 @@ class StrategyRunner
         $dek = $this->keyResolver->tenantDek($tenantId);
         $apiKey = $this->crypt->decrypt((string) $account->encrypted_api_key, $dek);
         $apiSecret = $this->crypt->decrypt((string) $account->encrypted_api_secret, $dek);
-        if ($apiKey === null || $apiSecret === null) {
-            throw new RuntimeException("Failed to decrypt exchange credentials (instance {$instanceId})");
+        if ((string) $account->encrypted_api_key === '' || $apiKey === null || $apiSecret === null) {
+            throw new RuntimeException(
+                "Instance {$instanceId}: exchange account credentials empty or undecryptable. "
+                . 'For testnet POC, set EXCHANGE_TESTNET_KEY/SECRET then re-run poc:testnet-setup.'
+            );
         }
 
         $adapter = $this->exchangeManager->adapter(

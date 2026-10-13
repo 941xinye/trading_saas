@@ -290,10 +290,23 @@ class BinanceSpotAdapter extends AbstractExchangeAdapter
             $heartbeatTimeout = (int) config('exchange.ws_reconnect.heartbeat_timeout', 30);
 
             while (true) {
+                // 踩坑（P1 POC）：Coroutine::cancel 非 sticky——recv 失败/异常被下方
+                // catch(Throwable) 吞掉后循环会重连，协程永远退不出去。必须在每个
+                // 分支显式检查 isCanceled() 并 return（配合 unsubscribeStream）。
+                if (Coroutine::isCanceled()) {
+                    return;
+                }
+
                 try {
                     $this->runKlineWsLoop($stream, $onBar, $onTick, $heartbeatTimeout);
                     $backoff = 1; // 正常退出（理论不可达）重置退避
+                } catch (Coroutine\CancelException) {
+                    return; // unsubscribeStream 主动取消
                 } catch (Throwable $e) {
+                    if (Coroutine::isCanceled()) {
+                        return;
+                    }
+
                     Log::warning('Binance kline WS disconnected, reconnecting', [
                         'subscription' => $subscriptionId,
                         'stream' => $stream,
@@ -302,8 +315,15 @@ class BinanceSpotAdapter extends AbstractExchangeAdapter
                     ]);
                 }
 
-                // 断线退避重连；协程被 cancel（unsubscribeStream）时 sleep 抛出退出
+                if (Coroutine::isCanceled()) {
+                    return;
+                }
+
+                // 断线退避重连
                 Coroutine::sleep($backoff);
+                if (Coroutine::isCanceled()) {
+                    return;
+                }
                 $backoff = min($backoff * 2, $maxBackoff);
             }
         });

@@ -61,9 +61,13 @@ class MarketFeedCommand extends Command
 
         $this->info('MarketFeedWorker (process B) starting...');
 
-        // Guzzle/streams 由 SWOOLE_HOOK_ALL 协程化；MySQL/Redis 阻塞调用
-        // 在协程内短暂阻塞事件循环，POC 单实例场景可接受（架构 §9）
-        Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
+        // 踩坑（P1 POC）：Swoole curl hook 与 Guzzle 7.9 不兼容——Guzzle 在 handle
+        // release 时调用 curl_setopt(CURLOPT_PREREQFUNCTION, null)，swoole_curl_setopt
+        // 不支持该 option 抛 warning，被 Laravel 转成 ErrorException 导致 REST 全挂。
+        // 处理：摘掉 SWOOLE_HOOK_CURL，REST 走阻塞 curl（单实例场景每次 <1s 可接受）；
+        // WS 基于 Swoole 原生 socket 不受影响。P2 换协程 HTTP client（如自封装
+        // Swoole\Coroutine\Http\Client）后恢复。
+        Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL);
 
         try {
             Coroutine\run(function (): void {

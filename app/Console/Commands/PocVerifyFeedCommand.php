@@ -42,7 +42,8 @@ class PocVerifyFeedCommand extends Command
         $interval = (string) $this->option('interval');
         $duration = max(10, (int) $this->option('duration'));
 
-        Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
+        // Guzzle 7.9 CURLOPT_PREREQFUNCTION 与 Swoole curl hook 不兼容，摘掉 CURL hook（详见 MarketFeedCommand）
+        Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL);
 
         try {
             Coroutine\run(function () use ($symbol, $interval, $duration): void {
