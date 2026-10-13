@@ -59,6 +59,21 @@
 - **验证结果**：testnet 市价买单真实成交（orderId=2259141，filled 0.00011 BTC @ 83548.01）。
 - **位置**：[AbstractExchangeAdapter.php](../app/Domain/Exchange/Adapters/AbstractExchangeAdapter.php)
 
+## 9. hydrate 顺序错误导致崩溃恢复丢失持仓/网格状态
+
+- **现象**：`kill -9` 强杀 `market:feed` 后重启，SpotGridStrategy 的持仓 `grids`、pending 格、`last_index` 全部丢失，重启后第一根 bar 就用空内存覆盖了 Redis state。
+- **根因**：`onBar()` 先调 `isConfigured()`，而后者首次执行会把 `$gridStep` 从初始 `'0'` 算成实际步长；随后 `hydrateFromSnapshot()` 的守卫是 `positionSnapshot===null || gridStep!=='0' → return`，此刻 `gridStep` 已非 `'0'`，恢复快照被**永久跳过**——用业务字段兼任"是否已初始化"标志位导致的顺序耦合 bug。
+- **处理**：新增独立的 `$hydrated` 一次性标志位取代借用 `gridStep` 判断；把 `hydrateFromSnapshot()` 移到 `isConfigured()` **之前**，直接从快照恢复 `gridStep/lastIndex/grids`（快照带 `grid_step` 时信任快照，`isConfigured` 不再重算）。
+- **验证（崩溃恢复测试法）**：
+  1. 往 Redis state 注入两个**远离现价**的格（cell1 持仓 / cell2 pending，1-2 根 1m bar 不可能触及，零交易副作用），并备份原 state；
+  2. 注入与 `kill -9` **背靠背**执行——运行进程每 bar 会用内存快照覆盖 Redis，间隔久了注入值会被冲掉；
+  3. 重启后等 2 根 bar：两格原样重放、`last_index` 连续、bar 正常推进、无重复下单；
+  4. 连续第二次 `kill -9` → 重启，验证多轮恢复幂等；
+  5. 顺带验证 Redis 每 bar + DB `position_snapshot` 每 60s 双写都落在注入状态；
+  6. 测完先杀进程再写回干净 state/清 DB 快照并重启。
+- **教训**：恢复逻辑的幂等守卫要用独立标志，不要复用会在正常流程中被改写的业务字段；崩溃恢复必须用 `SIGKILL`（不给 flush/信号清理机会）+ 状态注入做端到端验证，空状态自然重启无法暴露此类问题。
+- **位置**：[SpotGridStrategy.php](../app/Domain/Strategy/Spot/SpotGridStrategy.php)
+
 ## 环境类备忘
 
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。

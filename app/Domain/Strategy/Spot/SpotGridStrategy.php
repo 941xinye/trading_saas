@@ -36,6 +36,7 @@ class SpotGridStrategy extends AbstractStrategy
 {
     private string $gridStep = '0';
     private int $lastIndex = -2;        // -2 = 未初始化（首 bar 不交易）
+    private bool $hydrated = false;     // 崩溃快照是否已 hydrate 进内存（只能一次）
     /** @var array<int,array{qty:string,cost:string,pending:bool}> */
     private array $grids = [];
 
@@ -54,11 +55,13 @@ class SpotGridStrategy extends AbstractStrategy
     {
         $this->lastBarTime = $bar->closeTime;
 
+        // hydrate 必须在 isConfigured() 之前：isConfigured() 首次会把 gridStep
+        // 从 '0' 算成实际值，旧守卫借 gridStep!=='0' 判断会导致恢复快照永不加载。
+        $this->hydrateFromSnapshot();
+
         if (! $this->isConfigured()) {
             return;
         }
-
-        $this->hydrateFromSnapshot();
 
         $price = $bar->close;
         if (bccomp($price, '0', 12) !== 1) {
@@ -281,16 +284,24 @@ class SpotGridStrategy extends AbstractStrategy
     }
 
     /**
-     * positionSnapshot → 内存态（restoreState / onBar 首次访问时 hydrate）。
+     * positionSnapshot → 内存态（仅崩溃恢复时执行一次）。
+     *
+     * 用独立 hydrated 标志判定，不能借用 gridStep==='0'：onBar 中
+     * isConfigured() 会先把 gridStep 算成实际值，导致这里误判"已初始化"
+     * 而跳过恢复，重启后持仓/pending/lastIndex 全丢。
      */
     private function hydrateFromSnapshot(): void
     {
-        if ($this->positionSnapshot === null || $this->gridStep !== '0') {
+        if ($this->hydrated || $this->positionSnapshot === null) {
             return;
         }
+        $this->hydrated = true;
 
         $snap = $this->positionSnapshot;
-        $this->gridStep = (string) ($snap['grid_step'] ?? '0');
+        $step = (string) ($snap['grid_step'] ?? '0');
+        if ($step !== '0') {
+            $this->gridStep = $step;
+        }
         $this->lastIndex = (int) ($snap['last_index'] ?? -2);
         $this->grids = [];
         foreach ((array) ($snap['grids'] ?? []) as $cell => $g) {

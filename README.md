@@ -106,17 +106,21 @@ WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
 | 风控熔断 | RiskGuard + CircuitBreaker（Redis Hash 状态）+ 4 维度 Rule；熔断只停开新仓 | [ADR-0004](docs/adr/0004-circuit-breaker-state-machine.md) |
 | 租户密钥 | TenantKeyResolver DEK 懒生成 + AES-256-GCM 加密账户落库 | [ADR-0003](docs/adr/0003-aes-256-gcm-api-key-encryption.md) |
 | POC 命令 | `poc:verify-feed` / `poc:testnet-setup` / `market:feed` | [快速开始 §POC 验证](#poc-验证p1) |
-| 实测沉淀 | 5 条踩坑记录（Guzzle/Swoole hook、协程取消、PSR-4 等） | [踩坑记录](docs/pitfalls.md) |
+| 实测沉淀 | 9 条踩坑记录（Guzzle/Swoole hook、协程取消、PSR-4、协程连接复用、签名串一致性、崩溃恢复 hydrate 等） | [踩坑记录](docs/pitfalls.md) |
 
-**实测结果**：行情链路 PASS（REST ticker/kline + WS 1m closed bar，exit=0）；环境装配 PASS（tenant/DEK/AES-GCM 加密账户/实例 running）；`market:feed` 稳定运行。
+**实测结果**（testnet BTCUSDT）：
 
-**遗留**：真实下单闭环验证 —— 待在 `.env` 配置 `EXCHANGE_TESTNET_KEY/SECRET`（[testnet.binance.vision](https://testnet.binance.vision) 注册）后重跑 `poc:testnet-setup`。
+- 行情链路 PASS：REST ticker/kline + WS 1m closed bar，干净退出 exit=0。
+- 环境装配 PASS：tenant / DEK 懒生成 / AES-GCM 加密账户 / 实例 running。
+- **真实下单闭环 PASS**：市价买单实际成交（orderId 2259141，filled 0.00011 BTC @ 83548.01），完整链路 WS bar → onBar → 网格信号 → RiskGuard → placeOrder → 成交回报 → onFill 全通。
+- **崩溃恢复 PASS**：`kill -9` 强杀后重启，持仓 / pending 格 / `last_index` 从 Redis 正确重放，bar 连续推进、无重复下单；连续二次崩溃恢复幂等；Redis 每 bar + DB `position_snapshot` 每 60s 双写均验证。
+
+**已知边界**：策略内存持仓与交易所 `getBalance` 的账实对账计划在 P3 完善；网格自动单只在价格穿越网格线（约 0.4%/格）时触发，横盘无单属设计行为。
 
 ### 🚧 待实现：POC 路线图
 
 | 阶段 | 范围 | 验证目标 | 关键风险 |
 |---|---|---|---|
-| **P1 尾巴** | 配置 testnet key 后跑通真实下单闭环：placeOrder → onFill → 网格状态推进 → 崩溃恢复重放 | testnet 实际成交回报 + 实例重启后状态恢复 | 签名时间偏移；订单状态对账 |
 | **P2 AI 信号闭环** | BarAggregator 实现 + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher（Telegram+WS） | bar close → AI 分析 → Signal 落库 → 多渠道分发；AI 失败兜底 | AI 延迟（30s+）信号过期（价差校验）；LLM JSON schema 容错 |
 | **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 | 两租户同跑策略，数据严格隔离；配额扣减 | 配额检查与下单的并发竞争（预冻结）；DEK 轮换 |
 | **P4 高级风控** | 4 维度 Rule 全实现 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏 → 熔断 → 通知 → HALF_OPEN → CLOSED/重置 | 回撤计算实时性；HALF_OPEN 并发安全 |
