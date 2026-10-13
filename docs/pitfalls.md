@@ -35,6 +35,21 @@
 - **说明**：AES-256-GCM 加解密依赖 libsodium（PHP 8.4 自带）；Windows CLI 环境若无 sodium 会在加密账户时失败。WSL 侧已验证可用。
 - **位置**：[AesGcmCrypt.php](../app/Support/AesGcmCrypt.php)、[ADR-0003](adr/0003-aes-256-gcm-api-key-encryption.md)
 
+## 6. Swoole 协程化 PDO/Redis 连接被多协程并发复用
+
+- **现象**：`market:feed` 收到若干 bar 后 `PHP Fatal error: Uncaught Swoole\Error: Socket#N has already been bound to another coroutine, reading of the same socket in coroutine at the same time is not allowed`（PDO->prepare 处），事件循环终结，命令以 exit 0 退出。
+- **根因**：`SWOOLE_HOOK_ALL` 把 PDO/phpredis 的 TCP 连接协程化。实例保活协程每 5s 用同一 DB 连接查 status，WS 协程 onBar 内也访问 DB/Redis（下单/健康检查/状态持久化），Swoole 不允许两个协程同时读写同一条 socket。单 Laravel 连接 + 多协程 = 必现。
+- **处理（P1）**：`Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL & ~SWOOLE_HOOK_TCP & ~SWOOLE_HOOK_UNIX & ~SWOOLE_HOOK_UDG)`，PDO/phpredis 退化为阻塞 IO——调用期间不发生协程切换，天然串行；WS 走 Swoole 原生协程客户端不受影响。
+- **P2**：多实例必须上连接池（每协程独占连接）或显式连接绑定后再恢复 socket hook。
+- **位置**：[MarketFeedCommand.php](../app/Console/Commands/MarketFeedCommand.php)
+
+## 7. 交易所错误处理写库失败会掩盖原始 REST 错误
+
+- **现象**：下单返回 401/403，但日志只剩 PDO fatal，看不到交易所错误码。
+- **根因**：REST 失败 → `ExchangeHealthChecker::record()` 写库 → 写库本身又因坑 6 抛异常，原始 `ExchangeApiException` 被覆盖。
+- **排查手段**：脱离框架用最小 curl 直连交易所接口（testnet 签名 GET /api/v3/account），区分「key 本身无效（-2015）」与「签名错误（-1022）」；签名错误在 key 通过识别之后才会出现。
+- **testnet 坑**：Binance Spot Testnet（testnet.binance.vision）与 Futures Testnet 的 key 不通用；testnet 账号会定期重置，key 失效后需重新生成。
+
 ## 环境类备忘
 
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。

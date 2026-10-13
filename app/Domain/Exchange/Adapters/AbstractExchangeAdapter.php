@@ -9,6 +9,7 @@ use App\Domain\Exchange\Exceptions\ExchangeApiException;
 use App\Domain\Exchange\ExchangeHealthChecker;
 use App\Domain\Exchange\RateLimiter;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -118,7 +119,17 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
 
             throw ExchangeApiException::networkError($exchange, $endpoint, $e->getMessage());
         } finally {
-            $this->healthChecker->record($exchange, $endpoint, (int) ((microtime(true) - $startedAt) * 1000), $status, $error);
+            // 健康记录写库失败不能掩盖正在传播的原始交易所异常
+            // （finally 内抛异常会替换 try 中待抛出的异常）
+            try {
+                $this->healthChecker->record($exchange, $endpoint, (int) ((microtime(true) - $startedAt) * 1000), $status, $error);
+            } catch (Throwable $recordError) {
+                Log::warning('Exchange health record failed', [
+                    'exchange' => $exchange,
+                    'endpoint' => $endpoint,
+                    'error' => $recordError->getMessage(),
+                ]);
+            }
         }
     }
 

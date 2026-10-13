@@ -67,7 +67,19 @@ class MarketFeedCommand extends Command
         // 处理：摘掉 SWOOLE_HOOK_CURL，REST 走阻塞 curl（单实例场景每次 <1s 可接受）；
         // WS 基于 Swoole 原生 socket 不受影响。P2 换协程 HTTP client（如自封装
         // Swoole\Coroutine\Http\Client）后恢复。
-        Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL);
+        //
+        // 踩坑（P1 POC）：PDO/Redis 协程化后，保活协程（5s 轮询 status）与 WS 协程
+        // （onBar 内 DB/Redis）并发复用同一条底层 socket，Swoole 抛
+        // "Socket has already been bound to another coroutine" fatal 终结事件循环。
+        // P1 单实例：连 TCP/UNIX/UDG hook 一起摘掉，PDO/phpredis 退化为阻塞 IO
+        // （调用期间不发生协程切换 → 天然串行）；多实例 P2 上连接池后再恢复。
+        Runtime::enableCoroutine(
+            SWOOLE_HOOK_ALL
+            & ~SWOOLE_HOOK_CURL
+            & ~SWOOLE_HOOK_TCP
+            & ~SWOOLE_HOOK_UNIX
+            & ~SWOOLE_HOOK_UDG
+        );
 
         try {
             Coroutine\run(function (): void {
