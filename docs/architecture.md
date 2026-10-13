@@ -46,13 +46,15 @@ routes/ {api.php, channels.php, web.php}
 
 ## POC 优先级
 
-| 阶段 | 范围 | 验证目标 |
-|---|---|---|
-| **P1 策略+下单闭环** | BinanceSpotAdapter + SpotGridStrategy + RiskGuard 最小版 | K线订阅→onBar→RiskGuard→placeOrder→onFill→崩溃恢复 |
-| **P2 AI 信号闭环** | BarAggregator + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher | bar close→AI 分析→Signal 落库→多渠道分发；AI 失败兜底 |
-| **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 | 两租户同跑策略，数据严格隔离；配额扣减 |
-| **P4 高级风控** | 4 维度 Rule 全实现 + 熔断状态机 + HALF_OPEN 探测 | 模拟连亏→熔断→通知→冷却→HALF_OPEN→探测单→CLOSED/重置 |
-| **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService | 实时显示 BTC/ETH 大户爆仓密集区 |
+> 实测踩坑见 [pitfalls.md](pitfalls.md)。
+
+| 阶段 | 范围 | 验证目标 | 状态 |
+|---|---|---|---|
+| **P1 策略+下单闭环** | BinanceSpotAdapter + SpotGridStrategy + RiskGuard 最小版 | K线订阅→onBar→RiskGuard→placeOrder→onFill→崩溃恢复 | ✅ 行情/环境装配 PASS（2026-10-13），真实下单待 testnet key |
+| **P2 AI 信号闭环** | BarAggregator + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher | bar close→AI 分析→Signal 落库→多渠道分发；AI 失败兜底 | 待实现 |
+| **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 | 两租户同跑策略，数据严格隔离；配额扣减 | 待实现 |
+| **P4 高级风控** | 4 维度 Rule 全实现 + 熔断状态机 + HALF_OPEN 探测 | 模拟连亏→熔断→通知→冷却→HALF_OPEN→探测单→CLOSED/重置 | 待实现 |
+| **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService | 实时显示 BTC/ETH 大户爆仓密集区 | 待实现 |
 
 ## 与既有 SaaS 约定对齐
 

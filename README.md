@@ -7,6 +7,7 @@
 - [架构方案（完整）](.trae/documents/币圈交易SaaS平台架构方案.md)
 - [架构总览](docs/architecture.md)
 - [ADR 记录](docs/adr/)
+- [踩坑记录](docs/pitfalls.md)
 - [功能矩阵 & 路线图](#功能矩阵--路线图)
 - [快速开始](#快速开始)
 
@@ -92,11 +93,30 @@ routes/{api.php, channels.php}  # API 路由 + Reverb 频道授权
 | 双进程模型 | Octane HTTP + 独立 MarketFeedWorker 入口 | [ADR-0001](docs/adr/0001-dual-process-model.md) |
 | docs | architecture.md + 4 ADR + 完整架构方案 | — |
 
+### ✅ 已完成：P1 策略+下单闭环（2026-10-13）
+
+WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| BinanceSpotAdapter | REST 签名请求（HMAC-SHA256）+ WS K线订阅 + 断线重连 + testnet 端点自动切换 | [架构 §5.1](.trae/documents/币圈交易SaaS平台架构方案.md#51-exchangeadapter-interface) |
+| 网格策略 | SpotGridStrategy onBar 网格挂单逻辑（±2% 10 格默认参数） | — |
+| 协程调度 | StrategyRunner 协程池派发 onTick/onBar + 崩溃退出重启恢复 | [ADR-0001](docs/adr/0001-dual-process-model.md) |
+| 订单执行 | OrderExecutor clientOrderId 幂等模板 `{tenant}_{instance}_{ts}_{rand}` | — |
+| 风控熔断 | RiskGuard + CircuitBreaker（Redis Hash 状态）+ 4 维度 Rule；熔断只停开新仓 | [ADR-0004](docs/adr/0004-circuit-breaker-state-machine.md) |
+| 租户密钥 | TenantKeyResolver DEK 懒生成 + AES-256-GCM 加密账户落库 | [ADR-0003](docs/adr/0003-aes-256-gcm-api-key-encryption.md) |
+| POC 命令 | `poc:verify-feed` / `poc:testnet-setup` / `market:feed` | [快速开始 §POC 验证](#poc-验证p1) |
+| 实测沉淀 | 5 条踩坑记录（Guzzle/Swoole hook、协程取消、PSR-4 等） | [踩坑记录](docs/pitfalls.md) |
+
+**实测结果**：行情链路 PASS（REST ticker/kline + WS 1m closed bar，exit=0）；环境装配 PASS（tenant/DEK/AES-GCM 加密账户/实例 running）；`market:feed` 稳定运行。
+
+**遗留**：真实下单闭环验证 —— 待在 `.env` 配置 `EXCHANGE_TESTNET_KEY/SECRET`（[testnet.binance.vision](https://testnet.binance.vision) 注册）后重跑 `poc:testnet-setup`。
+
 ### 🚧 待实现：POC 路线图
 
 | 阶段 | 范围 | 验证目标 | 关键风险 |
 |---|---|---|---|
-| **P1 策略+下单闭环** | BinanceSpotAdapter（REST+WS）+ SpotGridStrategy + RiskGuard 最小版 + StrategyRunner 协程调度 | K线订阅 → onBar → RiskGuard → placeOrder → onFill → 崩溃恢复 | 币安签名+HMAC；WS 断线重连；订单幂等 |
+| **P1 尾巴** | 配置 testnet key 后跑通真实下单闭环：placeOrder → onFill → 网格状态推进 → 崩溃恢复重放 | testnet 实际成交回报 + 实例重启后状态恢复 | 签名时间偏移；订单状态对账 |
 | **P2 AI 信号闭环** | BarAggregator 实现 + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher（Telegram+WS） | bar close → AI 分析 → Signal 落库 → 多渠道分发；AI 失败兜底 | AI 延迟（30s+）信号过期（价差校验）；LLM JSON schema 容错 |
 | **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 | 两租户同跑策略，数据严格隔离；配额扣减 | 配额检查与下单的并发竞争（预冻结）；DEK 轮换 |
 | **P4 高级风控** | 4 维度 Rule 全实现 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏 → 熔断 → 通知 → HALF_OPEN → CLOSED/重置 | 回撤计算实时性；HALF_OPEN 并发安全 |
@@ -138,6 +158,25 @@ php artisan migrate
 php artisan octane:start --server=swoole
 php artisan market:feed --dry-run  # 验证协程容器入口（需 swoole 扩展）
 ```
+
+### POC 验证（P1）
+
+在具备 Swoole 的环境（本机为 WSL 侧）执行：
+
+```bash
+# 1. 行情链路验证（无需 API Key）：REST ticker/kline + WS 1m closed bar
+php artisan poc:verify-feed --duration=90
+
+# 2. （可选）testnet 网格实例装配：
+#    .env 先配置 EXCHANGE_MASTER_KEY + EXCHANGE_BINANCE_TESTNET=true
+#    + EXCHANGE_TESTNET_KEY/SECRET（https://testnet.binance.vision 注册）
+php artisan poc:testnet-setup                    # 默认 BTCUSDT ±2% 10 格
+
+# 3. 启动行情/调度主进程（进程 B），网格实例开始按 bar 调度
+php artisan market:feed
+```
+
+无 testnet key 时实例按设计标记 error，填好 key 重跑步骤 2 即可。
 
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 
@@ -227,6 +266,7 @@ php artisan test
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
+| [踩坑记录](docs/pitfalls.md) | P1 POC 实测坑（Swoole/Guzzle/协程/PSR-4）持续追加 |
 
 ## 安全说明
 
