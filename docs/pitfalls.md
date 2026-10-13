@@ -50,6 +50,15 @@
 - **排查手段**：脱离框架用最小 curl 直连交易所接口（testnet 签名 GET /api/v3/account），区分「key 本身无效（-2015）」与「签名错误（-1022）」；签名错误在 key 通过识别之后才会出现。
 - **testnet 坑**：Binance Spot Testnet（testnet.binance.vision）与 Futures Testnet 的 key 不通用；testnet 账号会定期重置，key 失效后需重新生成。
 
+## 8. 签名串与发送串不一致导致 Binance -1022
+
+- **现象**：新 testnet key 已通过 GET /api/v3/account 验证，但策略 POST /api/v3/order 一律返回 `400 -1022 Signature for this request is not valid`。
+- **根因**：签名时 `buildQuery()` 先 `ksort()` 排序再 `http_build_query()`，而发送时 Guzzle `form_params` 按**数组插入顺序**编码 body。Binance 用实际收到的 raw query/body（去掉 signature）验签，签名串与发送串参数顺序不同 → HMAC 不匹配。GET 参数少且手工 curl 构造时串一致，掩盖了该问题。
+- **处理**：签名请求统一生成确定性 payload 字符串（`ksort` 后序列化 → HMAC → 追加 `&signature=`），GET 拼到 URL、POST/DELETE 作为 `withBody($payload, application/x-www-form-urlencoded)` 原始 body，保证「参与签名的串」与「实际发送的串」逐字节一致；删除中间的 `applySignature()` 数组方案。
+- **排查关键**：`-2015`（key 识别层）通过后才会到 `-1022`（签名层）；手工 curl 用「同串签名+发送」成功而框架失败，即可锁定为序列化不一致。
+- **验证结果**：testnet 市价买单真实成交（orderId=2259141，filled 0.00011 BTC @ 83548.01）。
+- **位置**：[AbstractExchangeAdapter.php](../app/Domain/Exchange/Adapters/AbstractExchangeAdapter.php)
+
 ## 环境类备忘
 
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。

@@ -85,8 +85,16 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
             throw ExchangeApiException::rateLimited($exchange, $endpoint);
         }
 
+        // 签名参数必须用「同一序列化串」签名与发送：Binance 用实际收到的 raw
+        // query/body（去掉 signature）验签，若签名串用 ksort 排序而 Guzzle
+        // form_params 按数组插入顺序编码，两者顺序不一致即 -1022 Signature invalid。
+        // 因此这里生成确定性 payload 字符串，GET 拼到 URL、POST/DELETE 作为 raw body。
+        $signedPayload = null;
         if ($signed) {
-            $query = $this->applySignature($query);
+            $query['timestamp'] = $this->currentTimestampMs();
+            $query['recvWindow'] = (int) config('exchange.recv_window', 5000);
+            $serialized = $this->buildQuery($query);
+            $signedPayload = $serialized . '&signature=' . $this->signQuery($serialized);
         }
 
         $base = $this->restBaseUrl();
@@ -95,9 +103,23 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
         $error = null;
 
         try {
-            $response = Http::timeout(10)
-                ->withHeaders($this->httpHeaders())
-                ->send($method, $base . $path, $method === 'GET' ? ['query' => $query] : ['form_params' => $query]);
+            $request = Http::timeout(10)->withHeaders($this->httpHeaders());
+
+            if ($signedPayload !== null) {
+                if ($method === 'GET') {
+                    $response = $request->send($method, $base . $path . '?' . $signedPayload);
+                } else {
+                    $response = $request
+                        ->withBody($signedPayload, 'application/x-www-form-urlencoded')
+                        ->send($method, $base . $path);
+                }
+            } else {
+                $response = $request->send(
+                    $method,
+                    $base . $path,
+                    $method === 'GET' ? ['query' => $query] : ['form_params' => $query],
+                );
+            }
 
             $latency = (int) ((microtime(true) - $startedAt) * 1000);
 
@@ -131,22 +153,6 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
                 ]);
             }
         }
-    }
-
-    /**
-     * 注入签名参数（timestamp + signature）。子类按交易所差异重写。
-     *
-     * @param array<string,mixed> $query
-     *
-     * @return array<string,mixed>
-     */
-    protected function applySignature(array $query): array
-    {
-        $query['timestamp'] = $this->currentTimestampMs();
-        $query['recvWindow'] = (int) config('exchange.recv_window', 5000);
-        $query['signature'] = $this->signQuery($this->buildQuery($query));
-
-        return $query;
     }
 
     /**
