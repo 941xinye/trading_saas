@@ -74,7 +74,32 @@
 - **教训**：恢复逻辑的幂等守卫要用独立标志，不要复用会在正常流程中被改写的业务字段；崩溃恢复必须用 `SIGKILL`（不给 flush/信号清理机会）+ 状态注入做端到端验证，空状态自然重启无法暴露此类问题。
 - **位置**：[SpotGridStrategy.php](../app/Domain/Strategy/Spot/SpotGridStrategy.php)
 
+## 10. Laravel 13 Job 重复声明 `$queue` 属性 fatal（Queueable trait 已自带）
+
+- **现象**：`AiAnalyzeJob` / `DispatchNotificationJob` 写 `public $queue = 'ai'` 后，骨架期桩文件从未被加载没暴露；P2 真正 `dispatch()` 时报 fatal：`TypeError/define the same property ... definition differs incompatible`。
+- **根因**：Laravel 的 `Queueable` trait 内部已声明 `$queue`（默认 null），子类用固定默认值再声明同名属性与 trait 定义不兼容（PHP 8.3+ 对 trait/类同名属性检查更严）。
+- **处理**：Job 类内不再声明属性，改为构造函数中 `$this->onQueue('ai'|'notifications'|'aggregation')`；需要延迟/中间件同理用链式方法，不碰属性。
+- **位置**：[AiAnalyzeJob.php](../app/Jobs/AiAnalyzeJob.php)、[DispatchNotificationJob.php](../app/Jobs/DispatchNotificationJob.php)
+
+## 11. 进程中途启动产生"残次聚合桶"：缺 ticks 计数的 5m bar 也会闭合投递
+
+- **现象**：`market:feed` 在 17:14 才连上 WS，17:16 闭合的 17:10 桶只聚到 1 根 1m bar，照样写了 `kline_bars`（trades=36，正常 200+）并触发 AI 分析，脏数据 + 无效信号。
+- **根因**：原 BarAggregator 只做"openTime 取整 + OHLCV 累加 + Redis 恢复"，不区分一个桶收齐了几根 1m；半道 hydrate 出来的状态天然缺腿，却与完整桶走同一条闭合路径。
+- **处理**：桶状态增加 `ticks` 计数与 `EXPECTED_TICKS`（5m=5/15m=15/1h=60/4h=240/1d=1440）；Runner 闭合时 `lastClosedTicks() < expected` 只记 WARNING 跳过（**不写 kline_bars、不投 AiAnalyzeJob，宁可漏一轮也不分析残桶**）。
+- **实战验证**：17:31 桶 hydrate 的是**旧版进程写入、无 ticks 字段**的状态（`?? 0` 后 ticks=1），被守卫拦截；17:36 由新进程独立收集满 5 ticks 的桶正常闭合落库（trades=213）并投递——证明守卫对"版本升级中途重启"同样成立。
+- **教训**：任何基于"周期闭合"的聚合都必须同时校验"周期内样本数"；崩溃恢复只解决状态不丢，不解决状态本身不完整。
+- **位置**：[BarAggregator.php](../app/Domain/Signal/BarAggregator.php)、[SignalFeedRunner.php](../app/Domain/Signal/SignalFeedRunner.php)
+
+## 12. `queue:work` 启动期 Redis 瞬时拒绝连接即退出，不做自愈
+
+- **现象**：与 `market:feed` 用 `&` 同 shell 连启 worker，日志报 `RedisException Connection refused` 后进程直接死亡；几秒后 Redis（WSL → Windows portproxy 16379）实际可通，但 worker 不会自己回来，队列积压 3 个 ai 任务。
+- **根因**：queue worker 启动时建连失败按致命错误退出（与运行期命令重试不同）；POC 手工 nohup 启动没有任何保活。
+- **处理（POC 期）**：worker 单独启动、死亡后手动重启，积压任务在 23ms~776ms 内排空，证明幂等。
+- **正式期要求**：supervisor/systemd 必须配 `startretries` + `autorestart=true`（计划 P2 收尾进部署清单）；慢调用（AI 30s）与通知严格分队列 `ai`/`notifications`，worker 独立于行情协程进程。
+- **位置**：[MarketFeedCommand.php](../app/Console/Commands/MarketFeedCommand.php)（仅启动行情进程，AI 分析走队列隔离）
+
 ## 环境类备忘
 
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。
 - Windows/WSL 双 clone 同步：Windows 提交后 push 失败时，用 tar 打包 `app/ config/ database/` 解到 WSL clone（脚本模式避免 wsl 嵌套引号）；脚本文件先 `tr -d '\r'` 去掉 CRLF。
+- `wsl -- bash -c "..."` 嵌套两层坑（P2 实测）：① `$(...)` 与内层双引号会被 PowerShell 吞/改写，`php -r '...'` 直接语法错误——临时 PHP 一律用 Write 工具写 Windows 文件再 `cp` 进 WSL 执行（坑 6 同源）；② `pkill -f 'market:feed'` 会匹配到**承载这条命令的 bash -c 自身命令行**（里面就含字面 `market:feed`）而自杀，退出码 15；排查进程用 `pgrep -af '[m]arket:f[e]ed'`（正则不匹配自身字面量），杀进程拆成独立命令、且命令行中不出现未加括号的目标串。

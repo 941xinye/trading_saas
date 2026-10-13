@@ -4,54 +4,104 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Domain\Exchange\ExchangeManager;
+use App\Domain\Signal\SignalPipeline;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use RuntimeException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
- * AI 信号分析 Job（ai 队列）。
+ * AI 信号分析 Job（ai 队列，普通 PHP 进程）。
  *
- * 触发时机：CloseBarJob 在 K 线 bar close 后，按订阅（symbol+interval 维度）
- * 投递 AiAnalyzeJob 到 ai 队列，每个订阅一份（一 bar 多订阅时各自独立重试）。
+ * 触发：market:feed 的 SignalFeedRunner 在目标周期 bar 闭合后，按订阅逐份投递。
  *
- * 执行链路（POC 待实现）：
- *  1. 恢复 TenantContext(tenantId)
- *  2. 加载 signal_subscriptions + bar 数据 → 调 AIPrompter.analyze()
- *  3. LLM 限流 / prompt 截断 / 超时 → 自动降级到 RuleEngineFallback
- *     （基于 MA/RSI/MACD/Bollinger 的确定性规则，硬约束：不阻塞主流程）
- *  4. 写 signals 表 → 调度 DispatchNotificationJob
+ * 执行链路：
+ *  1. 加载 active 订阅（订阅在投递后可能被停用/删除，失效即放弃）
+ *  2. REST 预拉 120 根目标周期 bar（覆盖 MA99 预热，架构 §9.3）
+ *  3. SignalPipeline：指标 → AI（限流/超时/解析失败）→ 规则引擎兜底
+ *     → 价差守卫 → signals 落库 → 通知入队
  *
- * 失败策略：AI 失败必须走 fallback；fallback 也失败才允许 Job 失败（有限重试）。
- * 与架构方案 §1 AI Provider 抽象 + §3 Signal 模块一致。
- *
- * POC 阶段：handle() 待实现，对应 P2 POC（AI 信号链路）。
+ * AI 失败由 pipeline 内部兜底，不再算作 Job 失败；只有兜底本身抛异常才重试（tries=2）。
+ * P2 只分析与通知，不触发下单。
  */
 class AiAnalyzeJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    /**
-     * 队列名：AI 调用通常较慢，独立队列避免阻塞订单/通知链路。
-     */
-    public $queue = 'ai';
+    public int $tries = 2;
+
+    /** POC 固定币安现货；公开行情无需凭据（testnet K 线镜像真实市场） */
+    private const EXCHANGE = 'binance';
+
+    private const MARKET = 'spot';
+
+    private const WARMUP_LIMIT = 120;
 
     public function __construct(
         public readonly int $tenantId,
         public readonly int $subscriptionId,
         public readonly string $symbol,
         public readonly string $interval,
+        /** @var array<string,mixed> 触发本 Job 的已闭聚合 bar（ExchangeKline 转数组） */
         public readonly array $barData,
     ) {
+        // Laravel 13 Queueable trait 自带 $queue 属性，不能重复声明，走 onQueue()
+        $this->onQueue('ai');
     }
 
-    /**
-     * P2 POC 实现：AIPrompter.analyze + RuleEngineFallback 兜底。
-     */
-    public function handle(): void
+    public function handle(ExchangeManager $exchangeManager, SignalPipeline $pipeline): void
     {
-        throw new RuntimeException('Not implemented. Wait for POC.');
+        $subscription = DB::table('signal_subscriptions')
+            ->where('id', $this->subscriptionId)
+            ->where('tenant_id', $this->tenantId)
+            ->where('active', 1)
+            ->first();
+
+        if ($subscription === null) {
+            Log::info('AI 分析跳过：订阅不存在或已停用', [
+                'subscription_id' => $this->subscriptionId,
+            ]);
+
+            return;
+        }
+
+        $adapter = $exchangeManager->adapter(self::EXCHANGE, self::MARKET, []);
+        $bars = $adapter->getKline($this->symbol, $this->interval, self::WARMUP_LIMIT);
+
+        if (count($bars) < 30) {
+            throw new \RuntimeException(sprintf(
+                '历史 bar 不足（%d 根），无法计算指标',
+                count($bars),
+            ));
+        }
+
+        $latest = $bars[count($bars) - 1];
+
+        // REST 最新 bar 与触发 bar 可能错位（边界投递竞态），记录但以 REST 为准
+        if (! empty($this->barData['close_time']) && (int) $this->barData['close_time'] !== $latest->closeTime) {
+            Log::info('触发 bar 与 REST 最新 bar 错位，以 REST 为准', [
+                'subscription_id' => $this->subscriptionId,
+                'trigger_close_time' => $this->barData['close_time'],
+                'rest_close_time' => $latest->closeTime,
+            ]);
+        }
+
+        try {
+            $pipeline->run($subscription, $latest, $bars);
+        } catch (Throwable $e) {
+            Log::error('信号管线异常', [
+                'subscription_id' => $this->subscriptionId,
+                'symbol' => $this->symbol,
+                'interval' => $this->interval,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
     }
 }

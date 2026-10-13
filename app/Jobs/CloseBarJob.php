@@ -32,17 +32,14 @@ class CloseBarJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    /**
-     * 队列名：聚合写库与下游调度独立成队，与订单/AI 解耦。
-     */
-    public $queue = 'aggregation';
-
     public function __construct(
         public readonly string $exchangeCode,
         public readonly string $symbol,
         public readonly string $interval,
         public readonly array $barData,
     ) {
+        // Laravel 13 Queueable trait 自带 $queue 属性，不能重复声明，走 onQueue()
+        $this->onQueue('aggregation');
     }
 
     /**

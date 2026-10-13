@@ -4,51 +4,151 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Domain\Notification\Channels\LogChannel;
+use App\Domain\Notification\Channels\TelegramChannel;
+use App\Domain\Notification\Contracts\NotifierChannel;
+use App\Domain\Signal\Contracts\Signal;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use RuntimeException;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 /**
- * 多渠道通知分发 Job（notifications 队列）。
+ * 多渠道通知发送 Job（notifications 队列，普通 PHP 进程，可做外部 HTTP）。
  *
- * AiAnalyzeJob 写入 signals 后调度本 Job，由 Notifier 编排向用户配置的多渠道
- * 推送：Telegram + 企微 + 邮件 + WebSocket（Reverb 私有频道 private-tenant.{tid}.*）。
- *
- * Notifier 职责（POC 待实现）：
- *  - DedupCooldown：同租户同信号 N 分钟内只发一次（避免同一信号多次 AI 触发刷屏）
- *  - 顺序：WebSocket 即时 → Telegram/企微（限速）→ 邮件（批量）
- *  - 写 signal_notifications 表追踪每渠道状态（queued|sent|failed|deduped）
- *
- * 广播交给各 Channel 实现，Event 自身不实现 ShouldBroadcast
- * （架构方案 §1 WebSocket 分层 + §3 Notification 模块）。
- *
- * POC 阶段：handle() 待实现，对应 P3 POC（多渠道通知链路）。
+ * 逐渠道处理：定位 dispatcher 落的 queued 行 → 渠道 send() → 更新 sent/failed。
+ * 单渠道失败只影响该渠道行，不阻断其他渠道；Job 级重试按 10/30/90s 退避。
  */
 class DispatchNotificationJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    /**
-     * 队列名：通知发送涉及外部 API（Telegram/企微），独立队列避免拖累交易链路。
-     */
-    public $queue = 'notifications';
+    public int $tries = 3;
+
+    /** POC 已实现的渠道（其余渠道落 failed，等后续阶段） */
+    private const CHANNELS = [
+        'log' => LogChannel::class,
+        'telegram' => TelegramChannel::class,
+    ];
 
     public function __construct(
         public readonly int $tenantId,
         public readonly int $signalId,
         public readonly array $channels,
     ) {
+        // Laravel 13 Queueable trait 自带 $queue 属性，不能重复声明，走 onQueue()
+        $this->onQueue('notifications');
     }
 
     /**
-     * P3 POC 实现：Notifier::dispatch(tenantId, signalId, channels)
-     * → DedupCooldown → 各 Channel.send() → signal_notifications 落地。
+     * @return int[]
      */
+    public function backoff(): array
+    {
+        return (array) config('notifications.retry.backoff_seconds', [10, 30, 90]);
+    }
+
     public function handle(): void
     {
-        throw new RuntimeException('Not implemented. Wait for POC.');
+        $row = DB::table('signals')
+            ->where('id', $this->signalId)
+            ->where('tenant_id', $this->tenantId)
+            ->first();
+
+        if ($row === null) {
+            Log::error('通知 Job 找不到信号，放弃', ['signal_id' => $this->signalId]);
+
+            return;
+        }
+
+        $signal = $this->toSignal($row);
+
+        foreach ($this->channels as $channel) {
+            $this->sendOne($channel, $signal);
+        }
+    }
+
+    private function sendOne(string $channelName, Signal $signal): void
+    {
+        $notificationId = DB::table('signal_notifications')
+            ->where('signal_id', $this->signalId)
+            ->where('tenant_id', $this->tenantId)
+            ->where('channel', $channelName)
+            ->where('status', 'queued')
+            ->orderByDesc('id')
+            ->value('id');
+
+        if ($notificationId === null) {
+            // 可能已被其他重试处理
+            return;
+        }
+
+        $channelClass = self::CHANNELS[$channelName] ?? null;
+        if ($channelClass === null) {
+            $this->markFailed((int) $notificationId, "不支持的渠道：{$channelName}");
+
+            return;
+        }
+
+        /** @var NotifierChannel $channel */
+        $channel = app($channelClass);
+
+        try {
+            $messageId = $channel->send($signal);
+            DB::table('signal_notifications')
+                ->where('id', $notificationId)
+                ->update([
+                    'status' => 'sent',
+                    'provider_message_id' => $messageId !== null ? mb_substr($messageId, 0, 100) : null,
+                    'error' => null,
+                    'sent_at' => Carbon::now(),
+                    'updated_at' => Carbon::now(),
+                ]);
+        } catch (Throwable $e) {
+            $this->markFailed((int) $notificationId, $e->getMessage());
+        }
+    }
+
+    private function markFailed(int $notificationId, string $error): void
+    {
+        DB::table('signal_notifications')
+            ->where('id', $notificationId)
+            ->update([
+                'status' => 'failed',
+                'error' => mb_substr($error, 0, 1000),
+                'updated_at' => Carbon::now(),
+            ]);
+
+        Log::warning('信号通知渠道失败', [
+            'notification_id' => $notificationId,
+            'signal_id' => $this->signalId,
+            'error' => $error,
+        ]);
+    }
+
+    private function toSignal(object $row): Signal
+    {
+        $raw = $row->raw_payload !== null ? json_decode((string) $row->raw_payload, true) : null;
+
+        return new Signal(
+            symbol: (string) $row->symbol,
+            interval: (string) $row->interval,
+            direction: (string) $row->direction,
+            entryPrice: (string) $row->entry_price,
+            exitPrice: (string) $row->exit_price,
+            stopLoss: $row->stop_loss !== null ? (string) $row->stop_loss : null,
+            confidence: (int) $row->confidence,
+            rationale: $row->rationale !== null ? (string) $row->rationale : null,
+            source: (string) $row->source,
+            rawPayload: is_array($raw) ? $raw : null,
+            tenantId: $this->tenantId,
+            subscriptionId: (int) $row->subscription_id,
+            persistedId: $this->signalId,
+        );
     }
 }

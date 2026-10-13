@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Domain\Signal\SignalFeedRunner;
 use App\Domain\Strategy\StrategyRunner;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -98,6 +99,11 @@ class MarketFeedCommand extends Command
                 }
 
                 $runner->start($ids);
+
+                // P2：信号订阅行情（公开 1m WS → 5m 聚合 → AiAnalyzeJob）。
+                // 仅订阅/聚合/投递，AI 慢调用在独立 queue worker（ai 队列）执行。
+                $this->info('Starting signal feed runner (active signal subscriptions)...');
+                app(SignalFeedRunner::class)->start();
 
                 // 主协程保活；实例级动态启停 P2 接入（当前重启进程生效）
                 while (true) {

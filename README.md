@@ -117,11 +117,38 @@ WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
 
 **已知边界**：策略内存持仓与交易所 `getBalance` 的账实对账计划在 P3 完善；网格自动单只在价格穿越网格线（约 0.4%/格）时触发，横盘无单属设计行为。
 
+### ✅ 已完成：P2 AI 信号闭环 POC（2026-10-14）
+
+真实 Binance 现货行情 + DeepSeek（deepseek-chat）实跑验证通过；**铁律：信号只分析/通知，不触发下单**。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 指标引擎 | IndicatorCalculator 纯函数：SMA7/25/99、EMA、RSI14、MACD(12,26,9)、BOLL(20,2)、ATR14（Wilder），NAN→null | — |
+| 周期聚合 | BarAggregator：1m WS → 5m 分桶（OHLCV bcmath 累加）+ Redis 未闭 bar 崩溃恢复 + **ticks 残次桶守卫**（收齐 N 根才闭合） | [踩坑 #11](docs/pitfalls.md) |
+| AI 分析 | PromptBuilder（中文/纯 JSON/证据不足 neutral/超预算自动裁剪 K 线）+ DeepSeek OpenAI 兼容调用（30s 超时/JSON 围栏清洗/1 次纠错重试/价位矛盾置空）+ 每租户每分钟固定窗口限流 | — |
+| 确定性兜底 | RuleEngineFallback：MA 交叉/排列+RSI+MACD+BOLL 打分，\|score\|≥3 才给方向，ATR 算止损止盈；AI 不可用时自动降级 | — |
+| 信号编排 | SignalPipeline：指标→AI（失败降级）→neutral 不落库→1% 价差守卫→signals 落库→分发 | — |
+| 通知 | LogChannel + TelegramChannel（HTML，无 token 不阻塞）、Redis SET NX 15 分钟指纹去重、signal_notifications 状态机 queued/sent/failed/deduped | — |
+| 队列隔离 | AiAnalyzeJob（ai 队列）/ DispatchNotificationJob（notifications 队列）独立 worker，AI 慢调用绝不进行情协程进程；Job 用 `onQueue()` 不重声明 `$queue` | [踩坑 #10](docs/pitfalls.md) |
+| POC 命令 | `poc:verify-ai`（42 项离线断言）/ `poc:signal-setup`（建订阅+连通探测） | [快速开始 §POC 验证](#poc-验证p2-ai-信号) |
+| 实测沉淀 | 3 条新踩坑（Queueable `$queue` 冲突、残次聚合桶、worker 启动期 Redis 拒连） | [踩坑记录](docs/pitfalls.md) |
+
+**实测结果**（BTCUSDT/5m，UTC 2026-10-13）：
+
+- 全链路 PASS：`1m WS → 5m 聚合（满 5 ticks）→ kline_bars → AiAnalyzeJob → 独立 worker REST 取 120 根 → DeepSeek 分析（约 1s）→ signals 落库 → 去重 → 通知 sent`。
+- **真实 AI 信号**：signal #7 `source=ai` short，confidence 62，entry 83170，带中文 rationale（空头排列/BOLL/MACD/RSI 证据链）。
+- **降级链路**：无 key/错 key 时自动切 RuleEngineFallback（确定性形态 score=3 long，ATR 止损止盈），neutral 信号只记日志不落库。
+- **去重**：15 分钟内同 symbol/interval/direction 第二次信号 → `deduped` 不重复通知（signal #7 实测命中）。
+- **残桶守卫**：进程中途启动/版本升级重启产生的不完整桶（ticks<5）被拦截，不写脏 bar、不投递分析；完整桶正常闭合。
+- **队列隔离**：AI 调用期间 market:feed 协程进程无阻塞，行情与网格调度连续推进。
+
+**已知边界**：Telegram 渠道代码就绪，待 `TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID` 实测；POC 期 worker 手工 nohup 保活，正式期需 supervisor `autorestart`（见踩坑 #12）；信号周期暂固定 5m。
+
 ### 🚧 待实现：POC 路线图
 
 | 阶段 | 范围 | 验证目标 | 关键风险 |
 |---|---|---|---|
-| **P2 AI 信号闭环** | BarAggregator 实现 + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher（Telegram+WS） | bar close → AI 分析 → Signal 落库 → 多渠道分发；AI 失败兜底 | AI 延迟（30s+）信号过期（价差校验）；LLM JSON schema 容错 |
+| ~~**P2 AI 信号闭环**~~ ✅ | BarAggregator + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher（log 实测 / Telegram 待 token） | bar close → AI 分析 → Signal 落库 → 多渠道分发；AI 失败兜底 | 已验证：见上节 P2 实测结果 |
 | **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 | 两租户同跑策略，数据严格隔离；配额扣减 | 配额检查与下单的并发竞争（预冻结）；DEK 轮换 |
 | **P4 高级风控** | 4 维度 Rule 全实现 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏 → 熔断 → 通知 → HALF_OPEN → CLOSED/重置 | 回撤计算实时性；HALF_OPEN 并发安全 |
 | **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板展示 | 实时显示 BTC/ETH 大户爆仓密集区 | 强平流并发写入压力；历史数据缺失 |
@@ -181,6 +208,24 @@ php artisan market:feed
 ```
 
 无 testnet key 时实例按设计标记 error，填好 key 重跑步骤 2 即可。
+
+### POC 验证（P2 AI 信号）
+
+在 WSL 侧执行（需先在 `.env` 配置 `DEEPSEEK_API_KEY`，注意 DeepSeek key 必须带 `sk-` 前缀）：
+
+```bash
+# 1. 离线全链路断言（42 项：聚合/指标/真实 AI/兜底/价差守卫/去重，不依赖长驻进程）
+php artisan poc:verify-ai
+
+# 2. 建信号订阅并探测 DeepSeek 连通（按 tenant+symbol upsert，active=1）
+php artisan poc:signal-setup --tenant=1 --symbol=BTCUSDT --interval=5m --channel=log
+
+# 3. 两个长驻进程（分开启动，AI 慢调用只在 queue worker，不进行情协程进程）
+php artisan market:feed                                              # 1m WS → 5m 聚合 → 投 Job
+php artisan queue:work redis --queue=ai,notifications --tries=2      # AI 调用 + 通知发送
+```
+
+无 key 或 AI 故障时链路自动降级到 RuleEngineFallback，不影响运行；可选 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 开启 Telegram 渠道。**P2 信号铁律：只分析通知，不触发下单。**
 
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 
