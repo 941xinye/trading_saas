@@ -12,6 +12,9 @@ return [
     // 主密钥（KEK），从 env 注入，绝不入库
     'master_key' => env('EXCHANGE_MASTER_KEY'),
 
+    // 签名请求 recvWindow（毫秒，本机与交易所时钟漂移容忍度）
+    'recv_window' => env('EXCHANGE_RECV_WINDOW', 5000),
+
     // 默认交易所
     'default' => 'binance',
 
@@ -23,6 +26,10 @@ return [
             'ws_url' => env('EXCHANGE_BINANCE_WS', 'wss://stream.binance.com:9443/stream'),
             'futures_rest_url' => env('EXCHANGE_BINANCE_FUTURES_REST', 'https://fapi.binance.com'),
             'futures_ws_url' => env('EXCHANGE_BINANCE_FUTURES_WS', 'wss://fstream.binance.com/ws'),
+            // P1 POC：testnet 开关与端点（EXCHANGE_BINANCE_TESTNET=true 时 REST/WS 自动切换）
+            'testnet' => env('EXCHANGE_BINANCE_TESTNET', false),
+            'testnet_rest_url' => env('EXCHANGE_BINANCE_TESTNET_REST', 'https://testnet.binance.vision'),
+            'testnet_ws_url' => env('EXCHANGE_BINANCE_TESTNET_WS', 'wss://stream.testnet.binance.vision:9443/stream'),
             'markets' => ['spot', 'futures'],
             // 1 分钟 weight 上限（Binance 默认 1200/分钟）
             'weight_limit_per_minute' => 1200,

@@ -4,7 +4,13 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Domain\Strategy\StrategyRunner;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Swoole\Coroutine;
+use Swoole\Runtime;
+use Throwable;
 
 /**
  * 进程 B 入口：启动 Swoole 协程容器，承载交易所 WS 订阅 / K 线聚合 / 策略调度。
@@ -13,11 +19,10 @@ use Illuminate\Console\Command;
  * 内会阻塞 HTTP 请求；独立 Swoole Server 进程更干净，两进程通过 Redis + Queue
  * 通信（架构方案 §1 双进程模型）。
  *
- * 启动依赖：必须加载 swoole 扩展。本机通过 ServBay 安装：
- *   - ServBay MCP 提供 Swoole runtime 管理
- *   - 或 pecl install swoole
+ * P1 范围：扫描 status in (running, paused_by_breaker) 的实例 → 每实例
+ * StrategyRunner 协程（WS 订阅 + 决策链 + 下单闭环，Binance testnet）。
  *
- * POC 阶段：handle 仅校验环境与提示，实际协程启动待 P1 POC 实现。
+ * 启动依赖：必须加载 swoole 扩展。
  */
 class MarketFeedCommand extends Command
 {
@@ -41,16 +46,54 @@ class MarketFeedCommand extends Command
         }
 
         if ($this->option('dry-run')) {
+            $ids = DB::table('strategy_instances')
+                ->whereIn('status', ['running', 'paused_by_breaker'])
+                ->pluck('id')
+                ->all();
+
             $this->info('Dry-run mode: would start Swoole coroutine container with:');
             $this->info('  - Exchange WS subscribers');
             $this->info('  - K-line aggregators');
-            $this->info('  - Strategy runners');
-            $this->info('Skeleton: actual coroutine startup not implemented. Wait for P1 POC.');
+            $this->info('  - Strategy runners for instances: ' . ($ids === [] ? '(none)' : implode(', ', $ids)));
 
             return self::SUCCESS;
         }
 
-        $this->info('Skeleton: real market feed startup not implemented. Wait for P1 POC.');
+        $this->info('MarketFeedWorker (process B) starting...');
+
+        // Guzzle/streams 由 SWOOLE_HOOK_ALL 协程化；MySQL/Redis 阻塞调用
+        // 在协程内短暂阻塞事件循环，POC 单实例场景可接受（架构 §9）
+        Runtime::enableCoroutine(SWOOLE_HOOK_ALL);
+
+        try {
+            Coroutine\run(function (): void {
+                $runner = app(StrategyRunner::class);
+
+                $ids = DB::table('strategy_instances')
+                    ->whereIn('status', ['running', 'paused_by_breaker'])
+                    ->pluck('id')
+                    ->all();
+
+                if ($ids === []) {
+                    $this->info('No strategy instances to schedule (status in running/paused_by_breaker).');
+                    $this->line('Run `php artisan poc:testnet-setup` to create a POC instance.');
+                } else {
+                    $this->info('Scheduling strategy instances: ' . implode(', ', $ids));
+                }
+
+                $runner->start($ids);
+
+                // 主协程保活；实例级动态启停 P2 接入（当前重启进程生效）
+                while (true) {
+                    Coroutine::sleep(5);
+                }
+            });
+        } catch (Throwable $e) {
+            Log::error('MarketFeedWorker crashed', ['error' => $e->getMessage()]);
+            $this->error('MarketFeedWorker crashed: ' . $e->getMessage());
+
+            return self::FAILURE;
+        }
 
         return self::SUCCESS;
     }

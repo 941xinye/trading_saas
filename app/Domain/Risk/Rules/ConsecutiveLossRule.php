@@ -13,7 +13,7 @@ use App\Domain\Risk\Contracts\RiskRule;
  * 触发条件：连续亏损订单数 ≥ 阈值
  * 默认阈值：5 次
  *
- * 数据来源：strategy_orders 状态序列（按时间升序，最近 N 笔）
+ * 数据来源：RiskGuard.recordTrade 累计（盈利笔清零）
  * 冷却窗口：120 分钟
  */
 class ConsecutiveLossRule implements RiskRule
@@ -25,6 +25,10 @@ class ConsecutiveLossRule implements RiskRule
 
     public function check(BreakerMetrics $metrics): ?string
     {
-        throw new \RuntimeException('Not implemented in skeleton. Wait for P4 POC.');
+        if ($metrics->getConsecutiveLosses() >= $this->thresholdCount) {
+            return 'consecutive_losses';
+        }
+
+        return null;
     }
 }

@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
+use App\Support\AesGcmCrypt;
+use App\Support\KeyResolver;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 
@@ -15,7 +18,11 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // 租户密钥解析（KEK/DEK）：进程级单例，实例属性缓存，Octane 多 worker 隔离
+        $this->app->singleton(KeyResolver::class, TenantKeyResolver::class);
+        $this->app->singleton(AesGcmCrypt::class, function ($app) {
+            return new AesGcmCrypt($app->make(KeyResolver::class));
+        });
     }
 
     /**

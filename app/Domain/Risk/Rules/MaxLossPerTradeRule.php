@@ -6,6 +6,7 @@ namespace App\Domain\Risk\Rules;
 
 use App\Domain\Risk\Breaker\BreakerMetrics;
 use App\Domain\Risk\Contracts\RiskRule;
+use bccomp;
 
 /**
  * 单笔最大亏损 Rule。
@@ -25,6 +26,10 @@ class MaxLossPerTradeRule implements RiskRule
 
     public function check(BreakerMetrics $metrics): ?string
     {
-        throw new \RuntimeException('Not implemented in skeleton. Wait for P4 POC.');
+        if (bccomp($metrics->getLastTradeLossPct(), $this->thresholdPct, 4) !== -1) {
+            return 'max_loss_per_trade';
+        }
+
+        return null;
     }
 }

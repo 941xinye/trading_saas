@@ -19,4 +19,14 @@ class BitgetAdapter extends AbstractExchangeAdapter
     {
         return 'bitget';
     }
+
+    protected function market(): string
+    {
+        return 'spot';
+    }
+
+    public function withCredentials(array $credentials): static
+    {
+        return new static($this->rateLimiter, $this->healthChecker, $credentials);
+    }
 }

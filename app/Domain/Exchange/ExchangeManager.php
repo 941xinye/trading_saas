@@ -33,18 +33,19 @@ class ExchangeManager
     /**
      * 解析适配器实例。
      *
-     * @param string $exchangeCode binance|okx|bybit|bitget
-     * @param string $market       spot|futures（Binance 区分现货/合约，其他交易所合一）
+     * @param string               $exchangeCode binance|okx|bybit|bitget
+     * @param string               $market       spot|futures（Binance 区分现货/合约，其他交易所合一）
+     * @param array<string,string> $credentials  ['api_key' => .., 'api_secret' => ..]（StrategyRunner 从 exchange_accounts 解密后传入）
      */
-    public function adapter(string $exchangeCode, string $market = 'spot'): ExchangeAdapter
+    public function adapter(string $exchangeCode, string $market = 'spot', array $credentials = []): ExchangeAdapter
     {
         return match ($exchangeCode) {
             'binance' => $market === 'futures'
-                ? new BinanceFuturesAdapter($this->rateLimiter, $this->healthChecker)
-                : new BinanceSpotAdapter($this->rateLimiter, $this->healthChecker),
-            'okx' => new OkxAdapter($this->rateLimiter, $this->healthChecker),
-            'bybit' => new BybitAdapter($this->rateLimiter, $this->healthChecker),
-            'bitget' => new BitgetAdapter($this->rateLimiter, $this->healthChecker),
+                ? (new BinanceFuturesAdapter($this->rateLimiter, $this->healthChecker, $credentials))
+                : (new BinanceSpotAdapter($this->rateLimiter, $this->healthChecker, $credentials)),
+            'okx' => new OkxAdapter($this->rateLimiter, $this->healthChecker, $credentials),
+            'bybit' => new BybitAdapter($this->rateLimiter, $this->healthChecker, $credentials),
+            'bitget' => new BitgetAdapter($this->rateLimiter, $this->healthChecker, $credentials),
             default => throw new RuntimeException("Unsupported exchange code: {$exchangeCode}"),
         };
     }

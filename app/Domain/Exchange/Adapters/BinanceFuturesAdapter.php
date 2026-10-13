@@ -19,4 +19,14 @@ class BinanceFuturesAdapter extends AbstractExchangeAdapter
     {
         return 'binance';
     }
+
+    protected function market(): string
+    {
+        return 'futures';
+    }
+
+    public function withCredentials(array $credentials): static
+    {
+        return new static($this->rateLimiter, $this->healthChecker, $credentials);
+    }
 }

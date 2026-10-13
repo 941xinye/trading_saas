@@ -1,0 +1,202 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Domain\Strategy;
+
+use App\Domain\Exchange\Contracts\ExchangeAdapter;
+use App\Domain\Exchange\Contracts\ExchangeOrder;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Throwable;
+
+/**
+ * 下单执行器：clientOrderId 幂等 + 精度对齐 + 落库先行。
+ *
+ * 流程（架构 §8 下单时序）：
+ *  1. 生成 clientOrderId（模板 config('strategy.client_order_id_template')）
+ *  2. strategy_orders 先落库 status=pending（unique(tenant, client_order_id) 幂等锚点）
+ *  3. qty 经 symbolFilters + alignToStep 对齐（LOT_SIZE）；市价单名义额低于
+ *     min_notional 时按步长追加（最多 10 次）
+ *  4. adapter->placeOrder(market) → 回写 exchange_order_id/status/成交明细
+ *
+ * 失败语义：交易所异常 → 行置 failed 并返回 status=failed 的 DTO
+ *（策略 onFill 走释放分支），不向上抛异常打断调度循环。
+ */
+class OrderExecutor
+{
+    /**
+     * clientOrderId 模板填充。Binance 限制 ≤36 字符，仅 [A-Za-z0-9._-]。
+     */
+    public static function generateClientOrderId(int $tenantId, int $instanceId): string
+    {
+        return str_replace(
+            ['{tenant_id}', '{instance_id}', '{timestamp}', '{random}'],
+            [$tenantId, $instanceId, (string) time(), bin2hex(random_bytes(3))],
+            (string) config('strategy.client_order_id_template', '{tenant_id}_{instance_id}_{timestamp}_{random}'),
+        );
+    }
+
+    /**
+     * 市价下单。
+     *
+     * @param object                $instance strategy_instances 行（id/tenant_id/symbol）
+     * @param array{side:string,qty:string,price?:?string,client_order_id?:string} $decision
+     */
+    public function place(int $tenantId, object $instance, ExchangeAdapter $adapter, array $decision): ?ExchangeOrder
+    {
+        $symbol = (string) $instance->symbol;
+        $side = strtolower((string) $decision['side']);
+        $qty = (string) $decision['qty'];
+        $clientOrderId = (string) ($decision['client_order_id']
+            ?? self::generateClientOrderId($tenantId, (int) $instance->id));
+
+        // 数量对齐（LOT_SIZE 向下取整）
+        $filters = $adapter->symbolFilters($symbol);
+        $qty = $adapter->alignToStep($qty, $filters['step_size']);
+        if (bccomp($qty, '0', 12) !== 1) {
+            Log::warning('Order quantity aligned to zero', [
+                'instance' => $instance->id, 'symbol' => $symbol, 'raw_qty' => $decision['qty'],
+            ]);
+
+            return $this->failedOrder($symbol, $side, $clientOrderId, $qty, 'quantity_aligned_to_zero');
+        }
+
+        // minNotional 保护：市价单名义额不足时按步长追加
+        $refPrice = (string) ($decision['price'] ?? '0');
+        if (bccomp($refPrice, '0', 12) !== 1) {
+            try {
+                $refPrice = $adapter->getTicker($symbol)->lastPrice;
+            } catch (Throwable) {
+                $refPrice = '0'; // 拿不到参考价则跳过 notional 检查，交给交易所校验
+            }
+        }
+        if (bccomp($refPrice, '0', 12) === 1) {
+            $notional = bcmul($qty, $refPrice, 12);
+            $guard = 0;
+            while (bccomp($notional, $filters['min_notional'], 12) === -1 && $guard++ < 10) {
+                $qty = bcadd($qty, $filters['step_size'], 12);
+                $notional = bcmul($qty, $refPrice, 12);
+            }
+        }
+
+        // 幂等落库：unique(tenant_id, client_order_id)
+        $rowId = $this->insertPendingRow($tenantId, $instance, $symbol, $side, $clientOrderId, $qty);
+        if ($rowId === null) {
+            return null; // 落库失败且无既有行（DB 不可用）
+        }
+
+        try {
+            $order = $adapter->placeOrder($symbol, $side, 'market', $qty, null, null, [
+                'clientOrderId' => $clientOrderId,
+            ]);
+        } catch (Throwable $e) {
+            Log::error('Exchange placeOrder failed', [
+                'instance' => $instance->id, 'client_order_id' => $clientOrderId, 'error' => $e->getMessage(),
+            ]);
+            $this->updateRow($rowId, [
+                'status' => 'failed',
+                'error_message' => mb_substr($e->getMessage(), 0, 500),
+                'placed_at' => now(),
+            ]);
+
+            return $this->failedOrder($symbol, $side, $clientOrderId, $qty, $e->getMessage());
+        }
+
+        $this->updateRow($rowId, [
+            'exchange_order_id' => $order->exchangeOrderId,
+            'status' => $order->status,
+            'filled_qty' => $order->filledQty,
+            'avg_fill_price' => $order->avgFillPrice,
+            'fee' => $order->fee ?? 0,
+            'placed_at' => $order->placedAt !== null
+                ? date('Y-m-d H:i:s', $order->placedAt) : now(),
+            'filled_at' => $order->filledAt !== null ? date('Y-m-d H:i:s', $order->filledAt) : null,
+        ]);
+
+        return $order;
+    }
+
+    // ------------------------------------------------------------------
+    // 内部
+    // ------------------------------------------------------------------
+
+    private function insertPendingRow(
+        int $tenantId,
+        object $instance,
+        string $symbol,
+        string $side,
+        string $clientOrderId,
+        string $qty,
+    ): ?int {
+        try {
+            return (int) DB::table('strategy_orders')->insertGetId([
+                'tenant_id' => $tenantId,
+                'strategy_instance_id' => $instance->id,
+                'client_order_id' => $clientOrderId,
+                'symbol' => $symbol,
+                'side' => $side,
+                'type' => 'market',
+                'quantity' => $qty,
+                'status' => 'pending',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        } catch (QueryException $e) {
+            // 唯一键冲突（崩溃重放/重复信号）：复用既有行
+            $existing = DB::table('strategy_orders')
+                ->where('tenant_id', $tenantId)
+                ->where('client_order_id', $clientOrderId)
+                ->first(['id', 'status']);
+
+            if ($existing === null) {
+                Log::error('strategy_orders insert failed', ['error' => $e->getMessage()]);
+
+                return null;
+            }
+
+            if (in_array($existing->status, ['submitted', 'partial', 'filled'], true)) {
+                return null; // 已在交易所生效，幂等跳过
+            }
+
+            return (int) $existing->id; // pending/failed：允许携同 cid 重放下单
+        }
+    }
+
+    private function updateRow(int $rowId, array $values): void
+    {
+        try {
+            DB::table('strategy_orders')->where('id', $rowId)->update($values + ['updated_at' => now()]);
+        } catch (Throwable $e) {
+            Log::warning('strategy_orders update failed', ['id' => $rowId, 'error' => $e->getMessage()]);
+        }
+    }
+
+    private function failedOrder(
+        string $symbol,
+        string $side,
+        string $clientOrderId,
+        string $qty,
+        string $error,
+    ): ExchangeOrder {
+        return new ExchangeOrder(
+            exchangeOrderId: '0',
+            clientOrderId: $clientOrderId,
+            symbol: $symbol,
+            side: $side,
+            type: 'market',
+            quantity: $qty,
+            price: null,
+            stopPrice: null,
+            leverage: null,
+            reduceOnly: false,
+            status: 'failed',
+            filledQty: '0',
+            avgFillPrice: null,
+            fee: null,
+            placedAt: time(),
+            filledAt: null,
+        );
+    }
+}

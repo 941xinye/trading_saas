@@ -16,10 +16,17 @@ namespace App\Domain\Risk\Breaker;
  *  - 最大回撤：历史峰值 → 当前净值回撤 ≥ 阈值（10%）
  *  - 连续亏损次数：连续亏损订单数 ≥ 阈值（5 次）
  *
- * 字段值均为字符串保留精度，避免浮点误差。
+ * 字段值均为字符串保留精度（bcmath），避免浮点误差。
+ * 百分比统一以 allocated_capital 为分母。
  */
 class BreakerMetrics
 {
+    /** 当日累计已实现亏损（正数 = 亏损额） */
+    private string $dailyLossAbs = '0';
+
+    /** 累计已实现盈亏（带符号），驱动净值 */
+    private string $cumPnl = '0';
+
     public function __construct(
         private string $lastTradeLossPct = '0',
         private string $dailyLossPct = '0',
@@ -33,21 +40,58 @@ class BreakerMetrics
     /**
      * 记录一笔成交，更新 4 维度。
      *
-     * @param string $realizedPnl     本笔已实现盈亏（带符号）
+     * @param string $realizedPnl      本笔已实现盈亏（带符号，quote 计价）
      * @param string $allocatedCapital 分配资金
-     * @param string $currentEquity    当前净值
+     * @param string $currentEquity    当前净值（调用方可传 null 由内部累计）
      */
-    public function recordTrade(string $realizedPnl, string $allocatedCapital, string $currentEquity): void
+    public function recordTrade(string $realizedPnl, string $allocatedCapital, ?string $currentEquity = null): void
     {
-        throw new \RuntimeException('Not implemented in skeleton. Wait for P4 POC.');
+        $this->cumPnl = bcadd($this->cumPnl, $realizedPnl, 12);
+
+        // 净值：优先外部传入（合约场景含浮盈），P1 现货用 allocated + 累计已实现
+        $equity = $currentEquity ?? bcadd($allocatedCapital, $this->cumPnl, 12);
+        $this->currentEquity = $equity;
+
+        // 峰值与回撤
+        if (bccomp($this->peakEquity, '0', 12) === 0 || bccomp($equity, $this->peakEquity, 12) === 1) {
+            $this->peakEquity = $equity;
+        }
+        $this->currentDrawdownPct = $this->drawdownPct($this->peakEquity, $equity);
+
+        if (bccomp($realizedPnl, '0', 12) === -1) {
+            // 亏损笔：单笔亏损占比 + 日内累计 + 连亏计数
+            $loss = bcmul($realizedPnl, '-1', 12);
+            $this->lastTradeLossPct = $this->pctOf($loss, $allocatedCapital);
+            $this->dailyLossAbs = bcadd($this->dailyLossAbs, $loss, 12);
+            $this->dailyLossPct = $this->pctOf($this->dailyLossAbs, $allocatedCapital);
+            $this->consecutiveLosses++;
+        } else {
+            // 盈利/持平笔：重置单笔与连亏，日内亏损只减不增
+            $this->lastTradeLossPct = '0';
+            $this->consecutiveLosses = 0;
+            if (bccomp($realizedPnl, '0', 12) === 1 && bccomp($this->dailyLossAbs, '0', 12) === 1) {
+                $gain = min($realizedPnl, $this->dailyLossAbs);
+                $this->dailyLossAbs = bcsub($this->dailyLossAbs, $gain, 12);
+                $this->dailyLossPct = $this->pctOf($this->dailyLossAbs, $allocatedCapital);
+            }
+        }
     }
 
     /**
-     * 计算当前回撤百分比（peak → current）。
+     * 计算当前回撤百分比（peak → current），浮点用于展示。
      */
     public function computeDrawdown(): float
     {
-        throw new \RuntimeException('Not implemented in skeleton. Wait for P4 POC.');
+        return (float) $this->drawdownPct($this->peakEquity, $this->currentEquity);
+    }
+
+    /**
+     * 重置日内累计（跨日调用）。
+     */
+    public function resetDaily(): void
+    {
+        $this->dailyLossAbs = '0';
+        $this->dailyLossPct = '0';
     }
 
     public function getLastTradeLossPct(): string
@@ -78,5 +122,23 @@ class BreakerMetrics
     public function getCurrentEquity(): string
     {
         return $this->currentEquity;
+    }
+
+    private function pctOf(string $part, string $base): string
+    {
+        if (bccomp($base, '0', 12) !== 1) {
+            return '0';
+        }
+
+        return bcmul(bcdiv($part, $base, 12), '100', 8);
+    }
+
+    private function drawdownPct(string $peak, string $current): string
+    {
+        if (bccomp($peak, '0', 12) !== 1 || bccomp($peak, $current, 12) !== 1) {
+            return '0';
+        }
+
+        return $this->pctOf(bcsub($peak, $current, 12), $peak);
     }
 }

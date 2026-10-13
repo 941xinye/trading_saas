@@ -20,6 +20,13 @@ use RuntimeException;
  */
 class BreakerStateMachine
 {
+    /** @var array<string, string[]> from → 允许的 to 列表 */
+    private const TRANSITIONS = [
+        CircuitBreaker::STATE_CLOSED => [CircuitBreaker::STATE_OPEN],
+        CircuitBreaker::STATE_OPEN => [CircuitBreaker::STATE_HALF_OPEN],
+        CircuitBreaker::STATE_HALF_OPEN => [CircuitBreaker::STATE_CLOSED, CircuitBreaker::STATE_OPEN],
+    ];
+
     /**
      * 校验状态转换合法性。
      *
@@ -30,6 +37,14 @@ class BreakerStateMachine
      */
     public function assertTransition(string $from, string $to): void
     {
-        throw new RuntimeException('Not implemented in skeleton. Wait for P4 POC.');
+        if ($from === $to) {
+            return; // 幂等：同态转换视为无害
+        }
+
+        if (! in_array($to, self::TRANSITIONS[$from] ?? [], true)) {
+            throw new RuntimeException(
+                "Illegal breaker state transition: {$from} → {$to}"
+            );
+        }
     }
 }
