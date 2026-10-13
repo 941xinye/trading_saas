@@ -134,17 +134,37 @@ php artisan key:generate
 php artisan migrate
 
 # 启动服务
+# Windows 本地：php artisan serve（Octane/Swoole 与 market:feed 需在 WSL 内运行，见下节）
 php artisan octane:start --server=swoole
 php artisan market:feed --dry-run  # 验证协程容器入口（需 swoole 扩展）
 ```
 
-### Swoole 扩展安装
+### Swoole 运行环境（Windows 开发机：WSL2 方案）
 
-当前环境未加载 swoole，P1 POC 前需通过 ServBay 启用 Swoole runtime，或：
+Swoole 官方不支持 Windows 原生运行，本机已采用 **WSL2 + Ubuntu 22.04** 方案，`market:feed`（进程 B）跑在 WSL 内，通过 NAT 网关回连 Windows 侧 ServBay 的 MySQL / Redis：
+
+| 组件 | Windows 侧（ServBay） | WSL 侧（~/trading_saas） |
+|---|---|---|
+| PHP | 8.5.11（CLI，无 swoole） | 8.4.26 + swoole 6.2.3 + redis + sodium |
+| MySQL | 8.4.11，监听全接口，用户 `trading_wsl@%`（仅 crypto_saas 库） | 经 `172.18.x.1:3306` 访问 |
+| Redis | 7.x，仅绑回环 | 经 portproxy `16379 → 6379` 访问 |
+
+关键配置（已就绪，重启后无需重做）：
+
+- `wsl --import Ubuntu-22.04 D:\WSL\Ubuntu2204`（WSL2，rootfs 来自 cloud-images.ubuntu.com）
+- `netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=16379 connectaddress=127.0.0.1 connectport=6379`（规则持久化注册表）
+- 防火墙规则 `WSL2 to ServBay MySQL 3306 / Redis 16379`（限 172.16.0.0/12）
+- WSL 内 `.env`：`DB_HOST/REDIS_HOST=<win-ip>`、`REDIS_PORT=16379`、`DB_USERNAME=trading_wsl`
+
+WSL 内启动进程 B：
 
 ```bash
-pecl install swoole
+wsl -d Ubuntu-22.04
+cd ~/trading_saas
+php artisan market:feed
 ```
+
+Linux / macOS 环境无需以上步骤，直接 `pecl install swoole` 即可。
 
 ### 创建用户
 
