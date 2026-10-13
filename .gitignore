@@ -1,0 +1,66 @@
+# Laravel
+/.idea/
+/.vscode/
+/.nova/
+/.zed
+/.codex
+/.cursor/
+
+# Environment
+.env
+.env.backup
+.env.production
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Composer
+/vendor/
+auth.json
+
+# PHP
+.phpactor.json
+_ide_helper.php
+
+# Database
+/database/*.sqlite
+/database/*.sqlite-journal
+
+# Build & assets
+/node_modules/
+/public/build
+/public/hot
+/public/storage
+/public/fonts-manifest.dev.json
+
+# Laravel specific
+/storage/*.key
+/storage/pail
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/framework/cache/*
+!/storage/framework/cache/.gitkeep
+/storage/framework/sessions/*
+!/storage/framework/sessions/.gitkeep
+/storage/framework/views/*
+!/storage/framework/views/.gitkeep
+/bootstrap/cache/*.php
+!/bootstrap/cache/.gitkeep
+
+# Filament generated
+/storage/filament
+
+# Test
+.phpunit.result.cache
+.phpunit.cache
+
+# Homestead
+Homestead.json
+Homestead.yaml
+
+# AI-API keys / local overrides
+.env.local
