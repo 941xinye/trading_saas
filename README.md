@@ -169,13 +169,33 @@ WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
 
 **已知边界**：无支付网关，状态流转由管理动作/命令显式驱动；无 Invoice/Filament 计费页；DEK 轮换需停实例（非热轮换），轮换期间账户操作应停窗；refreshStatus 需挂每日调度（POC 手工触发）。
 
+### ✅ 已完成：P4 高级风控（2026-10-14）
+
+4 维度 Rule + CircuitBreaker 三态机（CLOSED→OPEN→HALF_OPEN→CLOSED）+ BreakerTripped 事件分发通知链 + 跨日重置 + 崩溃恢复 lastTradeDate 注入 + 人工恢复命令；离线 35/35 全绿。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 4 维度 Rule | MaxLossPerTrade(2%)/MaxDailyLoss(5%)/MaxDrawdown(10%)/ConsecutiveLoss(5次)；BreakerMetrics 追踪峰值/回撤/日内/连亏 | — |
+| 三态熔断 | CircuitBreaker：trip(CLOSED/HALF_OPEN→OPEN) + attemptProbe(OPEN→HALF_OPEN 冷却到期) + recover(HALF_OPEN→CLOSED)；Redis Hash 持久化 `tenant:{tid}:breaker:{iid}` | [踩坑 #17](docs/pitfalls.md) |
+| 事件分发 | trip/recover → BreakerTripped 事件 → NotifyBreakerTrip(ShouldQueue,notifications 队列) + BroadcastBreakerAlert(同步 Reverb)；dispatch 失败 try/catch 不回滚状态迁移 | [踩坑 #19](docs/pitfalls.md) |
+| 通知链 | RiskNotificationJob：log 渠道直接写；telegram HTTP Bot API；wechat_work/mail 标 failed；DedupCooldown 15 分钟（sha1(instanceId\|ruleType)）；risk_notifications 落库审计 | — |
+| 跨日重置 | BreakerMetrics.recordTradeWithDate：比对 UTC 日期，跨日→resetDaily（dailyLoss/consecutiveLoss 清零）；lastTradeDate 持久化 Redis Hash，崩溃恢复注入 | [踩坑 #18](docs/pitfalls.md) |
+| 探测单语义 | HALF_OPEN 下放行 1 笔探测单（config `half_open_probe_count=1`）：盈利→recover(CLOSED)；亏损→re-trip(OPEN，重置计时)；熔断只停开新仓 check('close') 永远放行 | — |
+| POC 命令 | `poc:verify-risk`（35 项离线断言：4 维度触发/HALF_OPEN 双路径/事件计数/4 渠道通知/跨日重置/崩溃恢复/去重/命令幂等）/ `risk:status {iid}` / `risk:recover {iid}` | [快速开始 §POC 验证](#poc-验证p4-高级风控) |
+
+**实测结果**：
+
+- 离线断言 PASS：`php artisan poc:verify-risk` → **35/35**：4 维度 Rule 独立触发与审计行落库、HALF_OPEN 探测亏损 re-trip / 盈利 recover 双路径、BreakerTripped 事件 trip/recover 各 1 次、4 渠道 risk_notifications 落库(log=sent/wechat_work=failed/mail=failed)、跨日 resetDaily、崩溃恢复从 Redis 注入 lastTradeDate 后首笔跨日回写、DedupCooldown 15 分钟去重、risk:recover 命令 HALF_OPEN→CLOSED + CLOSED 幂等跳过。
+- 运维命令 PASS：`risk:status 1` 显示 state/triggerInfo/last_trade_date + 最近 5 条审计；`risk:recover 1` 对 CLOSED 状态幂等返回 SUCCESS。
+
+**已知边界**：风控通知未走 NotifierChannel 契约（该契约绑定 Signal 对象，风控无 signal 概念）；telegram 渠道待配 TELEGRAM_BOT_TOKEN/CHAT_ID 实测；Reverb 广播需前端 WebSocket 客户端订阅 `tenant.{tid}.alerts` 频道；max_drawdown 的 balance_snapshots 对账待 P5+ 完善（当前从 strategy_orders 重放保守取值）。
+
 ### 🚧 待实现：剩余路线图
 
-> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 已完成，实测结果见上方对应区块。
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 已完成，实测结果见上方对应区块。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 |
 |---|---|---|---|
-| **P4 高级风控** | 4 维度 Rule 全实现（单笔/日内/回撤/连亏）+ HALF_OPEN 探测 + 自动恢复窗口 + BreakerTripped 事件分发 | 模拟连亏 → 熔断 → 通知 → 冷却 → HALF_OPEN 探测单 → CLOSED/重置 | 回撤计算实时性；HALF_OPEN 并发安全；探测单与正常策略调度解耦 |
 | **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板 LiquidationMap 接线 | 实时显示 BTC/ETH 大户爆仓密集区与挂单带 | 强平流并发写入压力；历史数据缺失；与策略层联动语义 |
 | **P6 扩展（可选）** | OKX/Bybit/Bitget Adapter 落地 + Custom DSL 引擎 + ClickHouse 历史归档 | Adapter 抽象跨所健壮性；DSL 自定义策略可装载；分析层迁移到列存 | 各所 WS 协议差异；DSL 安全沙箱；ClickHouse 迁移窗口 |
 
@@ -268,6 +288,21 @@ php artisan poc:billing-demo --cleanup    # 删除第二租户及其全部数据
 
 注意：`poc:verify-billing` 会并发拉起 `php artisan poc:meter-freeze` 子进程（隐藏命令），Windows 原生 PHP 与 WSL PHP 均可跑，但请在实际运行长驻服务的一侧执行（本机 WSL），确保子进程连到同一 Redis。
 
+### POC 验证（P4 高级风控）
+
+```bash
+# 1. 离线全链路断言（35 项，使用一次性租户 poc-verify-risk，自动清理）
+php artisan poc:verify-risk
+
+# 2. 运维命令：查看实例熔断状态 + 最近审计
+php artisan risk:status {instanceId}
+
+# 3. 人工恢复：HALF_OPEN → CLOSED（写 manual_resume 审计行；CLOSED 幂等跳过）
+php artisan risk:recover {instanceId}
+```
+
+`poc:verify-risk` 覆盖 12 组场景共 35 项断言：4 维度 Rule 独立触发（单笔 2%/日内 5%/回撤 10%/连亏 5 次）、HALF_OPEN 探测亏损 re-trip / 盈利 recover 双路径、BreakerTripped 事件 trip/recover 分发计数、4 渠道 risk_notifications 落库（log=sent / wechat_work/mail=failed）、跨日 resetDaily、崩溃恢复 lastTradeDate 从 Redis 注入后跨日回写、DedupCooldown 15 分钟去重、risk:recover 命令幂等。
+
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 
 Swoole 官方不支持 Windows 原生运行，本机已采用 **WSL2 + Ubuntu 22.04** 方案，`market:feed`（进程 B）跑在 WSL 内，通过 NAT 网关回连 Windows 侧 ServBay 的 MySQL / Redis：
@@ -356,7 +391,7 @@ php artisan test
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
-| [踩坑记录](docs/pitfalls.md) | P1/P2/P3 实测踩坑 16 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换等）持续追加 |
+| [踩坑记录](docs/pitfalls.md) | P1/P2/P3/P4 实测踩坑 19 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁等）持续追加 |
 
 ## 安全说明
 

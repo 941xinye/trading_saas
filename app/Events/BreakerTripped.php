@@ -29,6 +29,8 @@ readonly class BreakerTripped
         public readonly string $fromState,
         public readonly string $toState,
         public readonly string $ruleType,
+        /** 关联 circuit_breaker_events.id；persistEvent best-effort 失败时为 null */
+        public readonly ?int $eventId = null,
     ) {
     }
 }

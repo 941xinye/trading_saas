@@ -58,6 +58,12 @@ class RiskGuard implements RiskGuardContract
         $this->metrics = new BreakerMetrics(peakEquity: $allocatedCapital);
 
         if ($tenantId !== null && $instanceId !== null) {
+            // 崩溃恢复：从 Redis Hash 加载 last_trade_date 注入 BreakerMetrics
+            // 必须在 restoreFromOrders 之前，否则首笔历史 sell 重放跨日会被误判
+            $persistedDate = $this->breaker->getLastTradeDate();
+            if ($persistedDate !== '') {
+                $this->metrics->setLastTradeDate($persistedDate);
+            }
             $this->restoreFromOrders($tenantId, $instanceId);
         }
     }
@@ -72,7 +78,10 @@ class RiskGuard implements RiskGuardContract
         $state = $this->breaker->state();
 
         if ($state === CircuitBreaker::STATE_OPEN) {
-            return $this->decide(false, 'breaker_open');
+            // 冷却窗口到期则 OPEN → HALF_OPEN 并放行探测单；否则继续拒绝
+            return $this->breaker->attemptProbe()
+                ? $this->decide(true, 'probe_allowed')
+                : $this->decide(false, 'breaker_open');
         }
 
         if ($state === CircuitBreaker::STATE_HALF_OPEN) {
@@ -107,7 +116,11 @@ class RiskGuard implements RiskGuardContract
             return;
         }
 
-        $this->metrics->recordTrade($pnl, $this->allocatedCapital);
+        $utcDate = gmdate('Y-m-d');
+        $result = $this->metrics->recordTradeWithDate($pnl, $this->allocatedCapital, $utcDate);
+        if ($result['dayChanged']) {
+            $this->breaker->setLastTradeDate($utcDate);
+        }
 
         // 探测单成交回调：盈利 → 恢复 CLOSED；亏损 → 重新熔断
         if ($this->breaker->state() === CircuitBreaker::STATE_HALF_OPEN) {

@@ -55,8 +55,10 @@ return [
         'pause_strategy' => true,
         // 不平掉已有持仓，交给策略自身的止盈止损逻辑
         'close_existing_positions' => false,
-        // 分发通知（带冷却去重）
-        'notify_channels' => ['telegram', 'wechat_work', 'mail', 'websocket'],
+        // 分发通知（带冷却去重）；P4 实现 log/telegram，wechat_work/mail 标 failed 留 P5
+        'notify_channels' => ['log', 'telegram', 'wechat_work', 'mail', 'websocket'],
+        // 通知冷却去重分钟数（同 instanceId+ruleType 重复 trip 只通知一次）
+        'dedup_ttl_minutes' => 15,
     ],
 
     // 关键约束：仅业务亏损触发熔断，API 异常不触发

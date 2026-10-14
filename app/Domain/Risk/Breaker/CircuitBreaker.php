@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Risk\Breaker;
 
+use App\Events\BreakerTripped;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
@@ -66,8 +67,9 @@ class CircuitBreaker
             'next_attempt_at' => $now + $cooldownMinutes * 60,
         ]);
 
-        $this->persistEvent($from, self::STATE_OPEN, $ruleType, $triggerValue, $thresholdValue, 'pause_strategy');
+        $eventId = $this->persistEvent($from, self::STATE_OPEN, $ruleType, $triggerValue, $thresholdValue, 'pause_strategy');
         $this->syncInstanceRow(self::STATE_OPEN, 'paused_by_breaker');
+        $this->dispatchBreakerEvent($from, self::STATE_OPEN, $ruleType, $eventId);
     }
 
     /**
@@ -121,6 +123,8 @@ class CircuitBreaker
 
         $this->stateMachine->assertTransition($from, self::STATE_CLOSED);
 
+        // 注意：hMset 只设置指定字段，不触碰 last_trade_date（Redis hMset 不删除未列出字段）
+        // 这样跨日追踪在恢复后仍保留，RiskGuard 无需重建
         $this->redis()->hMset($this->key(), [
             'state' => self::STATE_CLOSED,
             'opened_at' => 0,
@@ -130,8 +134,9 @@ class CircuitBreaker
             'next_attempt_at' => 0,
         ]);
 
-        $this->persistEvent($from, self::STATE_CLOSED, 'recovered', '0', '0', 'resume_strategy');
+        $eventId = $this->persistEvent($from, self::STATE_CLOSED, 'recovered', '0', '0', 'resume_strategy');
         $this->syncInstanceRow(self::STATE_CLOSED, 'running');
+        $this->dispatchBreakerEvent($from, self::STATE_CLOSED, 'recovered', $eventId);
     }
 
     /**
@@ -183,6 +188,8 @@ class CircuitBreaker
 
     /**
      * 审计事件落库（best-effort：审计失败不阻塞熔断动作）。
+     *
+     * @return int|null 新插入行 id；失败时返回 null（risk_notifications.circuit_breaker_event_id nullable 容错）
      */
     private function persistEvent(
         string $from,
@@ -191,9 +198,9 @@ class CircuitBreaker
         string $triggerValue,
         string $thresholdValue,
         string $action,
-    ): void {
+    ): ?int {
         try {
-            DB::table('circuit_breaker_events')->insert([
+            return (int) DB::table('circuit_breaker_events')->insertGetId([
                 'tenant_id' => $this->tenantId,
                 'strategy_instance_id' => $this->instanceId,
                 'from_state' => $from,
@@ -211,7 +218,53 @@ class CircuitBreaker
                 'instance' => $this->instanceId,
                 'error' => $e->getMessage(),
             ]);
+
+            return null;
         }
+    }
+
+    /**
+     * 在状态已落 Redis+DB 之后分发 BreakerTripped 事件。
+     * dispatch 失败不回滚状态迁移（状态已是终态，仅记录警告）。
+     */
+    private function dispatchBreakerEvent(string $from, string $to, string $ruleType, ?int $eventId): void
+    {
+        try {
+            event(new BreakerTripped(
+                $this->tenantId,
+                $this->instanceId,
+                $from,
+                $to,
+                $ruleType,
+                $eventId,
+            ));
+        } catch (Throwable $e) {
+            Log::warning('BreakerTripped event dispatch failed', [
+                'instance' => $this->instanceId,
+                'from' => $from,
+                'to' => $to,
+                'rule' => $ruleType,
+                'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * 读取 Redis Hash 中的 last_trade_date（UTC Y-m-d），崩溃恢复后注入 BreakerMetrics。
+     */
+    public function getLastTradeDate(): string
+    {
+        $val = $this->redis()->hGet($this->key(), 'last_trade_date');
+
+        return is_string($val) ? $val : '';
+    }
+
+    /**
+     * 写入 last_trade_date 到 Redis Hash（RiskGuard 在跨日时同步）。
+     */
+    public function setLastTradeDate(string $utcDate): void
+    {
+        $this->redis()->hSet($this->key(), 'last_trade_date', $utcDate);
     }
 
     /**

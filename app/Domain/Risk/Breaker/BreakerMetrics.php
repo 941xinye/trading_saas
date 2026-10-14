@@ -27,6 +27,9 @@ class BreakerMetrics
     /** 累计已实现盈亏（带符号），驱动净值 */
     private string $cumPnl = '0';
 
+    /** 最近一笔成交的 UTC 日期（Y-m-d），跨日检测用；崩溃恢复后由外部注入 */
+    private string $lastTradeDate = '';
+
     public function __construct(
         private string $lastTradeLossPct = '0',
         private string $dailyLossPct = '0',
@@ -38,7 +41,7 @@ class BreakerMetrics
     }
 
     /**
-     * 记录一笔成交，更新 4 维度。
+     * 记录一笔成交，更新 4 维度（委托 recordTradeWithDate，utcDate=今日 UTC）。
      *
      * @param string $realizedPnl      本笔已实现盈亏（带符号，quote 计价）
      * @param string $allocatedCapital 分配资金
@@ -46,6 +49,26 @@ class BreakerMetrics
      */
     public function recordTrade(string $realizedPnl, string $allocatedCapital, ?string $currentEquity = null): void
     {
+        $this->recordTradeWithDate($realizedPnl, $allocatedCapital, gmdate('Y-m-d'), $currentEquity);
+    }
+
+    /**
+     * 记录一笔成交并做跨日检测。
+     *
+     * 比对 utcDate 与 lastTradeDate：不同则 resetDaily() + 更新 lastTradeDate，
+     * 返回 dayChanged=true。RiskGuard 据此同步 breaker Redis Hash 的 last_trade_date。
+     *
+     * @return array{pnl:string, dayChanged:bool}
+     */
+    public function recordTradeWithDate(string $realizedPnl, string $allocatedCapital, string $utcDate, ?string $currentEquity = null): array
+    {
+        $dayChanged = false;
+        if ($this->lastTradeDate !== '' && $utcDate !== $this->lastTradeDate) {
+            $this->resetDaily();
+            $dayChanged = true;
+        }
+        $this->lastTradeDate = $utcDate;
+
         $this->cumPnl = bcadd($this->cumPnl, $realizedPnl, 12);
 
         // 净值：优先外部传入（合约场景含浮盈），P1 现货用 allocated + 累计已实现
@@ -75,6 +98,22 @@ class BreakerMetrics
                 $this->dailyLossPct = $this->pctOf($this->dailyLossAbs, $allocatedCapital);
             }
         }
+
+        return ['pnl' => $realizedPnl, 'dayChanged' => $dayChanged];
+    }
+
+    /**
+     * 注入持久化的 lastTradeDate（崩溃恢复后由 RiskGuard 从 Redis Hash 加载）。
+     * 必须在 recordTrade/recordTradeWithDate 之前调用，否则首笔会被误判跨日。
+     */
+    public function setLastTradeDate(string $utcDate): void
+    {
+        $this->lastTradeDate = $utcDate;
+    }
+
+    public function getLastTradeDate(): string
+    {
+        return $this->lastTradeDate;
     }
 
     /**

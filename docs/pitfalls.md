@@ -126,6 +126,29 @@
 - **处理**：每个长驻进程用**独立命令**启动（各自完整 `cd ~/trading_saas && nohup ... &`），启动后立刻 `pgrep` + `tail` 日志双确认；worker 晚起不丢任务——Redis 队列在其上线后把积压 Job 自动排空（本次 2 个任务各 1s 完成）。
 - **位置**：本节为运维流程坑，无代码变更
 
+## 17. RiskGuard.check(OPEN) 未调 attemptProbe：OPEN→HALF_OPEN 永不转换
+
+- **现象**：`poc:verify-risk` 26/35 通过，核心失败链在 HALF_OPEN 探测：trip 后 state=OPEN ✓，冷却到期后 check('open') 期望转 HALF_OPEN 但 state 仍=OPEN，后续 recover/事件计数/命令幂等全连锁失败。
+- **根因**：[RiskGuard.check()](../app/Domain/Risk/RiskGuard.php#L80) 原逻辑 `if (state === OPEN) return decide(false, 'breaker_open')` 直接拒绝，**不调用 attemptProbe()**。而 CircuitBreaker.attemptProbe() 本身已处理 OPEN 状态下冷却到期→HALF_OPEN 的转换，但 RiskGuard 只在 HALF_OPEN 分支调它，形成死锁：OPEN 永远不会变成 HALF_OPEN。
+- **处理**：OPEN 分支改为 `return breaker.attemptProbe() ? decide(true, 'probe_allowed') : decide(false, 'breaker_open')`——冷却到期则自动转 HALF_OPEN 并放行探测单，否则继续拒绝。
+- **位置**：[RiskGuard.php](../app/Domain/Risk/RiskGuard.php#L80-L85)
+- **教训**：三态机中"冷却到期自动降级"的转换点必须在每次 check 时主动尝试，不能假设外部（定时器/cron）会触发；attemptProbe 的设计已内含此逻辑，调用方必须在 OPEN 状态也调它。
+
+## 18. 测试绕过 RiskGuard.recordTrade 直接调 metrics()：Redis last_trade_date 未更新
+
+- **现象**：断言 10（崩溃恢复 lastTradeDate 注入）失败——跨日后 Redis `last_trade_date` 未更新为今日。
+- **根因**：测试代码 `$guard->metrics()->recordTradeWithDate(...)` 直接操作 BreakerMetrics 内存对象，绕过了 `RiskGuard.recordTrade()` 内的 `if (result['dayChanged']) breaker.setLastTradeDate(utcDate)` Redis 写入链路。metrics 内存状态已更新但 Redis Hash 未同步。
+- **处理**：测试改为 `$guard->recordTrade(instanceId, makeOrder('sell', '1', '98.5'))`，sell 产生 pnl=-1.5，走 RiskGuard.recordTrade 完整链路（trackFill→recordTradeWithDate→dayChanged→setLastTradeDate→Redis hSet）。
+- **位置**：[PocVerifyRiskCommand.php](../app/Console/Commands/PocVerifyRiskCommand.php#L566-L572)
+- **教训**：测试持久化字段时必须走完整的写入路径（Domain 层公开方法），不能绕过中间层直接操作内部状态对象；否则"内存改了但没落库"的假阳性通过会掩盖真实 bug。
+
+## 19. readonly class 不能 use 含非只读属性的 trait
+
+- **现象**：`Error: Readonly class App\Events\BreakerAlert cannot use trait Illuminate\Broadcasting\InteractsWithSockets`（trait 有非只读属性 `$socket`）。
+- **根因**：PHP 8.3 readonly class 禁止引入可变属性，Laravel 的 `InteractsWithSockets` trait 声明了 `public $socket = null`（非只读），与 readonly 语义冲突。
+- **处理**：从 BreakerAlert 移除 `InteractsWithSockets` trait，仅保留 `use Dispatchable;`（P4 广播不需要 socket 排除功能）；broadcastOn() 直接返回 PrivateChannel。
+- **位置**：[BreakerAlert.php](../app/Events/BreakerAlert.php)
+
 ## 环境类备忘
 
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。
