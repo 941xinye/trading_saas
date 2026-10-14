@@ -28,6 +28,10 @@ return [
         'auto_restore_on_boot' => true,
     ],
 
+    // 已真实落地、可对客售卖的策略代码（P5.5 步骤 2 起作为套餐白名单的硬闸门）。
+    // plans.php 的 strategies 必须与此取交集；未落地的策略代码不得运行/售卖。
+    'implemented' => ['spot_grid', 'spot_dca'],
+
     // 策略默认参数 schema
     'strategies' => [
         'spot_grid' => [
@@ -59,7 +63,8 @@ return [
             'risk_profile' => 'conservative',
             'default_params' => [
                 'amount_per_order' => 100,
-                'interval_minutes' => 60,
+                // 默认周投（7 天）；POC/实例参数可覆盖为 1-2 分钟
+                'interval_minutes' => 10080,
                 'max_orders' => 20,
             ],
         ],

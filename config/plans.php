@@ -24,6 +24,7 @@ return [
                 'ai_calls_per_day' => 10,
                 'orders_per_day' => 100,
                 'channels' => ['websocket'],
+                // 只售卖已落地策略（硬闸门见 config('strategy.implemented')，P5.5 步骤 2）
                 'strategies' => ['spot_grid', 'spot_dca'],
             ],
         ],
@@ -37,7 +38,8 @@ return [
                 'ai_calls_per_day' => 500,
                 'orders_per_day' => 2000,
                 'channels' => ['websocket', 'telegram', 'mail'],
-                'strategies' => ['spot_grid', 'spot_dca', 'futures_grid', 'futures_dca', 'smart_martingale'],
+                // 合约/马丁策略落地前从售卖清单摘除（P5.5 步骤 2，恢复时同步 config('strategy.implemented')）
+                'strategies' => ['spot_grid', 'spot_dca'],
             ],
         ],
         'enterprise' => [
@@ -50,11 +52,7 @@ return [
                 'ai_calls_per_day' => 10000,
                 'orders_per_day' => 50000,
                 'channels' => ['websocket', 'telegram', 'wechat_work', 'mail'],
-                'strategies' => [
-                    'spot_grid', 'spot_dca',
-                    'futures_grid', 'futures_dca',
-                    'smart_martingale', 'trend_rolling', 'custom_dsl',
-                ],
+                'strategies' => ['spot_grid', 'spot_dca'],
             ],
         ],
     ],

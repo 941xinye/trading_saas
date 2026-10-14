@@ -87,10 +87,18 @@ class PlanService
     }
 
     /**
-     * 策略类型是否在套餐白名单内。
+     * 策略类型是否可用：套餐白名单 ∩ 平台已真实落地清单（config('strategy.implemented')）。
+     *
+     * 双闸门防止售卖超出代码能力（P5.5 步骤 2，销债 B6）：套餐配置遗漏/超前时，
+     * 未落地策略一律拒绝，绝不依赖运行时的 "Not implemented" 异常兜底。
      */
     public function allowsStrategy(Tenant $tenant, string $strategyCode): bool
     {
+        $implemented = (array) config('strategy.implemented', []);
+        if (! in_array($strategyCode, $implemented, true)) {
+            return false;
+        }
+
         $allowed = (array) ($this->feature($tenant, 'strategies') ?? []);
 
         return in_array($strategyCode, $allowed, true);
