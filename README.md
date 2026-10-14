@@ -220,9 +220,13 @@ Binance 合约强平流 `!forceOrder@arr` 实时订阅 + Redis ZSET+HASH 聚类 
 
 > P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 已完成，实测结果见上方对应区块。
 
-| 阶段 | 范围 | 验证目标 | 关键风险 |
-|---|---|---|---|
-| **P6 扩展（可选）** | OKX/Bybit/Bitget Adapter 落地 + Custom DSL 引擎 + ClickHouse 历史归档 | Adapter 抽象跨所健壮性；DSL 自定义策略可装载；分析层迁移到列存 | 各所 WS 协议差异；DSL 安全沙箱；ClickHouse 迁移窗口 |
+| 阶段 | 范围 | 验证目标 | 关键风险 | 依赖 |
+|---|---|---|---|---|
+| **P6 多交易所 Adapter 扩展** | OKX / Bybit / Bitget 三家现货+合约 Adapter 落地，复用 P1 BinanceSpotAdapter 范式（REST 签名/WS 订阅/错误码映射/testnet 切换）；统一错误码 → `ExchangeApiException` 翻译表 | 三家 testnet 各跑通 1 笔市价单 + 1 路 WS 1m closed bar；P1 `market:feed` 切换所代码 ≤10 行 | 各所 WS 协议差异（heartbeat/订阅格式/重连规则）、签名算法差异（OKX HMAC+passphrase、Bybit reversal key）、testnet 配额/可用性 | P1 |
+| **P7 Custom DSL 策略引擎** | YAML/TOML 声明式策略定义（entry/exit/filter/risk 四段）；DSL 解释器 + 沙箱执行；Filament 在线编辑器 + 回测预览 | 一条 DSL 装载后能跑通 onBar→信号→下单；与 PHP 内置策略语义等价 | DSL 表达力 vs 安全（禁 eval/exec/fs）、性能（每 bar 解释开销）、与 RiskGuard 接线 | P1, P2 |
+| **P8 ClickHouse 历史数据归档** | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
+| **P9 支付网关 + 计费 UI** | Stripe + 支付宝/微信 支付集成；Filament 计费页（套餐升级/Invoice/用量看板）；订阅状态机自动续费触发；webhook 幂等 | 完整一笔从下单→支付→订阅激活→配额刷新；续费失败走 P3 past_due→suspended 流程 | 支付回调幂等（同 ref 不双激活）、汇率/税额、地区合规 | P3 |
+| **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；策略绩效（Sharpe/最大回撤/胜率/盈亏比）；Filament 绩效页；与 P4 风控参数自动调优建议 | 一条 DSL 策略回测 1 年数据 < 30s；与 P1 实跑同策略净值曲线误差 < 1% | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
 
 ## 快速开始
 

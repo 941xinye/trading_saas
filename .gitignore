@@ -64,3 +64,6 @@ Homestead.yaml
 
 # AI-API keys / local overrides
 .env.local
+
+# Trae internal planning docs (not for repo)
+/.trae/documents/
