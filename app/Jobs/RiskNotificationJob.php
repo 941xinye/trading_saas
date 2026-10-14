@@ -16,11 +16,12 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * 风控多渠道通知发送 Job（notifications 队列，普通 PHP 进程）。
+ * 风控/对账多渠道通知发送 Job（notifications 队列，普通 PHP 进程）。
  *
- * 逐渠道处理：找到 NotifyBreakerTrip 落的 queued 行 → 发送 → 更新 sent/failed。
- * P4 实现 log/telegram；wechat_work/mail 标 failed（留 P5）。
- * 不走 NotifierChannel 契约（该契约绑定 Signal 对象，风控无 signal 概念）。
+ * 逐渠道处理：找到 NotifyBreakerTrip / ReconciliationService 落的 queued 行 → 发送 → 更新 sent/failed。
+ * circuit_breaker_event_id 非空 → 熔断告警；为 null → 账实对账告警（P5.5 步骤 1 复用通知链）。
+ * P4 实现 log/telegram；wechat_work/mail 标 failed（留后续）。
+ * 不走 NotifierChannel 契约（该契约绑定 Signal 对象，风控/对账无 signal 概念）。
  */
 class RiskNotificationJob implements ShouldQueue
 {
@@ -92,13 +93,15 @@ class RiskNotificationJob implements ShouldQueue
 
     private function sendLog(object $row): ?string
     {
-        Log::info('[BREAKER] 熔断告警', [
+        $tag = $row->circuit_breaker_event_id !== null ? '[BREAKER] 熔断告警' : '[RECONCILE] 账实对账告警';
+
+        Log::info($tag, [
             'notification_id' => $row->id,
             'tenant_id' => $row->tenant_id,
             'instance_id' => $row->instance_id,
             'channel' => $row->channel,
             'circuit_breaker_event_id' => $row->circuit_breaker_event_id,
-            'timestamp' => gmdate('Y-m-d H:i:s') . ' UTC',
+            'timestamp' => gmdate('Y-m-d H:i:s').' UTC',
         ]);
 
         return 'logged';
@@ -114,15 +117,19 @@ class RiskNotificationJob implements ShouldQueue
             throw new \RuntimeException('Telegram 未配置 bot_token/chat_id');
         }
 
-        $text = "<b>⚠️ 熔断告警</b>\n"
-            . '实例 #' . (int) $row->instance_id . "\n"
-            . '事件 #' . ($row->circuit_breaker_event_id ?? '-') . "\n"
-            . '<i>' . gmdate('Y-m-d H:i') . ' UTC</i>';
+        $subject = $row->circuit_breaker_event_id !== null
+            ? '<b>⚠️ 熔断告警</b>'
+            : '<b>🚨 账实对账告警</b>';
+
+        $text = $subject."\n"
+            .'实例 #'.(int) $row->instance_id."\n"
+            .'事件 #'.($row->circuit_breaker_event_id ?? '-')."\n"
+            .'<i>'.gmdate('Y-m-d H:i').' UTC</i>';
 
         $response = Http::timeout((int) ($cfg['timeout'] ?? 10))
             ->asJson()
             ->acceptJson()
-            ->post(rtrim((string) $cfg['api_base'], '/') . "/bot{$token}/sendMessage", [
+            ->post(rtrim((string) $cfg['api_base'], '/')."/bot{$token}/sendMessage", [
                 'chat_id' => $chatId,
                 'text' => $text,
                 'parse_mode' => 'HTML',
@@ -130,7 +137,7 @@ class RiskNotificationJob implements ShouldQueue
             ]);
 
         if ($response->failed()) {
-            throw new \RuntimeException('Telegram API HTTP ' . $response->status());
+            throw new \RuntimeException('Telegram API HTTP '.$response->status());
         }
 
         $payload = $response->json();

@@ -1,7 +1,7 @@
-# 踩坑记录（P1 POC 实测）
+# 踩坑记录（P1–P5 POC 实测，共 23 条）
 
-> 2026-10-13 在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀。
-> 每条记录：现象 → 根因 → 处理 → 代码位置。后续阶段（P2+）踩坑持续追加到本文件。
+> 2026-10-13 起在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀，随 P1–P5 各阶段持续追加（#1–9 P1 / #10–12 P2 / #13–16 P3 / #17–19 P4 / #20–23 P5）。
+> 每条记录：现象 → 根因 → 处理 → 代码位置。后续阶段（P5.5+）踩坑继续追加到本文件。
 
 ## 1. Swoole curl hook 与 Guzzle 7.9 不兼容
 
@@ -179,6 +179,37 @@
 - **排查**：`nslookup fstream.binance.com → 199.59.148.8`，`nc 199.59.148.8 443/9443` 均 Connection refused，说明不是 DNS 污染而是 IP/端口层被拦。出口公网 IP 112.49.194.245（动态宽带）可能被 Binance 主网地理封禁，或 ISP 层封禁 Binance 主网 IP 段。
 - **处理**：P5 接受离线 POC 15/15 PASS 作为验证通过，跳过真实 fstream 实跑；`poc:liquidation-demo` 命令保留，网络恢复后随时可补测。
 - **教训**：国内开发机访问 Binance 主网端点不稳定（testnet 通常放行，主网常被封）；依赖主网公共流的 POC 要准备好离线断言 + 真实流两条验证路径，网络阻塞时离线断言仍能证明核心逻辑正确；正式部署需配置代理或部署在境外节点。
+
+## 24. 测试 setUp 里 skip 后，tearDown 的外部清理抛异常会污染 RefreshDatabase 事务并级联拖垮全套测试（P5.5 步骤 0）
+
+- **现象**：本机 Redis 未启动时跑全套，首个 `@group redis` 测试在 setUp 调 `requireRedis()` 已正确 `markTestSkipped`，但测试仍报 FAIL（RedisException），随后同文件其余 6 个测试以及另一个测试类的 3 个 mysql 组测试全部连锁报 `SQLSTATE[HY000]: cannot start a transaction within a transaction`，10 个测试级联失败。
+- **根因**：①tearDown 无条件执行 `flushDayCounter()`（Redis 调用），Redis 不可用再抛异常——skip 发生在 `parent::setUp()`（RefreshDatabase 已 BEGIN 事务）之后，tearDown 的异常导致框架没走到事务回滚；②SQLite 内存连接的事务一直开着，后续每个测试 BEGIN 都失败，跨测试类也不恢复。
+- **处理**：外部服务清理在 tearDown 中必须满足三条——a) 用 `$redisAvailable` 标志位（仅 setUp 中 ping 成功才置真）包住；b) 再套 try/catch 兜底；c) 清理放在 `parent::tearDown()` 之前。修复后 Redis 停机全套 = 5 passed + 10 skipped 全绿。
+- **教训**：`markTestSkipped` 不是测试的终点，tearDown 照样执行；任何 tearDown 清理都不得引入未捕获异常，尤其是外部 IO（Redis/HTTP/文件锁）。服务可用性判定统一收敛到 `Tests\Concerns\ChecksRedisAvailability`，后续 mysql/其他外部服务照此模式扩展。
+
+## 25. 带 TTL 的业务去重键会让"全套连跑"与"单跑"结果不同：测试必须自扫 dedup 槽（P5.5 步骤 1/3）
+
+- **现象**：`ReconciliationServiceTest` 单文件全绿；并入全套后 `critical_does_not_override_breaker_paused` 稳定失败——期望 ≥2 行 risk_notifications，实际 0 行。
+- **根因**：对账告警走 `DedupCooldown`（`tenant:{tid}:dedup:reconcile:{sha1(iid|kind)}`，TTL 15 分钟）。同文件前一个用例 `critical_when_exchange_missing_coins_pauses` 用的是同一租户/实例/同一 critical 指纹，先占了槽位；后一个用例的告警被判 deduped 不再落库。单跑（或 Redis 刚 flush）时键不存在所以绿，Redis 有持久化残留时连跑必挂。
+- **处理**：测试 setUp **和** tearDown 都按已知逻辑名精确清理本组用到的全部 dedup 键 + unknown 计数键（清理仍套坑 #24 的标志位 + try/catch）。凡是测试间共享、且生产语义带 TTL 的键（dedup、限流桶、日计数、unknown streak）都照此办理，不能依赖"测试数据的 ID 不一样"——状态指纹可能与业务 ID 无关。
+- **教训**：迁移 POC 断言进 PHPUnit 时，POC 命令"开头清一次、人手工隔很久才跑一次"的清理习惯不够；PHPUnit 一秒连跑多个用例，TTL 去重直接变成用例顺序依赖。
+
+## 26. phpredis 全局前缀下，`keys()` 返回的是带前缀全名，再 `del()` 会拼出双重前缀删不掉（P5.5 步骤 3）
+
+- **现象**：某迁移测试用 `Redis::keys('tenant:x:*')` 拿 key 再逐个 `del`，首跑后 dedup 键残留，第二次运行 0 行通知，排查时 redis-cli 能看到 key 还在。
+- **根因**：[config/database.php](../config/database.php) 的 phpredis 配了全局前缀（APP_NAME slug + `-database-`）。所有命令参数会自动拼前缀，但 `keys('pattern')` 的**返回值**已经是带前缀的完整名；把完整名再传给 `del()`，客户端又拼一次前缀 → 删的是不存在的键。
+- **处理**：测试清理一律按**已知逻辑名**精确 `del('tenant:...')`（前缀由客户端拼一次）；需要模式扫描时，先对返回值 strip 掉 `Redis::getOption(Redis::OPT_PREFIX)` 再删。旧 POC 命令里的 `keys()->del()` 同款写法在 RDB/AOF 持久化环境也有残留隐患。
+- **教训**：带前缀的 Redis 客户端，"传参加前缀、回传不带处理"是不对称的；模式清理不能想当然。
+
+## 27. PHPUnit 12 不认 `@dataProvider` 注解，必须用 `#[DataProvider]` 属性（P5.5 步骤 3）
+
+- **现象**：数据提供方法存在，测试却报 `ArgumentCountError: 0 required, 1 passed`（或提供器永不执行）。
+- **处理**：注解风格 `/** @dataProvider xProvider */` 在 PHPUnit 10+ 已弃用、12 不识别；改为方法上方 `#[DataProvider('xProvider')]`（`use PHPUnit\Framework\Attributes\DataProvider;`）。
+
+## 环境类备忘（P5.5 步骤 0 补充）
+
+- phpunit.xml 的 XML 注释中**不能出现 `--`**（XML 规范）：在注释里写命令示例 `--group=redis` 会导致整套测试报 `Comment must not contain '--' (double-hyphen)`，注释里用「group=redis」等不含双连字符的写法。
+- 本机 ServBay 面板未启动时可直接拉二进制做测试：`D:\ServBay\packages\redis\redis-server.exe --port 6379 --save "" --appendonly no`（注意 `D:\ServBay\bin\redis-server.cmd` 包装指向的 `packages\redis\current\` 目录不存在，直接调 exe）；MySQL 用 `mysqld.exe --defaults-file=D:\ServBay\etc\mysql\current\my.ini --console`（datadir 即 ServBay 正式数据，测试只动独立的 `crypto_saas_test` 库），停库用 mysqladmin 长选项（PowerShell 会把 `-h127.0.0.1` 错拆成 host `12``）。
 
 ## 环境类备忘
 

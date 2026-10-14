@@ -12,6 +12,7 @@ use App\Domain\Signal\Contracts\Signal;
 use App\Domain\Signal\IndicatorCalculator;
 use App\Domain\Signal\Prompters\DeepSeekAdapter;
 use App\Domain\Signal\RuleEngineFallback;
+use App\Domain\Signal\SignalDispatcher;
 use App\Domain\Signal\SignalPipeline;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
@@ -21,7 +22,18 @@ use ReflectionMethod;
 use Throwable;
 
 /**
- * P2 POC 离线全链路验证（7 项断言，任一失败 exit=1）：
+ * P2 POC 真实服务 smoke（离线断言主体已于 P5.5 步骤 3 迁入 PHPUnit：
+ * tests/Unit/Signal/IndicatorCalculatorTest、tests/Integration/Signal/
+ * BarAggregatorTest/DeepSeekAdapterTest/SignalPipelineAiTest/
+ * PriceDeviationGuardTest/SignalDispatcherDedupTest；逐条映射见
+ * docs/p5.5-hardening-plan.md「步骤 3 迁移映射附录」）。
+ *
+ * 本命令保留的 smoke 价值（CI 不覆盖，需在可访问 Binance/DeepSeek 的环境手工执行）：
+ *  - [2/7] 交易所 REST 真实拉取 120 根 5m bar
+ *  - [3/7] 真实 DEEPSEEK_API_KEY 全链路一轮
+ * 其余 [1]/[4]/[5]/[6] 段为离线断言，正式回归以 php artisan test 为准。
+ *
+ * 历史 7 段（P2 POC 离线全链路验证）：
  *  1. BarAggregator 合成 1m→5m 聚合 + OHLCV/trades + Redis 崩溃恢复 + 1m 直通
  *  2. IndicatorCalculator 真实 120 根 5m bar：指标齐全且数值合理
  *  3. 真实 DeepSeek 调用：合法 Signal DTO；方向性信号必须落 signals(source=ai)
@@ -112,7 +124,7 @@ class PocVerifyAiCommand extends Command
 
         try {
             $base = intdiv(time() * 1000, 300_000) * 300_000;
-            $agg = new BarAggregator();
+            $agg = new BarAggregator;
 
             // 1m 直通
             $first = $this->synthetic1mBar($base, 0);
@@ -140,7 +152,7 @@ class PocVerifyAiCommand extends Command
             }
 
             // 崩溃恢复：新实例从 Redis hydrate 未闭桶；再喂同桶 1 根 → null，跨桶 → 闭合
-            $agg2 = new BarAggregator();
+            $agg2 = new BarAggregator;
             $sameBucket = $agg2->aggregate($this->synthetic1mBar($base + 360_000, 6), '5m');
             $this->assert($sameBucket === null, 'hydrate 后喂入同桶 bar 返回 null');
             $closed2 = $agg2->aggregate($this->synthetic1mBar($base + 600_000, 7), '5m');
@@ -151,7 +163,7 @@ class PocVerifyAiCommand extends Command
                 $this->assert($agg2->lastClosedTicks('binance', 'POCTEST', '5m') === 2, '恢复桶 ticks=2（仅收到 2 根 1m，可识别为残次桶）');
             }
         } catch (Throwable $e) {
-            $this->record(false, '异常：' . $e->getMessage());
+            $this->record(false, '异常：'.$e->getMessage());
         } finally {
             $redis->del('market:agg:binance:POCTEST:5m');
         }
@@ -190,7 +202,7 @@ class PocVerifyAiCommand extends Command
             $this->assert(count($bars) >= 100, sprintf('REST 拉到 %d 根 5m bar（≥100）', count($bars)));
 
             $ind = app(IndicatorCalculator::class)->compute($bars);
-            $this->line('      ' . json_encode($ind, JSON_UNESCAPED_UNICODE));
+            $this->line('      '.json_encode($ind, JSON_UNESCAPED_UNICODE));
 
             $this->assert(
                 is_numeric($ind['ma'][7]['v']) && is_numeric($ind['ma'][25]['v']) && is_numeric($ind['ma'][99]['v']),
@@ -209,7 +221,7 @@ class PocVerifyAiCommand extends Command
 
             return $bars;
         } catch (Throwable $e) {
-            $this->record(false, '异常：' . $e->getMessage());
+            $this->record(false, '异常：'.$e->getMessage());
 
             return null;
         }
@@ -220,7 +232,7 @@ class PocVerifyAiCommand extends Command
     // ------------------------------------------------------------------
 
     /**
-     * @param ExchangeKline[] $bars
+     * @param  ExchangeKline[]  $bars
      */
     private function checkRealAi(object $subscription, array $bars): void
     {
@@ -236,15 +248,15 @@ class PocVerifyAiCommand extends Command
             $signal = $pipeline->run($subscription, $bars[count($bars) - 1], $bars);
 
             if ($signal !== null) {
-                $this->assert($signal->source === 'ai', '信号 source=ai（实际：' . $signal->source . '）');
+                $this->assert($signal->source === 'ai', '信号 source=ai（实际：'.$signal->source.'）');
                 $this->assert(
                     in_array($signal->direction, ['long', 'short'], true),
-                    '方向合法：' . $signal->direction,
+                    '方向合法：'.$signal->direction,
                 );
-                $this->assert((float) $signal->entryPrice > 0, 'entry_price 为正：' . $signal->entryPrice);
+                $this->assert((float) $signal->entryPrice > 0, 'entry_price 为正：'.$signal->entryPrice);
                 $this->assert(
                     $signal->confidence >= 0 && $signal->confidence <= 100,
-                    'confidence ∈ [0,100]：' . $signal->confidence,
+                    'confidence ∈ [0,100]：'.$signal->confidence,
                 );
                 $this->assert($signal->rationale !== null && $signal->rationale !== '', 'rationale 非空');
                 $row = DB::table('signals')->where('id', '>', $beforeId)->where('source', 'ai')->latest('id')->first();
@@ -266,7 +278,7 @@ class PocVerifyAiCommand extends Command
                 $this->assert($neutral->confidence >= 0 && $neutral->confidence <= 100, 'neutral confidence 合法');
             }
         } catch (Throwable $e) {
-            $this->record(false, '异常：' . $e->getMessage());
+            $this->record(false, '异常：'.$e->getMessage());
         }
     }
 
@@ -305,7 +317,7 @@ class PocVerifyAiCommand extends Command
             $this->assert($signal !== null, '兜底管线返回信号');
             if ($signal !== null) {
                 $this->assert($signal->source === 'rule_fallback', 'source=rule_fallback');
-                $this->assert($signal->direction === 'long', '确定性形态判为 long（实际：' . $signal->direction . '）');
+                $this->assert($signal->direction === 'long', '确定性形态判为 long（实际：'.$signal->direction.'）');
                 $this->assert(bccomp($signal->entryPrice, '100', 8) === 0, 'entry=100（形态末收盘价）');
                 $this->assert(
                     $signal->exitPrice !== null && bccomp($signal->exitPrice, $signal->entryPrice, 8) > 0,
@@ -317,10 +329,10 @@ class PocVerifyAiCommand extends Command
                 );
                 $row = DB::table('signals')->where('id', '>', $beforeId)->where('source', 'rule_fallback')->latest('id')->first();
                 $this->assert($row !== null, 'signals 表存在 source=rule_fallback 新记录');
-                $this->line('      ' . $signal->rationale);
+                $this->line('      '.$signal->rationale);
             }
         } catch (Throwable $e) {
-            $this->record(false, '异常：' . $e->getMessage());
+            $this->record(false, '异常：'.$e->getMessage());
         } finally {
             config(['ai.providers.deepseek.api_key' => $originalKey]);
         }
@@ -386,7 +398,7 @@ class PocVerifyAiCommand extends Command
             $this->assert($method->invoke($pipeline, $drift, $bar) === true, '偏离 2%（>1%）被丢弃');
             $this->assert($method->invoke($pipeline, $ok, $bar) === false, '偏离 0.2%（≤1%）放行');
         } catch (Throwable $e) {
-            $this->record(false, '异常：' . $e->getMessage());
+            $this->record(false, '异常：'.$e->getMessage());
         }
     }
 
@@ -418,7 +430,7 @@ class PocVerifyAiCommand extends Command
             // 只统计本次两次分发产生的行（check4 管线自身也分发过一次）
             $beforeNoteId = (int) DB::table('signal_notifications')->max('id');
 
-            $dispatcher = app(\App\Domain\Signal\SignalDispatcher::class);
+            $dispatcher = app(SignalDispatcher::class);
             $dispatcher->dispatch($signal, ['log']);
             $dispatcher->dispatch($signal, ['log']);
 
@@ -432,10 +444,10 @@ class PocVerifyAiCommand extends Command
             $first = $rows[0] ?? null;
             $second = $rows[1] ?? null;
 
-            $this->assert($first !== null && in_array($first->status, ['queued', 'sent'], true), '首次分发状态 queued/sent（实际：' . ($first->status ?? '-') . '）');
-            $this->assert($second !== null && $second->status === 'deduped', '二次分发命中冷却 deduped（实际：' . ($second->status ?? '-') . '）');
+            $this->assert($first !== null && in_array($first->status, ['queued', 'sent'], true), '首次分发状态 queued/sent（实际：'.($first->status ?? '-').'）');
+            $this->assert($second !== null && $second->status === 'deduped', '二次分发命中冷却 deduped（实际：'.($second->status ?? '-').'）');
         } catch (Throwable $e) {
-            $this->record(false, '异常：' . $e->getMessage());
+            $this->record(false, '异常：'.$e->getMessage());
         }
     }
 
@@ -514,10 +526,10 @@ class PocVerifyAiCommand extends Command
     {
         if ($ok) {
             $this->passed++;
-            $this->line('  <fg=green>PASS</> ' . $label);
+            $this->line('  <fg=green>PASS</> '.$label);
         } else {
             $this->failed++;
-            $this->line('  <fg=red>FAIL</> ' . $label);
+            $this->line('  <fg=red>FAIL</> '.$label);
         }
     }
 }

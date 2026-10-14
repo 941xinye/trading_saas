@@ -17,6 +17,7 @@ use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangePosition;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
 use App\Domain\Signal\SignalPipeline;
+use App\Domain\Strategy\OrderExecutor;
 use App\Domain\Tenancy\TenantContext;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\MeterEvent;
@@ -30,10 +31,17 @@ use Symfony\Component\Process\Process;
 use Throwable;
 
 /**
- * P3 POC 离线全链路断言：
+ * P3 POC 真实服务 smoke（断言主体已于 P5.5 步骤 3 迁入 PHPUnit，见
+ * tests/Unit/Billing 与 tests/Integration/Billing，逐条映射见
+ * docs/p5.5-hardening-plan.md「步骤 3 迁移映射附录」）。
+ *
+ * 本命令保留的 smoke 价值：第 3 段「10 子进程并发抢配额」依赖跨进程共享的真实
+ * Redis + 持久 DB，无法在测试套件内离线化，CI 不覆盖，需在部署侧手工执行。
+ *
+ * P3 POC 历史覆盖 9 段：
  *  1. PlanService 套餐解析/白名单/未知套餐拒绝
  *  2. TwoPhaseMeter 两阶段（freeze/settle/reverse/ref 幂等/reconcile）
- *  3. 并发原子占额（10 进程抢 3 配额，恰好 3 行 frozen）
+ *  3. 并发原子占额（10 进程抢 3 配额，恰好 3 行 frozen）  ← 仅存 smoke
  *  4. SubscriptionService 状态机（trial→past_due→suspended→恢复→canceled）
  *  5. AI 配额耗尽/权益失效 → pipeline 走 rule_fallback（不投 HTTP）
  *  6. OrderExecutor 配额/权益拦截零交易所调用；失败冲正还额
@@ -91,8 +99,8 @@ class PocVerifyBillingCommand extends Command
             $this->checkTenantIsolation();
         } catch (Throwable $e) {
             $this->fail++;
-            $this->failures[] = '验证流程异常中断：' . $e->getMessage();
-            $this->error('FATAL: ' . $e->getMessage());
+            $this->failures[] = '验证流程异常中断：'.$e->getMessage();
+            $this->error('FATAL: '.$e->getMessage());
             $this->line($e->getTraceAsString());
         } finally {
             $this->cleanupFixtures();
@@ -103,7 +111,7 @@ class PocVerifyBillingCommand extends Command
         if ($this->fail > 0) {
             $this->error('VERIFY FAILED');
             foreach ($this->failures as $f) {
-                $this->line('  - ' . $f);
+                $this->line('  - '.$f);
             }
 
             return self::FAILURE;
@@ -122,11 +130,11 @@ class PocVerifyBillingCommand extends Command
     {
         if ($cond) {
             $this->pass++;
-            $this->line('  PASS ' . $label);
+            $this->line('  PASS '.$label);
         } else {
             $this->fail++;
-            $this->failures[] = $label . ($detail !== '' ? "（{$detail}）" : '');
-            $this->error('  FAIL ' . $label . ($detail !== '' ? "（{$detail}）" : ''));
+            $this->failures[] = $label.($detail !== '' ? "（{$detail}）" : '');
+            $this->error('  FAIL '.$label.($detail !== '' ? "（{$detail}）" : ''));
         }
     }
 
@@ -228,10 +236,10 @@ class PocVerifyBillingCommand extends Command
 
     private function checkPlanService(PlanService $plans): void
     {
-        $this->info(PHP_EOL . '---- 1. PlanService ----');
+        $this->info(PHP_EOL.'---- 1. PlanService ----');
         $a = $plans->tenant($this->tenantA);
 
-        $this->check($plans->limit($a, 'ai_calls_per_day') === 10, 'free ai_calls_per_day=10（实际：' . $plans->limit($a, 'ai_calls_per_day') . '）');
+        $this->check($plans->limit($a, 'ai_calls_per_day') === 10, 'free ai_calls_per_day=10（实际：'.$plans->limit($a, 'ai_calls_per_day').'）');
         $this->check($plans->limit($a, 'max_signal_subscriptions') === 1, 'free max_signal_subscriptions=1');
         $this->check($plans->allowsChannel($a, 'log'), 'log 系统渠道始终放行');
         $this->check($plans->allowsChannel($a, 'websocket') && ! $plans->allowsChannel($a, 'telegram'), 'free 渠道白名单 websocket 放行/telegram 拒绝');
@@ -259,7 +267,7 @@ class PocVerifyBillingCommand extends Command
 
     private function checkTwoPhaseMeter(TwoPhaseMeter $meter): void
     {
-        $this->info(PHP_EOL . '---- 2. TwoPhaseMeter 两阶段 ----');
+        $this->info(PHP_EOL.'---- 2. TwoPhaseMeter 两阶段 ----');
         $t = $this->tenantA;
 
         $this->check($meter->usedToday($t, 'ai_call') === 0, '初始当日用量=0');
@@ -294,7 +302,7 @@ class PocVerifyBillingCommand extends Command
 
     private function checkConcurrency(TwoPhaseMeter $meter): void
     {
-        $this->info(PHP_EOL . '---- 3. 并发原子性（10 进程抢 3 配额）----');
+        $this->info(PHP_EOL.'---- 3. 并发原子性（10 进程抢 3 配额）----');
         $t = $this->tenantA;
 
         // check2 结束时桶内仍有 1（settled 占额）；并发测试从干净桶开始
@@ -304,7 +312,7 @@ class PocVerifyBillingCommand extends Command
         for ($i = 0; $i < 10; $i++) {
             $p = new Process([
                 PHP_BINARY, base_path('artisan'), 'poc:meter-freeze',
-                (string) $t, 'ai_call', '--limit=3', '--ref=c3-' . $i,
+                (string) $t, 'ai_call', '--limit=3', '--ref=c3-'.$i,
             ]);
             $p->start();
             $processes[] = $p;
@@ -339,7 +347,7 @@ class PocVerifyBillingCommand extends Command
 
     private function checkSubscriptionLifecycle(SubscriptionService $service, QuotaGuard $guard): void
     {
-        $this->info(PHP_EOL . '---- 4. SubscriptionService 状态机 ----');
+        $this->info(PHP_EOL.'---- 4. SubscriptionService 状态机 ----');
         $t = $this->tenantB;
 
         $sub = $service->provision($t, 'free', 14);
@@ -358,7 +366,7 @@ class PocVerifyBillingCommand extends Command
         DB::table('subscriptions')->where('id', $sub->getKey())->update(['ends_at' => now()->subDays(10)]);
         $service->refreshStatus();
         $tenantStatus = (string) DB::table('tenants')->where('id', $t)->value('status');
-        $this->check($tenantStatus === 'suspended', '超过宽限 refresh → tenant suspended（实际：' . $tenantStatus . '）');
+        $this->check($tenantStatus === 'suspended', '超过宽限 refresh → tenant suspended（实际：'.$tenantStatus.'）');
         $this->check(! $guard->isEntitled($t), 'suspended 权益被拦截');
 
         // 续费恢复：直接 active
@@ -379,7 +387,7 @@ class PocVerifyBillingCommand extends Command
     }
 
     /**
-     * @param array<int,array{tenant_id:int,from:string,to:string}> $transitions
+     * @param  array<int,array{tenant_id:int,from:string,to:string}>  $transitions
      */
     private function transitionHit(array $transitions, int $tenantId, string $to): bool
     {
@@ -398,7 +406,7 @@ class PocVerifyBillingCommand extends Command
 
     private function checkAiQuotaFallback(SignalPipeline $pipeline, QuotaGuard $guard, TwoPhaseMeter $meter): void
     {
-        $this->info(PHP_EOL . '---- 5. AI 配额耗尽/权益失效兜底 ----');
+        $this->info(PHP_EOL.'---- 5. AI 配额耗尽/权益失效兜底 ----');
         $t = $this->tenantA;
         $original = config('plans.plans.free.features.ai_calls_per_day');
         config(['plans.plans.free.features.ai_calls_per_day' => 1]);
@@ -436,22 +444,22 @@ class PocVerifyBillingCommand extends Command
 
             $this->check(
                 $signal !== null && $signal->source === 'rule_fallback' && $signal->direction === 'long',
-                '配额耗尽 pipeline 产出确定性 rule_fallback long（实际：' . ($signal?->source ?? 'null') . '）',
+                '配额耗尽 pipeline 产出确定性 rule_fallback long（实际：'.($signal?->source ?? 'null').'）',
             );
             $this->check($elapsed < 5.0, sprintf('耗尽路径不投 HTTP（耗时 %.2fs < 5s）', $elapsed));
 
             $aiRows = MeterEvent::query()->withoutGlobalScopes()
                 ->where('tenant_id', $t)->where('event_type', 'ai_call')
-                ->where('ref_id', $scaffoldId . ':' . $latest->openTime)
+                ->where('ref_id', $scaffoldId.':'.$latest->openTime)
                 ->count();
-            $this->check($aiRows === 0, '耗尽时不写 meter 行（实际行数=' . $aiRows . '）');
+            $this->check($aiRows === 0, '耗尽时不写 meter 行（实际行数='.$aiRows.'）');
 
             // 权益失效：suspended → 同样兜底，不调用 AI（复用同一订阅行）
             DB::table('tenants')->where('id', $t)->update(['status' => 'suspended']);
             $signal2 = $pipeline->run($sub, $latest, $bars);
             $this->check(
                 $signal2 !== null && $signal2->source === 'rule_fallback',
-                'suspended 租户跳过 AI 走规则兜底（实际：' . ($signal2?->source ?? 'null') . '）',
+                'suspended 租户跳过 AI 走规则兜底（实际：'.($signal2?->source ?? 'null').'）',
             );
             DB::table('tenants')->where('id', $t)->update(['status' => 'active']);
         } finally {
@@ -516,10 +524,10 @@ class PocVerifyBillingCommand extends Command
 
     private function checkOrderQuota(QuotaGuard $guard, TwoPhaseMeter $meter): void
     {
-        $this->info(PHP_EOL . '---- 6. OrderExecutor 下单配额 ----');
+        $this->info(PHP_EOL.'---- 6. OrderExecutor 下单配额 ----');
         $t = $this->tenantA;
         $instance = (object) ['id' => $this->instanceA, 'tenant_id' => $t, 'symbol' => 'BTCUSDT'];
-        $executor = app(\App\Domain\Strategy\OrderExecutor::class);
+        $executor = app(OrderExecutor::class);
 
         // (a) 配额为 0 → 拒绝，零交易所调用
         $original = config('plans.plans.free.features.orders_per_day');
@@ -527,7 +535,7 @@ class PocVerifyBillingCommand extends Command
         $adapter = $this->stubAdapter();
         $order = $executor->place($t, $instance, $adapter, ['side' => 'buy', 'qty' => '0.01', 'price' => '100']);
         $this->check($order->status === 'failed', 'orders_per_day=0 时返回 failed');
-        $this->check($adapter->calls === 0, '配额拒绝零交易所调用（实际 calls=' . $adapter->calls . '）');
+        $this->check($adapter->calls === 0, '配额拒绝零交易所调用（实际 calls='.$adapter->calls.'）');
 
         // (b) suspended → 拒绝，零交易所调用
         DB::table('tenants')->where('id', $t)->update(['status' => 'suspended']);
@@ -550,7 +558,7 @@ class PocVerifyBillingCommand extends Command
         $order = $executor->place($t, $instance, $adapter2, ['side' => 'buy', 'qty' => '0.00000001', 'price' => '100']);
         $this->check($order->status === 'failed', '对齐后数量为 0 → failed');
         $this->check($adapter2->calls === 0, '失败路径零交易所调用');
-        $this->check($meter->usedToday($t, 'order_placed') === 1, '冲正后用量仍=1（实际=' . $meter->usedToday($t, 'order_placed') . '）');
+        $this->check($meter->usedToday($t, 'order_placed') === 1, '冲正后用量仍=1（实际='.$meter->usedToday($t, 'order_placed').'）');
     }
 
     /**
@@ -558,7 +566,8 @@ class PocVerifyBillingCommand extends Command
      */
     private function stubAdapter(?string $reuseClientOrderId = null): object
     {
-        return new class($reuseClientOrderId) implements ExchangeAdapter {
+        return new class($reuseClientOrderId) implements ExchangeAdapter
+        {
             public int $calls = 0;
 
             public ?string $lastClientOrderId = null;
@@ -670,7 +679,7 @@ class PocVerifyBillingCommand extends Command
 
     private function checkResourceGates(QuotaGuard $guard): void
     {
-        $this->info(PHP_EOL . '---- 7. 资源数/渠道门 ----');
+        $this->info(PHP_EOL.'---- 7. 资源数/渠道门 ----');
         $t = $this->tenantA;
 
         try {
@@ -717,7 +726,7 @@ class PocVerifyBillingCommand extends Command
 
     private function checkDekRotation(TenantKeyResolver $resolver, AesGcmCrypt $crypt): void
     {
-        $this->info(PHP_EOL . '---- 8. DEK 轮换 ----');
+        $this->info(PHP_EOL.'---- 8. DEK 轮换 ----');
 
         $dekAOld = $resolver->tenantDek($this->tenantA);
         $dekBOld = $resolver->tenantDek($this->tenantB);
@@ -731,7 +740,7 @@ class PocVerifyBillingCommand extends Command
         $fingerprint = $resolver->rotateDek($this->tenantA);
 
         $storedNew = (string) DB::table('tenants')->where('id', $this->tenantA)->value('exchange_dek');
-        $this->check($storedNew !== '' && $storedNew !== $storedOld, 'tenants.exchange_dek 已更新（指纹=' . substr($fingerprint, 0, 10) . '）');
+        $this->check($storedNew !== '' && $storedNew !== $storedOld, 'tenants.exchange_dek 已更新（指纹='.substr($fingerprint, 0, 10).'）');
 
         $dekANew = $resolver->tenantDek($this->tenantA);
         $this->check($dekANew !== $dekAOld, '新 DEK 与旧 DEK 不同');
@@ -765,7 +774,7 @@ class PocVerifyBillingCommand extends Command
 
     private function checkTenantIsolation(): void
     {
-        $this->info(PHP_EOL . '---- 9. TenantScope 隔离 ----');
+        $this->info(PHP_EOL.'---- 9. TenantScope 隔离 ----');
 
         TenantContext::initialize($this->tenantA);
         $aSeesV2 = MeterEvent::query()->where('ref_id', 'v2-1')->exists();
@@ -789,8 +798,8 @@ class PocVerifyBillingCommand extends Command
         // 平台级（无上下文）：能看到两家
         $platformA = TenantContext::runWithoutTenant(fn () => MeterEvent::query()->where('tenant_id', $this->tenantA)->count());
         $platformB = TenantContext::runWithoutTenant(fn () => MeterEvent::query()->where('tenant_id', $this->tenantB)->count());
-        $this->check($platformA === $aSubCount && $platformA > 0, '平台上下文可显式按租户聚合（A=' . $platformA . '）');
-        $this->check($platformB === $bSubCount, '平台上下文可显式按租户聚合（B=' . $platformB . '）');
+        $this->check($platformA === $aSubCount && $platformA > 0, '平台上下文可显式按租户聚合（A='.$platformA.'）');
+        $this->check($platformB === $bSubCount, '平台上下文可显式按租户聚合（B='.$platformB.'）');
     }
 
     // ------------------------------------------------------------------
