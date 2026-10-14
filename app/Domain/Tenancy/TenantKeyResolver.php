@@ -7,6 +7,7 @@ namespace App\Domain\Tenancy;
 use App\Support\AesGcmCrypt;
 use App\Support\KeyResolver;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 use RuntimeException;
 use Throwable;
 
@@ -76,5 +77,133 @@ class TenantKeyResolver implements KeyResolver
         }
 
         return $this->dekCache[$tenantId] = $dek;
+    }
+
+    /**
+     * 轮换租户 DEK（P3）：新 DEK（KEK 加密）→ 事务内逐行重加密 exchange_accounts
+     * → 更新 tenants.exchange_dek → 抽验。任何一步失败整体回滚，旧 DEK 保持可用。
+     *
+     * 运维约定（POC）：轮换前暂停该租户策略实例 / 排空 orders 队列——长驻协程内存中
+     * 持有解密凭据，重启后才会加载新 DEK。正式期再做版本化 DEK 热轮换。
+     *
+     * @return string 新 DEK 指纹（sha1，仅供识别，不含密钥材料）
+     */
+    public function rotateDek(int $tenantId): string
+    {
+        $lockKey = sprintf('tenant:%d:dek:rotation', $tenantId);
+        $token = bin2hex(random_bytes(8));
+
+        // 防并发轮换（120s 自动释放，兜底死锁）
+        $locked = Redis::connection('default')->set($lockKey, $token, 'EX', 120, 'NX');
+        if (! ($locked === true || $locked === 'OK' || $locked === 1)) {
+            throw new RuntimeException("DEK rotation already in progress for tenant {$tenantId}");
+        }
+
+        try {
+            $crypt = new AesGcmCrypt($this);
+            $kek = $this->masterKey();
+
+            $fingerprint = DB::transaction(function () use ($tenantId, $crypt, $kek) {
+                $tenant = DB::table('tenants')->where('id', $tenantId)->lockForUpdate()->first();
+                if ($tenant === null) {
+                    throw new RuntimeException("Tenant {$tenantId} not found");
+                }
+
+                $stored = (string) $tenant->exchange_dek;
+                if ($stored === '') {
+                    // 尚未懒初始化：直接走懒生成即可，无需轮换
+                    $this->tenantDek($tenantId);
+                    $stored = (string) DB::table('tenants')->where('id', $tenantId)->value('exchange_dek');
+                }
+
+                $oldDek = $crypt->decrypt($stored, $kek);
+                if ($oldDek === null) {
+                    throw new RuntimeException("Failed to decrypt current DEK for tenant {$tenantId}");
+                }
+
+                $newDek = AesGcmCrypt::generateKey();
+                $newEncrypted = $crypt->encrypt($newDek, $kek);
+
+                // 收集旧密文，用于事务内断言「旧密文全部消失」
+                $oldCiphers = [];
+
+                $accounts = DB::table('exchange_accounts')->where('tenant_id', $tenantId)->get();
+                foreach ($accounts as $account) {
+                    $updates = [];
+                    foreach (['encrypted_api_key' => 'api_key', 'encrypted_api_secret' => 'api_secret'] as $column => $label) {
+                        $cipher = (string) $account->{$column};
+                        if ($cipher === '') {
+                            continue;
+                        }
+                        $oldCiphers[] = $cipher;
+                        $plain = $crypt->decrypt($cipher, $oldDek);
+                        if ($plain === null) {
+                            throw new RuntimeException(
+                                "Failed to decrypt {$label} of account {$account->id} with old DEK"
+                            );
+                        }
+                        $updates[$column] = $crypt->encrypt($plain, $newDek);
+                    }
+                    if ($updates !== []) {
+                        DB::table('exchange_accounts')
+                            ->where('id', $account->id)
+                            ->update($updates + ['updated_at' => now()]);
+                    }
+                }
+
+                DB::table('tenants')->where('id', $tenantId)->update([
+                    'exchange_dek' => $newEncrypted,
+                    'updated_at' => now(),
+                ]);
+
+                // 事务内抽验：新 DEK 能解密首行，且明文与旧 DEK 解密结果一致
+                if ($accounts->isNotEmpty()) {
+                    $first = DB::table('exchange_accounts')->where('id', $accounts[0]->id)->first();
+                    if ((string) $first->encrypted_api_key !== '') {
+                        $plainOld = $crypt->decrypt((string) $accounts[0]->encrypted_api_key, $oldDek);
+                        $plainNew = $crypt->decrypt((string) $first->encrypted_api_key, $newDek);
+                        if ($plainNew === null || $plainNew !== $plainOld) {
+                            throw new RuntimeException('DEK rotation roundtrip verification failed');
+                        }
+                    }
+                }
+                // 旧密文不应再出现在该租户账户行
+                foreach ($oldCiphers as $cipher) {
+                    $leftover = DB::table('exchange_accounts')
+                        ->where('tenant_id', $tenantId)
+                        ->where(fn ($q) => $q->where('encrypted_api_key', $cipher)
+                            ->orWhere('encrypted_api_secret', $cipher))
+                        ->exists();
+                    if ($leftover) {
+                        throw new RuntimeException('Old ciphertext still present after DEK rotation');
+                    }
+                }
+
+                return sha1($newDek);
+            }, 3);
+
+            // 进程内缓存失效，强制下次重新加载
+            unset($this->dekCache[$tenantId]);
+
+            return $fingerprint;
+        } finally {
+            $this->releaseLock($lockKey, $token);
+        }
+    }
+
+    private function releaseLock(string $key, string $token): void
+    {
+        // 只释放自己持有的锁（Lua 比对 value，防止误删别人的锁）
+        $script = <<<'LUA'
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+LUA;
+        try {
+            Redis::connection('default')->eval($script, 1, $key, $token);
+        } catch (Throwable) {
+            // 锁有 TTL 兜底，释放失败不致命
+        }
     }
 }

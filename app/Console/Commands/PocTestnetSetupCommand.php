@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Domain\Billing\EntitlementException;
+use App\Domain\Billing\Metering\QuotaExceededException;
+use App\Domain\Billing\QuotaGuard;
 use App\Domain\Exchange\ExchangeManager;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Support\AesGcmCrypt;
@@ -34,7 +37,7 @@ class PocTestnetSetupCommand extends Command
 
     protected $description = 'POC: provision tenant/account/instance for Binance spot testnet grid strategy';
 
-    public function handle(TenantKeyResolver $keyResolver, AesGcmCrypt $crypt, ExchangeManager $manager): int
+    public function handle(TenantKeyResolver $keyResolver, AesGcmCrypt $crypt, ExchangeManager $manager, QuotaGuard $quotaGuard): int
     {
         $symbol = (string) $this->option('symbol');
         $interval = (string) $this->option('interval');
@@ -54,6 +57,15 @@ class PocTestnetSetupCommand extends Command
             $this->info("Created tenant #{$tenantId} (POC Tenant)");
         } else {
             $tenantId = (int) $tenant->id;
+        }
+
+        // P3 权益门（新租户默认 free/active 必然通过；suspended/past_due 被拦）
+        try {
+            $quotaGuard->assertEntitled($tenantId);
+        } catch (EntitlementException $e) {
+            $this->error('装配被权益拦截：' . $e->getMessage());
+
+            return self::FAILURE;
         }
 
         $strategy = DB::table('strategies')->where('code', 'spot_grid')->first();
@@ -110,6 +122,17 @@ class PocTestnetSetupCommand extends Command
             ->where('label', 'testnet')
             ->first();
         if ($account === null) {
+            try {
+                $quotaGuard->assertResourceCount(
+                    $tenantId,
+                    'max_exchange_accounts',
+                    (int) DB::table('exchange_accounts')->where('tenant_id', $tenantId)->count(),
+                );
+            } catch (QuotaExceededException $e) {
+                $this->error("交易所账户数超套餐上限（{$e->used}/{$e->limit}），请升级套餐");
+
+                return self::FAILURE;
+            }
             $accountId = (int) DB::table('exchange_accounts')->insertGetId([
                 'tenant_id' => $tenantId,
                 'exchange_id' => $exchangeId,
@@ -153,6 +176,18 @@ class PocTestnetSetupCommand extends Command
             ->where('symbol', $symbol)
             ->first();
         if ($existing === null) {
+            try {
+                $quotaGuard->assertStrategyAllowed($tenantId, 'spot_grid');
+                $quotaGuard->assertResourceCount(
+                    $tenantId,
+                    'max_strategy_instances',
+                    (int) DB::table('strategy_instances')->where('tenant_id', $tenantId)->count(),
+                );
+            } catch (EntitlementException|QuotaExceededException $e) {
+                $this->error('策略实例创建被拦截：' . $e->getMessage());
+
+                return self::FAILURE;
+            }
             $instanceId = (int) DB::table('strategy_instances')->insertGetId([
                 'tenant_id' => $tenantId,
                 'strategy_id' => $strategyId,

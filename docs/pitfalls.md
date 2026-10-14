@@ -98,6 +98,34 @@
 - **正式期要求**：supervisor/systemd 必须配 `startretries` + `autorestart=true`（计划 P2 收尾进部署清单）；慢调用（AI 30s）与通知严格分队列 `ai`/`notifications`，worker 独立于行情协程进程。
 - **位置**：[MarketFeedCommand.php](../app/Console/Commands/MarketFeedCommand.php)（仅启动行情进程，AI 分析走队列隔离）
 
+## 13. Laravel Redis 连接层 `eval()` 签名不是 predis 原生形态（首跑即 TypeError）
+
+- **现象**：TwoPhaseMeter 首跑 `Redis::connection('default')->eval($script, [$key, ...$args], 1)` 直接 fatal：`Redis::eval(): Argument #3 ($num_keys) must be of type int, array given`。
+- **根因**：Laravel 的 `PhpRedisConnection::eval($script, $numberOfKeys, ...$arguments)` 把 numkeys 放第 2 参、keys/argv 展平为可变参（内部再 pack 成 phpredis 要的 `[$script, $args, $numkeys]`）；predis 形态 `eval($script, $keysAndArgsArray, $numkeys)` 在 Laravel 连接层不成立。
+- **处理**：统一写 `eval($script, 1, $key, (string) $limit, (string) $ttl)`（phpredis/predis 两种 connector 通用）；数值参数字符串化交给 Lua `tonumber`，规避 pack 层对 int 的序列化歧义。
+- **位置**：[TwoPhaseMeter.php](../app/Domain/Billing/Metering/TwoPhaseMeter.php)、[TenantKeyResolver.php](../app/Domain/Tenancy/TenantKeyResolver.php)
+
+## 14. 并发配额测试要从"干净桶"开始：上一段断言遗留的计数会改变允许数
+
+- **现象**：`poc:verify-billing` 第 3 段"10 进程抢 3 配额"首次只放行 2 个（frozen 行也只有 2），Lua 逻辑本身经审查无竞争漏洞。
+- **根因**：日配额桶按 `tenant+event+UTC 日` 复用，第 2 段两阶段断言结束时桶内已有 1（settled 占额不归还）；第 3 段从计数 1 起跑，limit=3 自然只有 2 个 INCR 名额。不是并发安全问题，是夹具隔离问题。
+- **处理**：每段断言只对自己的 ref 前缀（如 `c3-*`）做断言，并在段首 `flushDayCounter()` 明确桶的起点；并发安全由 Lua 单脚本 check+INCR 保证（Redis 单线程串行执行，10 进程结果严格 3 allowed / 7 denied）。
+- **教训**：共享 Redis 计数的测试，"前置状态"与"被测行为"同等重要；DB 行可以靠 ref 隔离，热计数桶必须显式重置。
+- **位置**：[PocVerifyBillingCommand.php](../app/Console/Commands/PocVerifyBillingCommand.php)
+
+## 15. 离线验证不能伪造 `signals.subscription_id`：FK 约束只认真实行
+
+- **现象**：验证 pipeline 兜底分支时用 stdClass 伪造订阅（id=900001），指标/兜底全对，落库瞬间被外键约束打回（`signals.subscription_id` 引用 `signal_subscriptions.id`）。
+- **处理**：插入真实的 `active=0` 脚手架订阅行（参照 P2 `poc-verify-ai` 命名），pipeline 用其真实 id；active=0 不被 SignalFeedRunner 加载、不计入 `max_signal_subscriptions` 资源数，用完随租户级联清理。
+- **位置**：[PocVerifyBillingCommand.php](../app/Console/Commands/PocVerifyBillingCommand.php)
+
+## 16. 一条 `bash -c` 里用 `&& ... &` 连启两个长驻进程：第二个在错误 cwd 启动即死
+
+- **现象**：`cd app && nohup market:feed > log & nohup queue:work > log &` 一条命令连启，5 秒后两个 pgrep 都能查到，几分钟后 worker 已死、日志文件根本没生成；期间投递的 2 个 Job 静默堆积。
+- **根因**：bash 中 `&&` 优先级高于 `&`，第一条被整体后台化在**子 shell** 里执行，其中的 `cd` 不影响父 shell；第二条 nohup 在 `$HOME` 启动，相对重定向路径不存在、且 `artisan` 不在 cwd，进程秒退。pgrep 早查恰好看到了退出中的命令行。
+- **处理**：每个长驻进程用**独立命令**启动（各自完整 `cd ~/trading_saas && nohup ... &`），启动后立刻 `pgrep` + `tail` 日志双确认；worker 晚起不丢任务——Redis 队列在其上线后把积压 Job 自动排空（本次 2 个任务各 1s 完成）。
+- **位置**：本节为运维流程坑，无代码变更
+
 ## 环境类备忘
 
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。

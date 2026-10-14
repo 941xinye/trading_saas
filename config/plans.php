@@ -10,6 +10,9 @@ return [
 
     'default_plan' => 'free',
 
+    // 订阅 past_due 后宽限天数；超过仍未续费 → tenant suspended（P3 状态机）
+    'past_due_grace_days' => env('BILLING_PAST_DUE_GRACE_DAYS', 3),
+
     'plans' => [
         'free' => [
             'name' => '免费版',

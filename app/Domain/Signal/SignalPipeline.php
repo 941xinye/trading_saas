@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Domain\Signal;
 
+use App\Domain\Billing\EntitlementException;
+use App\Domain\Billing\Metering\QuotaExceededException;
+use App\Domain\Billing\QuotaGuard;
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Signal\Contracts\AiUnavailableException;
 use App\Domain\Signal\Contracts\AIPrompter;
@@ -44,6 +47,7 @@ class SignalPipeline
         private readonly IndicatorCalculator $indicators,
         private readonly RuleEngineFallback $fallback,
         private readonly SignalDispatcher $dispatcher,
+        private readonly QuotaGuard $quotaGuard,
     ) {
     }
 
@@ -62,17 +66,40 @@ class SignalPipeline
         $indicatorSnapshot = $this->indicators->compute($historicalBars);
         $context = [
             'tenant_id' => $tenantId,
+            'subscription_id' => $subscriptionId,
             'historical_bars' => array_values($historicalBars),
             'indicators' => $indicatorSnapshot,
         ];
 
-        // ---- AI 主路（失败/不支持的 provider → 兜底分支） ----
+        // ---- AI 主路（权益失效/配额耗尽/AI 故障 → 兜底分支） ----
         $signal = null;
         $prompter = $this->resolvePrompter((string) ($subscription->ai_prompter ?? 'deepseek'));
 
-        if ($prompter !== null) {
+        $aiBlockedReason = null;
+        try {
+            $this->quotaGuard->assertEntitled($tenantId);
+        } catch (EntitlementException $e) {
+            $aiBlockedReason = 'entitlement_' . $e->getMessage();
+            Log::warning('租户权益失效，跳过 AI 走规则兜底', [
+                'tenant_id' => $tenantId,
+                'subscription_id' => $subscriptionId,
+                'reason' => $e->getMessage(),
+            ]);
+        }
+
+        if ($aiBlockedReason === null && $prompter !== null) {
             try {
                 $signal = $prompter->analyze($latestBar, $context);
+            } catch (QuotaExceededException $e) {
+                Log::warning('AI 日配额耗尽，走规则引擎兜底', [
+                    'tenant_id' => $tenantId,
+                    'subscription_id' => $subscriptionId,
+                    'provider' => $prompter->name(),
+                    'used' => $e->used,
+                    'limit' => $e->limit,
+                    'reason' => 'ai_quota_exhausted',
+                ]);
+                $signal = null;
             } catch (AiUnavailableException $e) {
                 Log::warning('AI 不可用，尝试规则引擎兜底', [
                     'tenant_id' => $tenantId,
@@ -82,7 +109,7 @@ class SignalPipeline
                 ]);
                 $signal = null;
             }
-        } else {
+        } elseif ($aiBlockedReason === null && $prompter === null) {
             Log::warning('订阅配置了不支持的 AI provider，走兜底', [
                 'tenant_id' => $tenantId,
                 'provider' => $subscription->ai_prompter ?? null,

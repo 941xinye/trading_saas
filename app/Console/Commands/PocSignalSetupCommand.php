@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Domain\Billing\EntitlementException;
+use App\Domain\Billing\Metering\QuotaExceededException;
+use App\Domain\Billing\QuotaGuard;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -28,7 +31,7 @@ class PocSignalSetupCommand extends Command
 
     protected $description = 'POC: create active signal subscription for tenant and probe DeepSeek connectivity';
 
-    public function handle(): int
+    public function handle(QuotaGuard $quotaGuard): int
     {
         $tenantId = (int) $this->option('tenant');
         $tenant = DB::table('tenants')->where('id', $tenantId)->first();
@@ -41,6 +44,36 @@ class PocSignalSetupCommand extends Command
         $symbols = array_filter(array_map('trim', explode(',', (string) $this->option('symbol'))));
         $intervals = array_filter(array_map('trim', explode(',', (string) $this->option('interval'))));
         $channels = array_filter(array_map('trim', explode(',', (string) $this->option('channel'))));
+
+        // ------------------------------------------------------------------
+        // P3 配额/权益门（更新既有订阅不受资源数限制；新建才计数）
+        // ------------------------------------------------------------------
+        $name = 'poc-signal-' . implode('-', $symbols);
+        $existing = DB::table('signal_subscriptions')->where('tenant_id', $tenantId)->where('name', $name)->first();
+        try {
+            $quotaGuard->assertEntitled($tenantId);
+            $quotaGuard->assertChannels($tenantId, array_values($channels));
+            if ($existing === null) {
+                $activeCount = (int) DB::table('signal_subscriptions')
+                    ->where('tenant_id', $tenantId)
+                    ->where('active', 1)
+                    ->count();
+                $quotaGuard->assertResourceCount($tenantId, 'max_signal_subscriptions', $activeCount);
+            }
+        } catch (EntitlementException $e) {
+            $this->error('订阅创建被权益拦截：' . $e->getMessage());
+
+            return self::FAILURE;
+        } catch (QuotaExceededException $e) {
+            $this->error(sprintf(
+                '订阅创建被套餐限额拦截：%s（当前 %d，上限 %d）',
+                $e->eventType,
+                $e->used,
+                $e->limit,
+            ));
+
+            return self::FAILURE;
+        }
 
         // ------------------------------------------------------------------
         // DeepSeek 连通性探测
@@ -61,7 +94,6 @@ class PocSignalSetupCommand extends Command
         // ------------------------------------------------------------------
         // 订阅 upsert（按 tenant+name 幂等）
         // ------------------------------------------------------------------
-        $name = 'poc-signal-' . implode('-', $symbols);
         $now = Carbon::now();
         $payload = [
             'symbols' => json_encode(array_values($symbols)),

@@ -29,14 +29,14 @@ class PlaceOrderJob implements ShouldQueue
 
     /**
      * 队列名：与下单链路解耦，避免和默认队列混用导致相互阻塞。
+     * Laravel 13 Queueable trait 自带 $queue，构造内 onQueue() 指定（坑 #10）。
      */
-    public $queue = 'orders';
-
     public function __construct(
         public readonly int $tenantId,
         public readonly int $instanceId,
         public readonly array $orderPayload,
     ) {
+        $this->onQueue('orders');
     }
 
     /**

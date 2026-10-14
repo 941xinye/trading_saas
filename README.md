@@ -144,12 +144,37 @@ WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
 
 **已知边界**：Telegram 渠道代码就绪，待 `TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID` 实测；POC 期 worker 手工 nohup 保活，正式期需 supervisor `autorestart`（见踩坑 #12）；信号周期暂固定 5m。
 
+### ✅ 已完成：P3 多租户计费 POC（2026-10-14）
+
+双租户隔离 + 两阶段配额 + 订阅状态机 + DEK 轮换离线/实跑双验证通过；本期不做支付网关/Filament 计费页/Invoice。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 套餐服务 | PlanService 读 `config/plans.php`：限额/渠道/策略白名单；**未知 plan_code 直接抛异常，不静默降级 free（防异常数据提权）**；`log` 系统渠道始终放行 | — |
+| 两阶段计量 | TwoPhaseMeter：Redis Lua 原子 check+INCR 热闸门（key `tenant:{tid}:meter:{event}:{UTC Ymd}`，TTL 2 天）+ meter_events 审计行（frozen→settled/reversed）；ref 幂等不双扣；`reconcile()` 丢 key 后从 DB 重建 | [踩坑 #13](docs/pitfalls.md) |
+| 统一门面 | QuotaGuard：`assertEntitled`（tenant 状态+订阅状态机+到期兜底）、`freezeDaily/settle/release`、资源数门槛、渠道/策略白名单 | — |
+| 订阅状态机 | SubscriptionService：provision（trial/active）→ 到期 refresh 转 past_due → 过宽限（默认 3 天，`BILLING_PAST_DUE_GRACE_DAYS`）suspended → 续费恢复；cancel 即拦截 | — |
+| AI 计费接线 | freeze 在 HTTP 前；**已应答（含 4xx/5xx/解析失败）settle 计费；连接未达（ConnectionException）reverse 还额；前置失败（未配 key/限流/配额耗尽）不占额**；耗尽/权益失效自动走 RuleEngineFallback | — |
+| 下单计费接线 | OrderExecutor：权益/日配额闸门在任何交易所动作之前；受理（new/partial/filled）settle；拒绝/异常/数量归零/落库失败 reverse；拒绝路径交易所零调用 | — |
+| 资源门 | `poc:signal-setup` / `poc:testnet-setup`：仅新建时校验账户/实例/订阅数上限与渠道/策略白名单，更新既有行不拦 | — |
+| DEK 轮换 | TenantKeyResolver::rotateDek：Redis 锁（token Lua 释放）+ 行锁事务，KEK 解旧 DEK→新 DEK 重加密全部账户密文→抽验+旧密文残留断言；停实例后轮换（非热轮换） | [踩坑 #13](docs/pitfalls.md) |
+| 队列上下文 | AiAnalyzeJob 内 `TenantContext::initialize` + finally clear（market:feed 协程进程仍铁律不初始化上下文，全部显式 tenant_id） | — |
+| POC 命令 | `poc:verify-billing`（62 项离线断言，含 10 进程抢 3 配额并发测试）/ `poc:billing-demo`（双租户实跑装配，`--status`/`--cleanup`） | [快速开始 §POC 验证](#poc-验证p3-多租户计费) |
+
+**实测结果**：
+
+- 离线断言 PASS：`php artisan poc:verify-billing` → **62/62**：套餐解析与防提权、两阶段/ref 幂等/reconcile、**10 进程并发抢 3 配额恰好 3 行 frozen**、订阅状态机全流转、配额耗尽 pipeline 0.04s 走兜底零 HTTP、下单拦截交易所零调用+失败冲正还额、资源/渠道门端到端拒绝与放行、DEK 轮换后新旧密文与跨租户零影响、TenantScope 双向不可见。
+- **双租户信号实跑 PASS（UTC 2026-10-14 01:11 5m 收盘）**：tenant#1 与 tenant#8(poc-billing) 的订阅共用同一条 Binance WS（`subscription_count=2`，按 symbol+interval 分组扇出），同一根 bar 各投一个 AiAnalyzeJob；DeepSeek 各应答一次，meter_events 各 1 行 `ai_call/settled`（ref 为各自 `subscription_id:openTime`），Redis 计数桶 `tenant:1:…=1` 与 `tenant:8:…=1` 独立互不串。
+- 无策略实例的租户只跑信号链路，避免第二网格共用同一 testnet key 互扰（策略实跑为可选 stretch）。
+
+**已知边界**：无支付网关，状态流转由管理动作/命令显式驱动；无 Invoice/Filament 计费页；DEK 轮换需停实例（非热轮换），轮换期间账户操作应停窗；refreshStatus 需挂每日调度（POC 手工触发）。
+
 ### 🚧 待实现：POC 路线图
 
 | 阶段 | 范围 | 验证目标 | 关键风险 |
 |---|---|---|---|
 | ~~**P2 AI 信号闭环**~~ ✅ | BarAggregator + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher（log 实测 / Telegram 待 token） | bar close → AI 分析 → Signal 落库 → 多渠道分发；AI 失败兜底 | 已验证：见上节 P2 实测结果 |
-| **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 | 两租户同跑策略，数据严格隔离；配额扣减 | 配额检查与下单的并发竞争（预冻结）；DEK 轮换 |
+| ~~**P3 多租户计费**~~ ✅ | PlanService + TwoPhaseMeter（Lua 原子闸门）+ QuotaGuard + SubscriptionService + DEK 轮换 | 双租户数据隔离；两阶段配额扣减；订阅状态机 | 已验证：62/62 离线断言 + 双租户同 WS 实跑（见上节） |
 | **P4 高级风控** | 4 维度 Rule 全实现 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏 → 熔断 → 通知 → HALF_OPEN → CLOSED/重置 | 回撤计算实时性；HALF_OPEN 并发安全 |
 | **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板展示 | 实时显示 BTC/ETH 大户爆仓密集区 | 强平流并发写入压力；历史数据缺失 |
 | **P6 扩展（可选）** | OKX/Bybit/Bitget Adapter + Custom DSL + ClickHouse | Adapter 抽象健壮性；DSL 引擎；分析层扩展 | — |
@@ -226,6 +251,22 @@ php artisan queue:work redis --queue=ai,notifications --tries=2      # AI 调用
 ```
 
 无 key 或 AI 故障时链路自动降级到 RuleEngineFallback，不影响运行；可选 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 开启 Telegram 渠道。**P2 信号铁律：只分析通知，不触发下单。**
+
+### POC 验证（P3 多租户计费）
+
+```bash
+# 1. 离线全链路断言（62 项，使用一次性租户 poc-verify-billing-a/b，自动清理；
+#    内含 10 个并发子进程，需允许 proc_open）
+php artisan poc:verify-billing
+
+# 2. 双租户信号实跑：建第二租户 poc-billing(free) + BTCUSDT/5m/log 订阅
+php artisan poc:billing-demo
+#    然后重启 market:feed 与 queue worker（构造依赖变更必须重启），等下一个 5m 整点：
+php artisan poc:billing-demo --status     # 查看双方 meter_events 与最近信号
+php artisan poc:billing-demo --cleanup    # 删除第二租户及其全部数据
+```
+
+注意：`poc:verify-billing` 会并发拉起 `php artisan poc:meter-freeze` 子进程（隐藏命令），Windows 原生 PHP 与 WSL PHP 均可跑，但请在实际运行长驻服务的一侧执行（本机 WSL），确保子进程连到同一 Redis。
 
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 

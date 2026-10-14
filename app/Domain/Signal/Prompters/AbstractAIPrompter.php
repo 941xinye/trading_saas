@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace App\Domain\Signal\Prompters;
 
+use App\Domain\Billing\Metering\QuotaExceededException;
+use App\Domain\Billing\QuotaGuard;
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\RateLimiter;
 use App\Domain\Signal\Contracts\AiUnavailableException;
 use App\Domain\Signal\Contracts\AIPrompter;
 use App\Domain\Signal\Contracts\Signal;
 use App\Domain\Signal\PromptBuilder;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
@@ -37,6 +40,7 @@ abstract class AbstractAIPrompter implements AIPrompter
     public function __construct(
         protected readonly RateLimiter $rateLimiter,
         protected readonly PromptBuilder $promptBuilder,
+        protected readonly QuotaGuard $quotaGuard,
     ) {
     }
 
@@ -45,9 +49,15 @@ abstract class AbstractAIPrompter implements AIPrompter
         $cfg = (array) config('ai.providers.' . $this->name());
         $tenantId = (int) ($context['tenant_id'] ?? 0);
 
+        // 两阶段计量：仅在「配置就绪 + 每分钟限流通过」后占额（这两类前置失败不扣配额）
+        $meter = null;
         try {
             $this->assertConfigured($cfg);
             $this->guardRateLimit($tenantId, $cfg);
+
+            // 日配额闸门（ref=订阅:闭合bar，Job 重试幂等不双扣）；超限直接上抛由管线兜底
+            $ref = sprintf('%d:%d', (int) ($context['subscription_id'] ?? 0), $latestBar->openTime);
+            $meter = $this->quotaGuard->freezeDaily($tenantId, 'ai_call', $ref);
 
             $historicalBars = (array) ($context['historical_bars'] ?? []);
             $indicators = (array) ($context['indicators'] ?? []);
@@ -81,10 +91,33 @@ abstract class AbstractAIPrompter implements AIPrompter
                 }
             }
 
-            return $this->toSignal($latestBar, $parsed);
+            $signal = $this->toSignal($latestBar, $parsed);
+            $this->quotaGuard->settle($meter);
+
+            return $signal;
+        } catch (QuotaExceededException $e) {
+            // 未拿到配额（无 meter 行），直接上抛，管线据此走规则兜底
+            throw $e;
+        } catch (ConnectionException $e) {
+            // 请求未到达/未应答（超时、断连）：配额冲正后兜底
+            if ($meter !== null) {
+                $this->quotaGuard->release($meter);
+            }
+            Log::error('AI 连接失败（未计费），转规则引擎兜底', [
+                'provider' => $this->name(),
+                'tenant_id' => $tenantId,
+                'symbol' => $latestBar->symbol,
+                'error' => $e->getMessage(),
+            ]);
+
+            throw new AiUnavailableException($e->getMessage(), (int) $e->getCode(), $e);
         } catch (AiUnavailableException $e) {
             throw $e;
         } catch (Throwable $e) {
+            // 已收到应答（含 4xx/5xx）或应答后解析失败：调用已发生，结算保留配额
+            if ($meter !== null) {
+                $this->quotaGuard->settle($meter);
+            }
             Log::error('AI 分析失败，转规则引擎兜底', [
                 'provider' => $this->name(),
                 'model' => $this->modelSafe(),

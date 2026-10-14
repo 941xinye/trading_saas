@@ -6,6 +6,7 @@ namespace App\Jobs;
 
 use App\Domain\Exchange\ExchangeManager;
 use App\Domain\Signal\SignalPipeline;
+use App\Domain\Tenancy\TenantContext;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -55,6 +56,18 @@ class AiAnalyzeJob implements ShouldQueue
     }
 
     public function handle(ExchangeManager $exchangeManager, SignalPipeline $pipeline): void
+    {
+        // Job 边界恢复租户上下文（TenantScope/计量落库在 worker 进程内按租户隔离）
+        TenantContext::initialize($this->tenantId);
+
+        try {
+            $this->execute($exchangeManager, $pipeline);
+        } finally {
+            TenantContext::clear();
+        }
+    }
+
+    private function execute(ExchangeManager $exchangeManager, SignalPipeline $pipeline): void
     {
         $subscription = DB::table('signal_subscriptions')
             ->where('id', $this->subscriptionId)
