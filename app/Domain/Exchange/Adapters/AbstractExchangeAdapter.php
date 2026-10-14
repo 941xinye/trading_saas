@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Domain\Exchange\Adapters;
 
 use App\Domain\Exchange\Contracts\ExchangeAdapter;
+use App\Domain\Exchange\Contracts\ExchangeOrder;
+use App\Domain\Exchange\Contracts\ExchangePosition;
 use App\Domain\Exchange\Exceptions\ExchangeApiException;
 use App\Domain\Exchange\ExchangeHealthChecker;
 use App\Domain\Exchange\RateLimiter;
@@ -34,8 +36,7 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
         protected readonly RateLimiter $rateLimiter,
         protected readonly ExchangeHealthChecker $healthChecker,
         protected readonly array $credentials = [], // ['api_key' => .., 'api_secret' => ..]
-    ) {
-    }
+    ) {}
 
     /**
      * 当前适配器对应的交易所代码（binance|okx|bybit|bitget）。
@@ -94,7 +95,7 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
             $query['timestamp'] = $this->currentTimestampMs();
             $query['recvWindow'] = (int) config('exchange.recv_window', 5000);
             $serialized = $this->buildQuery($query);
-            $signedPayload = $serialized . '&signature=' . $this->signQuery($serialized);
+            $signedPayload = $serialized.'&signature='.$this->signQuery($serialized);
         }
 
         $base = $this->restBaseUrl();
@@ -107,16 +108,16 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
 
             if ($signedPayload !== null) {
                 if ($method === 'GET') {
-                    $response = $request->send($method, $base . $path . '?' . $signedPayload);
+                    $response = $request->send($method, $base.$path.'?'.$signedPayload);
                 } else {
                     $response = $request
                         ->withBody($signedPayload, 'application/x-www-form-urlencoded')
-                        ->send($method, $base . $path);
+                        ->send($method, $base.$path);
                 }
             } else {
                 $response = $request->send(
                     $method,
-                    $base . $path,
+                    $base.$path,
                     $method === 'GET' ? ['query' => $query] : ['form_params' => $query],
                 );
             }
@@ -166,7 +167,7 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     /**
      * 稳定 query 序列化（按 key 升序，URL encode）。
      *
-     * @param array<string,mixed> $query
+     * @param  array<string,mixed>  $query
      */
     protected function buildQuery(array $query): string
     {
@@ -199,6 +200,16 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     }
 
     /**
+     * 按 clientOrderId 查单的默认实现：未支持该查询方式的交易所直接抛异常，
+     * 由崩溃恢复逻辑按「网络异常」保守处理（pending 保持阻塞）。
+     * BinanceSpot 已实装；其余交易所随对应策略落地时补。
+     */
+    public function getOrderByClientOrderId(string $symbol, string $clientOrderId): ?ExchangeOrder
+    {
+        throw new \RuntimeException(static::class.' does not support getOrderByClientOrderId');
+    }
+
+    /**
      * REST 基础 URL（testnet 开关自动切换）。
      */
     protected function restBaseUrl(): string
@@ -207,12 +218,12 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
         $cfg = "exchange.exchanges.{$code}.";
 
         if ($this->isTestnet()) {
-            $url = config($cfg . 'testnet_rest_url');
+            $url = config($cfg.'testnet_rest_url');
 
-            return is_string($url) && $url !== '' ? $url : config($cfg . 'rest_url');
+            return is_string($url) && $url !== '' ? $url : config($cfg.'rest_url');
         }
 
-        $url = config($cfg . ($this->market() === 'futures' ? 'futures_rest_url' : 'rest_url'));
+        $url = config($cfg.($this->market() === 'futures' ? 'futures_rest_url' : 'rest_url'));
 
         return is_string($url) ? $url : '';
     }
@@ -226,19 +237,19 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
         $cfg = "exchange.exchanges.{$code}.";
 
         if ($this->isTestnet()) {
-            $url = config($cfg . 'testnet_ws_url');
+            $url = config($cfg.'testnet_ws_url');
 
-            return is_string($url) && $url !== '' ? $url : config($cfg . 'ws_url');
+            return is_string($url) && $url !== '' ? $url : config($cfg.'ws_url');
         }
 
-        $url = config($cfg . ($this->market() === 'futures' ? 'futures_ws_url' : 'ws_url'));
+        $url = config($cfg.($this->market() === 'futures' ? 'futures_ws_url' : 'ws_url'));
 
         return is_string($url) ? $url : '';
     }
 
     private function isTestnet(): bool
     {
-        return (bool) config('exchange.exchanges.' . $this->exchangeCode() . '.testnet', false);
+        return (bool) config('exchange.exchanges.'.$this->exchangeCode().'.testnet', false);
     }
 
     // ------------------------------------------------------------------
@@ -248,7 +259,7 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     /**
      * 以新凭据克隆当前适配器（同配置、不同账户）。
      *
-     * @param array<string,string> $credentials
+     * @param  array<string,string>  $credentials
      */
     abstract public function withCredentials(array $credentials): static;
 
@@ -256,7 +267,7 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     // 默认实现：现货无持仓
     // ------------------------------------------------------------------
 
-    public function getPosition(string $symbol): ?\App\Domain\Exchange\Contracts\ExchangePosition
+    public function getPosition(string $symbol): ?ExchangePosition
     {
         return null;
     }

@@ -15,9 +15,11 @@ use App\Domain\Risk\Rules\ConsecutiveLossRule;
 use App\Domain\Risk\Rules\MaxDailyLossRule;
 use App\Domain\Risk\Rules\MaxDrawdownRule;
 use App\Domain\Risk\Rules\MaxLossPerTradeRule;
+use App\Domain\Strategy\Contracts\RecoverablePendingOrders;
 use App\Domain\Strategy\Contracts\StrategyContext;
 use App\Domain\Strategy\Contracts\StrategyInterface;
 use App\Domain\Strategy\Contracts\StrategyState;
+use App\Domain\Strategy\Recovery\PendingOrderRecovery;
 use App\Support\AesGcmCrypt;
 use App\Support\KeyResolver;
 use Illuminate\Support\Facades\DB;
@@ -54,13 +56,13 @@ class StrategyRunner
         private readonly OrderExecutor $executor,
         private readonly KeyResolver $keyResolver,
         private readonly AesGcmCrypt $crypt,
-    ) {
-    }
+        private readonly PendingOrderRecovery $pendingOrderRecovery,
+    ) {}
 
     /**
      * 启动指定实例集合的协程调度。
      *
-     * @param int[] $instanceIds strategy_instances.id 列表
+     * @param  int[]  $instanceIds  strategy_instances.id 列表
      */
     public function start(array $instanceIds): void
     {
@@ -138,7 +140,7 @@ class StrategyRunner
         if ((string) $account->encrypted_api_key === '' || $apiKey === null || $apiSecret === null) {
             throw new RuntimeException(
                 "Instance {$instanceId}: exchange account credentials empty or undecryptable. "
-                . 'For testnet POC, set EXCHANGE_TESTNET_KEY/SECRET then re-run poc:testnet-setup.'
+                .'For testnet POC, set EXCHANGE_TESTNET_KEY/SECRET then re-run poc:testnet-setup.'
             );
         }
 
@@ -170,6 +172,32 @@ class StrategyRunner
             }
         }
 
+        // 崩溃恢复增强（P5.5 步骤 1）：hydrate 后立即向交易所核实 pending 单。
+        // 阻塞 REST 仅发生在启动期（CURL hook 关闭，坑 #1），订阅行情前完成；
+        // filled 入账 / canceled/查无释放 / submitted 继续挂 / 网络异常保守保持阻塞。
+        if ($strategy instanceof RecoverablePendingOrders) {
+            $recoveryStats = $this->pendingOrderRecovery->recover(
+                $strategy,
+                $adapter,
+                $symbol,
+                $tenantId,
+                $instanceId,
+            );
+            try {
+                Redis::connection('default')->set(
+                    $stateKey,
+                    json_encode($strategy->getState()->toArray(), JSON_UNESCAPED_UNICODE),
+                );
+            } catch (Throwable $e) {
+                Log::warning('Recovery state write failed', [
+                    'instance' => $instanceId, 'error' => $e->getMessage(),
+                ]);
+            }
+            Log::info('Pending order recovery finished', [
+                'instance' => $instanceId] + $recoveryStats,
+            );
+        }
+
         // 风控装配：4 Rule + Redis 熔断状态机 + strategy_orders 重放恢复
         $defaults = (array) config('risk.defaults');
         $risk = new RiskGuard(
@@ -179,7 +207,7 @@ class StrategyRunner
                 new MaxDrawdownRule((string) ($defaults['max_drawdown']['threshold_value'] ?? 10)),
                 new ConsecutiveLossRule((int) ($defaults['consecutive_losses']['threshold_value'] ?? 5)),
             ],
-            new CircuitBreaker(new BreakerStateMachine(), $tenantId, $instanceId),
+            new CircuitBreaker(new BreakerStateMachine, $tenantId, $instanceId),
             (string) $instance->allocated_capital,
             $tenantId,
             $instanceId,
@@ -284,7 +312,7 @@ class StrategyRunner
     /**
      * 单信号执行：attach → 风控 → 下单 → onFill → recordTrade。
      *
-     * @param array{side:string,qty:string,price:?string} $signal
+     * @param  array{side:string,qty:string,price:?string}  $signal
      */
     private function executeSignal(
         string $action,

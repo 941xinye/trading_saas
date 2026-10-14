@@ -8,8 +8,8 @@ use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
 use App\Domain\Strategy\Base\AbstractStrategy;
+use App\Domain\Strategy\Contracts\RecoverablePendingOrders;
 use App\Domain\Strategy\Contracts\StrategyContext;
-use RuntimeException;
 
 /**
  * 现货网格策略（分层网格，P1 核心闭环实现）。
@@ -23,21 +23,25 @@ use RuntimeException;
  * 状态结构（positionSnapshot，持久化到 Redis）：
  *  - grid_step      每格价格步长
  *  - last_index     当前价格所在格索引（-1 = 区间下方，grid_count = 区间上方）
- *  - grids          {格索引: {qty, cost, pending}}  qty=持有 base 数量，cost=买入均价
+ *  - grids          {格索引: {qty, cost, pending, cid?}}  qty=持有 base 数量，cost=买入均价，cid=pending 买单 clientOrderId
  *  - position_qty   总持有数量
  *  - avg_cost       加权平均成本
  *
- * 崩溃恢复语义：restore 后 pending 格保持阻塞（不下单也不卖出），
- * 防止恢复后重复开单；真实持仓以 exchange getBalance 对账为准（P3 完善）。
+ * 崩溃恢复语义（P5.5 步骤 1 增强）：restore 后由 PendingOrderRecovery 对 pending
+ * 格携带的 cid 调 getOrderByClientOrderId 核实——filled 入账、canceled/查无释放、
+ * 查询异常保守保持阻塞；真实余额以 ReconciliationService 周期对账为准。
  *
  * 全部数量计算使用 bcmath（字符串），避免浮点误差。
  */
-class SpotGridStrategy extends AbstractStrategy
+class SpotGridStrategy extends AbstractStrategy implements RecoverablePendingOrders
 {
     private string $gridStep = '0';
+
     private int $lastIndex = -2;        // -2 = 未初始化（首 bar 不交易）
+
     private bool $hydrated = false;     // 崩溃快照是否已 hydrate 进内存（只能一次）
-    /** @var array<int,array{qty:string,cost:string,pending:bool}> */
+
+    /** @var array<int,array{qty:string,cost:string,pending:bool,cid?:string}> */
     private array $grids = [];
 
     /** @var array{side:string,qty:string,price:?string}|null onBar 产生的待执行信号 */
@@ -183,6 +187,58 @@ class SpotGridStrategy extends AbstractStrategy
             'qty' => $qty,
             'cost' => $last['cost'],
         ];
+
+        // pending 格快照携带 cid：崩溃后 PendingOrderRecovery 据此向交易所核实
+        $cell = $last['cell'];
+        if (($this->grids[$cell]['pending'] ?? false) === true) {
+            $this->grids[$cell]['cid'] = $clientOrderId;
+            $this->flushSnapshot();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // RecoverablePendingOrders（崩溃恢复 pending 单核实）
+    // ------------------------------------------------------------------
+
+    public function pendingClientOrderIds(): array
+    {
+        $this->hydrateFromSnapshot();
+
+        $cids = [];
+        foreach ($this->grids as $g) {
+            if (($g['pending'] ?? false) === true && ! empty($g['cid'])) {
+                $cids[] = (string) $g['cid'];
+            }
+        }
+
+        return $cids;
+    }
+
+    public function applyRecoveredOrder(ExchangeOrder $order): void
+    {
+        $this->hydrateFromSnapshot();
+
+        $cell = null;
+        foreach ($this->grids as $index => $g) {
+            if (($g['pending'] ?? false) === true && ($g['cid'] ?? '') === $order->clientOrderId) {
+                $cell = $index;
+                break;
+            }
+        }
+        if ($cell === null) {
+            return; // 无对应 pending 格（可能已被正常 onFill 处理），幂等忽略
+        }
+
+        if ($order->side === 'buy' && $order->status === 'filled') {
+            $qty = bccomp($order->filledQty, '0', 8) === 1 ? $order->filledQty : $order->quantity;
+            $cost = $order->avgFillPrice ?? '0';
+            $this->grids[$cell] = ['qty' => $qty, 'cost' => $cost, 'pending' => false];
+        } else {
+            // canceled/rejected/failed/查无此单：释放格位，后续 bar 可重新触发
+            unset($this->grids[$cell]);
+        }
+
+        $this->flushSnapshot();
     }
 
     /**
@@ -305,11 +361,15 @@ class SpotGridStrategy extends AbstractStrategy
         $this->lastIndex = (int) ($snap['last_index'] ?? -2);
         $this->grids = [];
         foreach ((array) ($snap['grids'] ?? []) as $cell => $g) {
-            $this->grids[(int) $cell] = [
+            $entry = [
                 'qty' => (string) ($g['qty'] ?? '0'),
                 'cost' => (string) ($g['cost'] ?? '0'),
                 'pending' => (bool) ($g['pending'] ?? false),
             ];
+            if (! empty($g['cid'])) {
+                $entry['cid'] = (string) $g['cid'];
+            }
+            $this->grids[(int) $cell] = $entry;
         }
     }
 }
