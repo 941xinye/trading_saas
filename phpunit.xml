@@ -4,12 +4,24 @@
          bootstrap="vendor/autoload.php"
          colors="true"
 >
+    <!--
+        分组约定（P5.5 步骤 0）：
+          default（无注解）：纯逻辑测试，无任何外部依赖（无 DB/Redis/网络），断网可跑。
+          @group redis     ：需要 Redis；服务不可用时测试自行 markTestSkipped（不得 error）。
+          @group mysql     ：仅在 DB_CONNECTION=mysql 下运行，sqlite 时 skip；验证 MySQL 方言/精度。
+          @group smoke     ：真实外部链路（testnet 下单/真实 AI/长驻进程），需 swoole/密钥/外网，
+                             CI 永远不跑，仅本机或 WSL 手工执行。
+        运行：php artisan test 可配合 group 参数只跑某组（如 group=redis）；未标注 group 的测试默认始终执行。
+    -->
     <testsuites>
         <testsuite name="Unit">
             <directory>tests/Unit</directory>
         </testsuite>
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
+        </testsuite>
+        <testsuite name="Integration">
+            <directory>tests/Integration</directory>
         </testsuite>
     </testsuites>
     <source>

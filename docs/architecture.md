@@ -12,7 +12,7 @@
 | API Key 加密 | AES-256-GCM（sodium） | 认证加密（AEAD），区别于 Laravel 默认的 CBC+HMAC；KEK→DEK→API Key 三段密钥层级 |
 | 熔断状态机 | CLOSED→OPEN→HALF_OPEN→CLOSED | 策略级四维度（单笔/日内/回撤/连亏），只暂停开新仓不平已有持仓 |
 | AI 降级 | LLM 失败→RuleEngineFallback（MA/RSI/MACD/Bollinger） | 信号链路必须持续，AI 不可用时兜底出确定性信号 |
-| 行情存储 | 实时 tick → Redis Sorted Set / 历史 K线 → MySQL（POC）→ ClickHouse（P4） | 写入频率分层：ms 级用 Redis，历史归档用列存 |
+| 行情存储 | 实时 tick → Redis Sorted Set / 历史 K线 → MySQL（当前）→ ClickHouse（P8 规划，尚未引入） | 写入频率分层：ms 级用 Redis，历史归档用列存 |
 | WS 推送 | Laravel Reverb（用户推送）+ 独立 Swoole 协程（交易所行情） | Reverb 复用广播认证体系；交易所行情不入 Reverb |
 
 ## 目录结构
@@ -22,26 +22,24 @@ app/
 ├── Domain/                     ← 领域模块（核心）
 │   ├── Tenancy/                ← 多租户基础设施
 │   ├── Exchange/               ← 交易所适配器
-│   ├── Strategy/                ← 策略引擎（7 种内置）
+│   ├── Strategy/                ← 策略引擎（SpotGrid 已实跑；SpotDca/合约 4 策略为骨架；Custom DSL 占位）
 │   ├── Signal/                  ← AI 信号订阅与分发
 │   ├── Risk/                    ← 熔断与风控（四维度）
-│   ├── Dashboard/               ← 首页面板 5 类数据聚合
 │   ├── Billing/                 ← 订阅计费（两阶段计量）
-│   ├── Notification/            ← 多渠道通知（Telegram/企微/邮件/WS）
-│   ├── Liquidation/             ← 大户爆仓聚类（Clusterer/MapService/FeedRunner）
-│   └── Market/                  ← 行情数据 Store
+│   ├── Notification/            ← 信号通知（Log/Telegram 渠道；企微/邮件仅风控占位）
+│   └── Liquidation/             ← 大户爆仓聚类（Clusterer/MapService/FeedRunner）
 ├── Http/
 │   ├── Middleware/BootstrapTenancy.php
 │   ├── Controllers/Api/V1/
 │   └── Resources/
 ├── Filament/{Admin,Platform}/   ← 两套 Filament 面板
-├── Jobs/ {PlaceOrder, CancelOrder, AiAnalyze, DispatchNotification, CloseBar}
-├── Events/ {BarClosed, SignalGenerated, OrderFilled, BreakerTripped}
-├── Console/Commands/ {MarketFeed, StrategyScheduler, AggregateKline, HealthCheck, OpenApiSpec, PerfBenchmark}
-├── Models/                      ← Eloquent（租户级表挂 BelongsToTenant）
+├── Jobs/ {PlaceOrder, CancelOrder, CloseBar, AiAnalyze, DispatchNotification, RiskNotification}
+├── Events/ {BarClosed, SignalGenerated, OrderFilled, BreakerTripped, BreakerAlert}
+├── Console/Commands/            ← 18 个命令（market:feed / 5×poc:verify / 5×poc 装配辅助 / risk:status+recover 等）
+├── Models/                      ← 18 个 Eloquent（租户级表挂 BelongsToTenant）
 └── Support/AesGcmCrypt.php     ← AES-256-GCM 封装
-config/ {exchange, strategy, ai, risk, plans, notifications, tenancy, octane, reverb, filament}.php
-database/migrations/            ← 18 张表
+config/ {exchange, strategy, ai, risk, plans, notifications, tenancy, liquidation, octane, reverb, filament}.php
+database/migrations/            ← 21 张表
 routes/ {api.php, channels.php, web.php}
 ```
 
@@ -56,6 +54,7 @@ routes/ {api.php, channels.php, web.php}
 | **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 + DEK 轮换 | 两租户同跑策略，数据严格隔离；配额扣减；订阅状态机 | ✅ 双验证 PASS（2026-10-14）：62/62 离线断言（含 10 进程抢 3 配额并发）+ 双租户同 WS 实跑 meter 独立 |
 | **P4 高级风控** | 4 维度 Rule 全实现 + 熔断状态机 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏→熔断→通知→冷却→HALF_OPEN→探测单→CLOSED/重置 | ✅ 全链路 PASS（2026-10-14）：35/35 离线断言（4 维度触发/HALF_OPEN 双路径/事件分发/4 渠道通知/跨日重置/崩溃恢复/去重/命令幂等）+ risk:status/risk:recover 命令验证 |
 | **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板展示 | 实时显示 BTC/ETH 大户爆仓密集区 | ✅ 离线 PASS（2026-10-14）：15/15 断言（DTO/聚类/Redis ZSET+HASH/三档窗口隔离/eviction/MapService）；真实 fstream 实跑阻塞于 WSL 对 Binance 主网网络不可达，命令保留待补测 |
+| **P5.5 上线前工程化加固** | 账实对账 + SpotDca 落地 + 测试迁入 PHPUnit/CI + supervisor/每日调度/海外节点 | 见 [P5.5 执行计划](p5.5-hardening-plan.md) 各子项验收标准 | 🚧 进行中：步骤 0（测试基建：分组/12 项样板断言/Actions 双 job）已于 2026-10-15 完成；步骤 1–4 待实现 |
 | **P6 多交易所 Adapter 扩展** | OKX/Bybit/Bitget 现货+合约 Adapter；统一错误码翻译表 | 三家 testnet 各跑通 1 笔市价单 + 1 路 WS 1m closed bar | 待实现（依赖 P1） |
 | **P7 Custom DSL 策略引擎** | YAML 声明式 entry/exit/filter/risk 四段 + 沙箱解释器 + Filament 编辑器 | 一条 DSL 装载后跑通 onBar→信号→下单；与 PHP 内置策略等价 | 待实现（依赖 P1, P2） |
 | **P8 ClickHouse 历史归档** | kline_bars/signals/orders/liquidation_events 迁 CH；冷热分层；HistoricalQuery 抽象 | 一周历史 K 线查询 < 500ms；迁移期业务零感知 | 待实现（依赖 P1, P5） |
