@@ -1,0 +1,26 @@
+; ---------------------------------------------------------------------------
+; 队列 worker：ai + notifications。
+;   ai            — AiAnalyzeJob（DeepSeek HTTP 调用，普通 PHP 进程，不摘 CURL hook）
+;   notifications — DispatchNotificationJob / RiskNotificationJob（Telegram 等外发）
+;
+; --max-time=3600：worker 每小时优雅退出由 supervisor 拉起，防止长连接/内存泄漏累积。
+; 安装步骤与日志轮转同 market-feed.conf.example 顶部说明。
+; ---------------------------------------------------------------------------
+
+[program:worker-ai]
+process_name=%(program_name)s_%(process_num)02d
+command=/usr/bin/php /var/www/crypto-saas/artisan queue:work --queue=ai,notifications --tries=3 --backoff=10 --sleep=3 --max-time=3600
+directory=/var/www/crypto-saas
+user=www-data
+numprocs=2
+autostart=true
+autorestart=true
+startsecs=5
+startretries=3
+stopwaitsecs=60
+stopsignal=TERM
+redirect_stderr=true
+stdout_logfile=/var/log/crypto-saas/worker-ai.log
+stdout_logfile_maxbytes=100MB
+stdout_logfile_backups=5
+environment=APP_ENV="production",APP_DEBUG="false"

@@ -1,0 +1,33 @@
+; ---------------------------------------------------------------------------
+; 进程 B：行情/交易协程容器（Swoole）。承载交易所 WS 订阅、K 线聚合、信号触发、
+; 策略下单闭环与大户强平流。必须安装 swoole 扩展；禁止在本进程内做阻塞 REST
+; （账实对账走 reconcile:run 调度，不放这里）。
+;
+; 安装：
+;   sudo cp market-feed.conf.example /etc/supervisor/conf.d/market-feed.conf
+;   # 修改其中的 /var/www/crypto-saas 与 PHP 二进制路径
+;   sudo supervisorctl reread && sudo supervisorctl update
+;
+; 日志轮转（supervisor 自身不 rotate，配 logrotate 或系统自带 rotatelogs）：
+;   /var/log/crypto-saas/market-feed.log { daily rotate 14 missingok
+;       notifempty copytruncate compress }
+; ---------------------------------------------------------------------------
+
+[program:market-feed]
+process_name=%(program_name)s
+command=/usr/bin/php /var/www/crypto-saas/artisan market:feed
+directory=/var/www/crypto-saas
+user=www-data
+numprocs=1
+autostart=true
+; kill -9 后 10 秒内自动拉起；崩溃循环保护：连续 startretries 次起不来转 FATAL 告警
+autorestart=true
+startsecs=10
+startretries=3
+stopwaitsecs=30
+stopsignal=TERM
+redirect_stderr=true
+stdout_logfile=/var/log/crypto-saas/market-feed.log
+stdout_logfile_maxbytes=100MB
+stdout_logfile_backups=5
+environment=APP_ENV="production",APP_DEBUG="false"

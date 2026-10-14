@@ -1,0 +1,27 @@
+; ---------------------------------------------------------------------------
+; 进程 A：HTTP 入口（Laravel Octane + Swoole）。只处理 HTTP/API/Filament 后台，
+; 不承载交易所长连接（那是进程 B market:feed），两进程通过 Redis + Queue 通信。
+;
+; 前置：composer require laravel/octane（已在 require）；php artisan octane:install
+; 已生成 config/octane.php；swoole 扩展与 market:feed 共用同一 PHP。
+; 反代：Nginx proxy_pass http://127.0.0.1:8000（TLS 在 Nginx 终止）。
+; 安装步骤与日志轮转同 market-feed.conf.example 顶部说明。
+; ---------------------------------------------------------------------------
+
+[program:octane]
+process_name=%(program_name)s
+command=/usr/bin/php /var/www/crypto-saas/artisan octane:start --server=swoole --host=127.0.0.1 --port=8000
+directory=/var/www/crypto-saas
+user=www-data
+numprocs=1
+autostart=true
+autorestart=true
+startsecs=10
+startretries=3
+stopwaitsecs=60
+stopsignal=TERM
+redirect_stderr=true
+stdout_logfile=/var/log/crypto-saas/octane.log
+stdout_logfile_maxbytes=100MB
+stdout_logfile_backups=5
+environment=APP_ENV="production",APP_DEBUG="false"

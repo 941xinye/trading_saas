@@ -19,9 +19,9 @@
 | 多租户 | 行级 tenant_id + BelongsToTenant Trait + TenantScope |
 | 鉴权 | Sanctum API Token |
 | WebSocket | Laravel Reverb（用户推送）+ 独立 Swoole 协程（交易所行情） |
-| 数据库 | MySQL 8.4（业务主库） + Redis（行情/状态/队列/限流） + ClickHouse（P4 历史归档） |
+| 数据库 | MySQL 8.4（业务主库） + Redis（行情/状态/队列/限流） + ClickHouse（P8 历史归档，当前未引入） |
 | AI 分析 | 抽象 AIPrompter + OpenAI/DeepSeek/Qwen/Ollama 适配器 + RuleEngineFallback 兜底 |
-| 交易所 | ExchangeAdapter 抽象 + Binance Spot/Futures + OKX/Bybit/Bitget（预留） |
+| 交易所 | ExchangeAdapter 抽象 + Binance 现货（完整实跑）/Binance 合约（仅强平流）+ OKX/Bybit/Bitget（骨架预留，P6 落地） |
 | 后台 | Filament 5.x 双面板（Platform 超管 / Admin 租户） |
 | 加密 | AES-256-GCM（libsodium）三段密钥层级 KEK → DEK → API Key |
 | 风控 | Circuit Breaker 四维度状态机（单笔/日内/回撤/连亏） |
@@ -51,23 +51,21 @@ app/
 ├── Domain/                     # 领域模块（核心）
 │   ├── Tenancy/                # 多租户基础设施
 │   ├── Exchange/               # 交易所适配器（ExchangeAdapter 接口 + DTO）
-│   ├── Strategy/                # 策略引擎（7 种内置策略 + StrategyInterface）
+│   ├── Strategy/                # 策略引擎（SpotGrid 已实跑；其余 5 策略为骨架；Custom DSL 占位）
 │   ├── Signal/                  # AI 信号（AIPrompter 接口 + RuleEngineFallback 兜底）
 │   ├── Risk/                    # 熔断风控（CircuitBreaker 状态机 + 4 维度 Rule）
-│   ├── Dashboard/               # 首页面板 5 类数据聚合
 │   ├── Billing/                 # 订阅计费（两阶段计量）
-│   ├── Notification/            # 多渠道通知（Telegram/企微/邮件/WS + 冷却去重）
-│   ├── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
-│   └── Market/                  # 行情数据 Store
+│   ├── Notification/            # 信号通知（Log/Telegram 渠道 + 冷却去重；企微/邮件仅风控链路占位）
+│   └── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
 ├── Http/                        # 中间件 + Controllers + Resources
 ├── Filament/{Admin,Platform}/   # Filament 两套面板
 ├── Jobs/                        # Queue Job（orders/ai/notifications/aggregation）
 ├── Events/                      # 领域事件
-├── Console/Commands/            # 6 个自定义 Artisan 命令
-├── Models/                      # Eloquent（租户级挂 BelongsToTenant）
+├── Console/Commands/            # 18 个 Artisan 命令（5 个 poc:verify + 5 个 poc 装配/辅助 + 8 个业务/运维）
+├── Models/                      # 18 个 Eloquent（租户级挂 BelongsToTenant）
 └── Support/AesGcmCrypt.php     # AES-256-GCM 封装
 config/                          # 8 个自定义 config（含 liquidation）
-database/migrations/            # 20 张表
+database/migrations/            # 21 张表
 routes/{api.php, channels.php}  # API 路由 + Reverb 频道授权
 ```
 
@@ -219,14 +217,53 @@ Binance 合约强平流 `!forceOrder@arr` 实时订阅 + Redis ZSET+HASH 聚类 
 ### 🚧 待实现：剩余路线图
 
 > P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 已完成，实测结果见上方对应区块。
+> **P5.5 上线前工程化加固代码侧已完成（2026-10-15）**——步骤 1–4 产物、三环境实测证据与待节点侧实跑清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md#执行结果与实测证据2026-10-15步骤-14-代码侧全部完成)。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 | 依赖 |
 |---|---|---|---|---|
+| **P5.5 上线前工程化加固 ✅ 代码侧完成** | ①账实对账（内存持仓 vs 交易所）②SpotDca 落地（free 套餐已售卖）③poc:verify-\* 断言迁入 PHPUnit（157 项三环境全绿）+ CI ④supervisor 样板 / billing+reconcile 调度 / 海外节点 runbook | 代码侧验收全过；testnet 真实成交/转出对账/强平 120 秒/supervisor kill -9/Actions 绿灯待节点与首次推送，清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md) | 资金安全基线、断言迁移回归面 | P1–P5 |
 | **P6 多交易所 Adapter 扩展** | OKX / Bybit / Bitget 三家现货+合约 Adapter 落地，复用 P1 BinanceSpotAdapter 范式（REST 签名/WS 订阅/错误码映射/testnet 切换）；统一错误码 → `ExchangeApiException` 翻译表 | 三家 testnet 各跑通 1 笔市价单 + 1 路 WS 1m closed bar；P1 `market:feed` 切换所代码 ≤10 行 | 各所 WS 协议差异（heartbeat/订阅格式/重连规则）、签名算法差异（OKX HMAC+passphrase、Bybit reversal key）、testnet 配额/可用性 | P1 |
 | **P7 Custom DSL 策略引擎** | YAML/TOML 声明式策略定义（entry/exit/filter/risk 四段）；DSL 解释器 + 沙箱执行；Filament 在线编辑器 + 回测预览 | 一条 DSL 装载后能跑通 onBar→信号→下单；与 PHP 内置策略语义等价 | DSL 表达力 vs 安全（禁 eval/exec/fs）、性能（每 bar 解释开销）、与 RiskGuard 接线 | P1, P2 |
 | **P8 ClickHouse 历史数据归档** | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
 | **P9 支付网关 + 计费 UI** | Stripe + 支付宝/微信 支付集成；Filament 计费页（套餐升级/Invoice/用量看板）；订阅状态机自动续费触发；webhook 幂等 | 完整一笔从下单→支付→订阅激活→配额刷新；续费失败走 P3 past_due→suspended 流程 | 支付回调幂等（同 ref 不双激活）、汇率/税额、地区合规 | P3 |
 | **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；策略绩效（Sharpe/最大回撤/胜率/盈亏比）；Filament 绩效页；与 P4 风控参数自动调优建议 | 一条 DSL 策略回测 1 年数据 < 30s；与 P1 实跑同策略净值曲线误差 < 1% | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
+
+### 🧾 技术债与已知边界汇总（截至 P5，2026-10-15 盘点）
+
+> 各阶段"已知边界"的统一索引，按风险分级；P5.5 优先处理第一类。
+
+**A. 资金 / 安全类（上线前必须解决）**
+
+| # | 欠债 | 来源 |
+|---|---|---|
+| A1 | ~~无账实对账~~ **P5.5 步骤 1 已还**：`reconcile:run/status` + `reconciliation_reports`（ok/drift/critical/unknown 四级，每 5 分钟调度；critical 自动暂停实例 `paused_by_reconcile` + 多渠道告警，**只报告不自动改账**）；testnet 转账检出 drift 待海外节点实跑 | P1 已知边界 |
+| A2 | ~~售卖能力超出代码~~ **P5.5 步骤 2 已还**：SpotDca 完整落地；套餐白名单硬闸门先查 `config('strategy.implemented')`，pro/free 仅保留已实装的 spot_grid/spot_dca，合约骨架策略全部摘出白名单 | P0/P1 盘点 |
+| A3 | ~~drawdown 缺真实净值口径~~ **P5.5 步骤 1 已产数据**：每次成功对账写 `balance_snapshots` 净值序列（算法切换留待后续；本期只产数据） | P4 已知边界 |
+| A4 | 合约策略为骨架且缺仓位级风控（杠杆/强平价/保证金监控）；现有熔断仅账户级 | P0/P5 盘点 |
+
+**B. 功能占位 / 未实测**
+
+| # | 占位项 | 当前行为 |
+|---|---|---|
+| B1 | ~~SpotDca 等 5 策略全抛异常~~ **P5.5 步骤 2：SpotDca 已实现并带 16 项测试**；FuturesGrid / FuturesDca / SmartMartingale / TrendRolling 仍为骨架，且已从套餐白名单摘除（不再"卖了不能用"），随合约阶段落地 | 方法体全部 `throw new RuntimeException('Not implemented')` |
+| B2 | Custom DSL（DslParser / DslStrategy） | parse/onBar/onTick 等全部抛异常，P7 落地 |
+| B3 | OKX / Bybit / Bitget Adapter | 仅覆写交易所代码，无 REST/WS 实现，P6 落地 |
+| B4 | BinanceFuturesAdapter 交易接口 | 仅实现 subscribeLiquidationStream，其余接口抛 LogicException |
+| B5 | 企微 / 邮件通知渠道 | 无 Channel 类；风控链路只落 `risk_notifications.status=failed` |
+| B6 | Telegram 渠道 | 代码就绪，未配 TELEGRAM_BOT_TOKEN/CHAT_ID 真实实测（信号 + 风控两处） |
+| B7 | Reverb 告警广播 | 事件已分发，缺前端 WebSocket 客户端订阅 `tenant.{tid}.alerts` |
+| B8 | P5 真实强平流 | 离线 15/15 已迁入 PHPUnit（`tests/*/Liquidation`，@redis）；**主网实跑待海外节点**——部署 runbook 与验收步骤已交付：[海外节点 Runbook](docs/overseas-node-runbook.md)，节点就绪后 `poc:liquidation-demo --duration=120` 即销此项 |
+
+**C. 工程 / 运维类**
+
+| # | 欠债 | 影响 |
+|---|---|---|
+| C1 | ~~无正式测试/CI~~ **P5.5 步骤 0+3 已还**：default/redis/mysql/smoke 分组 + GitHub Actions 双 job；154 项手工断言已全部迁移（150 项入 PHPUnit、5 项真实服务 smoke 保留于 poc 命令、1 项非断言丢弃，映射表见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)）；当前三环境实测 157 项全绿；Actions 绿灯待首次推送 | P6 多交易所后回归成本指数上升 |
+| C2 | ~~手工 nohup 保活~~ **P5.5 步骤 4 已交付**：[deploy/supervisor/](deploy/supervisor) 四样板（market-feed / worker-ai / worker-default / octane，autorestart + 轮转说明）；节点 kill -9 拉起验收待海外节点执行 | 进程退出无人拉起 |
+| C3 | ~~refreshStatus 未挂调度~~ **P5.5 步骤 4 已还**：`billing:refresh-status` 薄命令 + 每日 UTC 00:05 调度（`schedule:list` 可查，带流转测试） | past_due→suspended 需手工触发 |
+| C4 | DEK 轮换为非热轮换，需停实例 + 操作停窗 | 运维窗口期限制 |
+| C5 | REST 走阻塞 curl（Swoole hook 关闭 CURL，坑 #1） | 单实例可接受，多租户高密度需换协程 HTTP client |
+| C6 | 无支付网关 / Invoice / Filament 计费页 | 商业化前置，P9 |
 
 ## 快速开始
 
@@ -407,11 +444,34 @@ App\Models\User::create([
 | Admin 租户 | `/admin/login` | 租户级用户（tenant_id 非 null） |
 | API v1 | `/api/v1/dashboard` | Sanctum API Token |
 
-### 运行测试
+### 运行测试（P5.5 步骤 0 起正式化）
 
 ```bash
-php artisan test
+php artisan test                       # 全套：default 必跑，redis/mysql 组缺服务时自行 skip
+php artisan test --group=redis         # 只跑 @group redis（本机需 Redis：计量/聚合/风控/对账/通知去重等）
+php artisan test --group=mysql         # 只跑 @group mysql（需真实 MySQL，见下）
+php artisan test tests/Unit            # 纯逻辑组：不启动 Laravel/不连任何服务，断网可跑
 ```
+
+当前规模（P5.5 步骤 1–4 完成后，2026-10-15 本机实测）：Redis 在线 **157 passed / 3 skipped（mysql）/ 588 assertions**；Redis+MySQL 全停 **107 passed / 53 skipped**；MySQL 8.4 底库（排除 redis 组）**110 passed**。154 项旧 POC 断言迁移映射见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)。
+
+分组约定：
+
+| 组 | 依赖 | 服务不可用时 |
+|---|---|---|
+| default（无注解） | 无 | — 必须永远全绿 |
+| `@group redis` | 本机 Redis | markTestSkipped，不允许 error（trait `ChecksRedisAvailability`） |
+| `@group mysql` | `DB_CONNECTION=mysql` 指向真实 8.x | sqlite 下自动 skip |
+| `@group smoke` | swoole/密钥/外网 | CI 永不跑，仅本机或 WSL 手工 |
+
+mysql 组本机运行（测试库需预先建空库）：
+
+```powershell
+$env:DB_CONNECTION='mysql'; $env:DB_DATABASE='crypto_saas_test'
+php artisan test --group=mysql
+```
+
+CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.4 + Redis 的 SQLite job、PHP 8.4 + MySQL 8.4 + Redis 的 MySQL job），push main / PR 触发；`@group smoke` 不进 CI。
 
 ## 关键硬约束（架构决策）
 
@@ -432,6 +492,7 @@ php artisan test
 |---|---|
 | [完整架构方案](.trae/documents/币圈交易SaaS平台架构方案.md) | 11 节：技术选型/多租户/目录结构/数据库表/接口契约/熔断/面板聚合/POC 优先级/风险权衡 |
 | [架构总览](docs/architecture.md) | 核心决策速查 + 目录结构 + POC 路线图 |
+| [P5.5 工程化加固执行计划](docs/p5.5-hardening-plan.md) | 上线前还债：账实对账 / SpotDca / 测试正式化 / 运维化，含验收标准 |
 | [ADR-0001 双进程模型](docs/adr/0001-dual-process-model.md) | 为什么 Octane + 独立 Swoole |
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |

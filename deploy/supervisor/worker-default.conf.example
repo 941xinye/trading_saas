@@ -1,0 +1,27 @@
+; ---------------------------------------------------------------------------
+; 队列 worker：orders + aggregation + default。
+;   orders      — PlaceOrderJob / CancelOrderJob（交易所下单，幂等 clientOrderId）
+;   aggregation — CloseBarJob（1m bar 闭合）
+;   default     — 未显式指定队列的兜底任务
+;
+; 与 worker-ai 拆分：下单/聚合延迟不受 AI HTTP 慢调用影响。
+; 安装步骤与日志轮转同 market-feed.conf.example 顶部说明。
+; ---------------------------------------------------------------------------
+
+[program:worker-default]
+process_name=%(program_name)s_%(process_num)02d
+command=/usr/bin/php /var/www/crypto-saas/artisan queue:work --queue=orders,aggregation,default --tries=3 --backoff=10 --sleep=3 --max-time=3600
+directory=/var/www/crypto-saas
+user=www-data
+numprocs=2
+autostart=true
+autorestart=true
+startsecs=5
+startretries=3
+stopwaitsecs=60
+stopsignal=TERM
+redirect_stderr=true
+stdout_logfile=/var/log/crypto-saas/worker-default.log
+stdout_logfile_maxbytes=100MB
+stdout_logfile_backups=5
+environment=APP_ENV="production",APP_DEBUG="false"
