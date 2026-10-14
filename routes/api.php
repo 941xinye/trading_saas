@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\ExchangeAccountController;
+use App\Http\Controllers\Api\V1\LiquidationController;
 use App\Http\Controllers\Api\V1\RiskRuleController;
 use App\Http\Controllers\Api\V1\SignalController;
 use App\Http\Controllers\Api\V1\SignalSubscriptionController;
@@ -44,4 +45,8 @@ Route::middleware(['auth:sanctum', 'tenant'])
         // 风控规则
         Route::apiResource('risk-rules', RiskRuleController::class)
             ->parameters(['risk-rules' => 'rule']);
+
+        // P5：大户爆仓密集区（市场级数据，无 tenant_id 隔离）
+        Route::get('liquidation/map', [LiquidationController::class, 'map'])->name('liquidation.map');
+        Route::get('liquidation/recent', [LiquidationController::class, 'recent'])->name('liquidation.recent');
     });

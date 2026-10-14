@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Console\Commands;
 
+use App\Domain\Liquidation\LiquidationFeedRunner;
 use App\Domain\Signal\SignalFeedRunner;
 use App\Domain\Strategy\StrategyRunner;
 use Illuminate\Console\Command;
@@ -104,6 +105,10 @@ class MarketFeedCommand extends Command
                 // 仅订阅/聚合/投递，AI 慢调用在独立 queue worker（ai 队列）执行。
                 $this->info('Starting signal feed runner (active signal subscriptions)...');
                 app(SignalFeedRunner::class)->start();
+
+                // P5：大户爆仓流订阅（公开 fstream !forceOrder@arr → 聚类 + 落库 + 周期快照）。
+                $this->info('Starting liquidation feed runner (Binance fstream forceOrder@arr)...');
+                app(LiquidationFeedRunner::class)->start();
 
                 // 主协程保活；实例级动态启停 P2 接入（当前重启进程生效）
                 while (true) {

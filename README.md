@@ -57,6 +57,7 @@ app/
 │   ├── Dashboard/               # 首页面板 5 类数据聚合
 │   ├── Billing/                 # 订阅计费（两阶段计量）
 │   ├── Notification/            # 多渠道通知（Telegram/企微/邮件/WS + 冷却去重）
+│   ├── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
 │   └── Market/                  # 行情数据 Store
 ├── Http/                        # 中间件 + Controllers + Resources
 ├── Filament/{Admin,Platform}/   # Filament 两套面板
@@ -65,8 +66,8 @@ app/
 ├── Console/Commands/            # 6 个自定义 Artisan 命令
 ├── Models/                      # Eloquent（租户级挂 BelongsToTenant）
 └── Support/AesGcmCrypt.php     # AES-256-GCM 封装
-config/                          # 7 个自定义 config
-database/migrations/            # 18 张表
+config/                          # 8 个自定义 config（含 liquidation）
+database/migrations/            # 20 张表
 routes/{api.php, channels.php}  # API 路由 + Reverb 频道授权
 ```
 
@@ -190,13 +191,37 @@ WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
 
 **已知边界**：风控通知未走 NotifierChannel 契约（该契约绑定 Signal 对象，风控无 signal 概念）；telegram 渠道待配 TELEGRAM_BOT_TOKEN/CHAT_ID 实测；Reverb 广播需前端 WebSocket 客户端订阅 `tenant.{tid}.alerts` 频道；max_drawdown 的 balance_snapshots 对账待 P5+ 完善（当前从 strategy_orders 重放保守取值）。
 
+### ✅ 已完成：P5 大户爆仓数据（2026-10-14）
+
+Binance 合约强平流 `!forceOrder@arr` 实时订阅 + Redis ZSET+HASH 聚类 + 三档滑动窗口（5m/15m/60m）+ 0.1% 自适应桶宽 + Filament Widget + API；离线 15/15 全绿。真实 fstream 实跑阻塞于 WSL 出口网络对 Binance 主网不可达，命令保留待网络恢复补测。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 强平事件 DTO | LiquidationEvent readonly class：exchange/symbol/side/price/qty/valueUsd/tsMs/eid；`fromBinancePayload()` 解析 `o` 字段 | — |
+| 桶宽策略 | LiquidationBucketPolicy：0.1% 百分比桶宽从 `config/liquidation.php` 读（BTC=60/ETH=3/SOL=0.2），bucketIndex/center/range 纯函数 | — |
+| 聚类器 | LiquidationClusterer：Redis ZSET（score=ts_ms,member=eid）+ HASH（bucket→qty/count）+ eid 反向索引；ingest pipeline 批量、evictExpired 反减负值清空桶、snapshot 按 total_qty desc | [踩坑 #21](docs/pitfalls.md) |
+| MapService | LiquidationMapService::query：返回 topN 密集区含 distance_pct（正=上方/负=下方） | — |
+| FeedRunner | LiquidationFeedRunner：仿 SignalFeedRunner 协程范式；订阅 symbols = strategy_instances ∪ signal_subscriptions（空集默认 BTC/ETH）；onLiquidation 落库 liquidation_events + 三档 ingest；每 60s 快照写 liquidation_clusters | — |
+| 合约 Adapter | BinanceFuturesAdapter：仅实现 subscribeLiquidationStream（单流 `/ws/!forceOrder@arr`），其余接口抛 LogicException 防范围蔓延；覆写 `wsBaseUrl()` 强制主网 fstream | [踩坑 #22](docs/pitfalls.md) |
+| 面板/接口 | LiquidationMapWidget（Filament v3 Livewire，10s 轮询）+ `GET /api/v1/liquidation/map` + `GET /api/v1/liquidation/recent` | [踩坑 #20](docs/pitfalls.md) |
+| POC 命令 | `poc:verify-liquidation`（15 项离线断言）/ `poc:liquidation-demo`（连真实 fstream N 秒，当前阻塞于网络） | [快速开始 §POC 验证](#poc-验证p5-大户爆仓数据) |
+| 实测沉淀 | 4 条新踩坑（Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl testnet 覆盖、WSL 主网网络不可达） | [踩坑记录](docs/pitfalls.md) |
+
+**实测结果**：
+
+- 离线断言 PASS：`php artisan poc:verify-liquidation` → **15/15 ALL CHECKS PASSED**：DTO 解析 + value_usd、0.1% 桶宽边界、ingest 单条/批量、snapshot 结构与排序、HASH bucket qty 一致性、eviction 空桶清理 + ZCARD 减少、window/side/symbol 隔离、MapService topN + distance_pct 正负号。
+- Migration PASS：`liquidation_events`（symbol+event_ts / symbol+side+event_ts / exchange_code+event_ts 三索引）+ `liquidation_clusters`（unique exchange+symbol+side+window+bucket_center+snapshot_ts）两张表创建成功。
+- Filament Widget 正确注册到 Platform Dashboard（`getWidgets()` 追加 LiquidationMapWidget::class）。
+- API 路由 `/api/v1/liquidation/map` + `/api/v1/liquidation/recent` 接入 `auth:sanctum + tenant` 中间件栈。
+
+**已知边界**：真实 fstream 实跑阻塞于 WSL 出口网络对 Binance 主网（fstream.binance.com / api.binance.com）不可达（ECONNREFUSED），testnet 端点可达——离线断言已覆盖全部核心逻辑（DTO/聚类/Redis 数据结构/三档窗口/eviction/MapService），网络恢复后 `poc:liquidation-demo --duration=120` 可随时补测；Reverb 广播爆仓密集区、多交易所强平流、ClickHouse 历史归档留待后续迭代。
+
 ### 🚧 待实现：剩余路线图
 
-> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 已完成，实测结果见上方对应区块。
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 已完成，实测结果见上方对应区块。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 |
 |---|---|---|---|
-| **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板 LiquidationMap 接线 | 实时显示 BTC/ETH 大户爆仓密集区与挂单带 | 强平流并发写入压力；历史数据缺失；与策略层联动语义 |
 | **P6 扩展（可选）** | OKX/Bybit/Bitget Adapter 落地 + Custom DSL 引擎 + ClickHouse 历史归档 | Adapter 抽象跨所健壮性；DSL 自定义策略可装载；分析层迁移到列存 | 各所 WS 协议差异；DSL 安全沙箱；ClickHouse 迁移窗口 |
 
 ## 快速开始
@@ -303,6 +328,22 @@ php artisan risk:recover {instanceId}
 
 `poc:verify-risk` 覆盖 12 组场景共 35 项断言：4 维度 Rule 独立触发（单笔 2%/日内 5%/回撤 10%/连亏 5 次）、HALF_OPEN 探测亏损 re-trip / 盈利 recover 双路径、BreakerTripped 事件 trip/recover 分发计数、4 渠道 risk_notifications 落库（log=sent / wechat_work/mail=failed）、跨日 resetDaily、崩溃恢复 lastTradeDate 从 Redis 注入后跨日回写、DedupCooldown 15 分钟去重、risk:recover 命令幂等。
 
+### POC 验证（P5 大户爆仓数据）
+
+```bash
+# 1. 离线全链路断言（15 项：DTO/聚类/Redis ZSET+HASH/三档窗口隔离/eviction/MapService）
+#    使用一次性 symbol POCVERIFYBTCUSDT/POCVERIFYETHUSDT，自动清理 Redis fixtures
+php artisan poc:verify-liquidation
+
+# 2. （可选）连真实 Binance 合约强平流 N 秒，每 10s 输出统计 + top 3 密集区
+#    需 WSL 出口网络对 fstream.binance.com 主网可达（本机当前不可达，见踩坑 #23）
+php artisan poc:liquidation-demo --duration=120
+```
+
+`poc:verify-liquidation` 覆盖 15 项断言：LiquidationEvent DTO 解析与 value_usd、0.1% 桶宽边界、ingest 单条/批量、snapshot 结构与排序、HASH bucket qty 一致性、eviction 空桶清理 + ZCARD 减少、window/side/symbol 隔离、MapService topN + distance_pct 正负号。
+
+真实流实跑 `poc:liquidation-demo` 需要 WSL 出口对 `fstream.binance.com:443` 可达；当前开发机出口被 Binance 主网封禁（testnet 端点可达但合约强平流只在主网），离线断言已覆盖全部核心逻辑，网络恢复后可随时补测。
+
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 
 Swoole 官方不支持 Windows 原生运行，本机已采用 **WSL2 + Ubuntu 22.04** 方案，`market:feed`（进程 B）跑在 WSL 内，通过 NAT 网关回连 Windows 侧 ServBay 的 MySQL / Redis：
@@ -391,7 +432,7 @@ php artisan test
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
-| [踩坑记录](docs/pitfalls.md) | P1/P2/P3/P4 实测踩坑 19 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁等）持续追加 |
+| [踩坑记录](docs/pitfalls.md) | P1/P2/P3/P4/P5 实测踩坑 23 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达等）持续追加 |
 
 ## 安全说明
 

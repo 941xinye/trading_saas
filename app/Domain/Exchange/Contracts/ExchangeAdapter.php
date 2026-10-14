@@ -103,7 +103,7 @@ interface ExchangeAdapter
     /**
      * 订阅大户爆仓流（如 Binance forceOrder@arr）。
      *
-     * @param callable(array):void $onLiquidation  爆仓事件回调，载荷结构由 Adapter 统一
+     * @param callable(LiquidationEvent):void $onLiquidation 强平事件回调（Adapter 已归一化为 DTO）
      */
     public function subscribeLiquidationStream(callable $onLiquidation): string;
 }

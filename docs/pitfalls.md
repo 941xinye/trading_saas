@@ -149,6 +149,37 @@
 - **处理**：从 BreakerAlert 移除 `InteractsWithSockets` trait，仅保留 `use Dispatchable;`（P4 广播不需要 socket 排除功能）；broadcastOn() 直接返回 PrivateChannel。
 - **位置**：[BreakerAlert.php](../app/Events/BreakerAlert.php)
 
+## 20. Filament Widget `$view` 父类声明非 static，子类不能改 static
+
+- **现象**：`Error: Cannot redeclare non static Filament\Widgets\Widget::$view as static App\Filament\Platform\Widgets\LiquidationMapWidget::$view`。
+- **根因**：Filament v5 父类 `Widget` 声明 `protected string $view`（实例属性），子类声明成 `protected static string $view` 与父类定义冲突（PHP 不允许子类把实例属性改为 static）。
+- **处理**：子类改为 `protected string $view = 'filament.platform.widgets.liquidation-map'`（非 static），与父类声明形态一致。
+- **位置**：[LiquidationMapWidget.php](../app/Filament/Platform/Widgets/LiquidationMapWidget.php)
+- **教训**：覆写框架基类属性时先看父类声明形态（static/非 static、可见性），子类必须严格对齐，否则 PHP 8.3+ 直接 fatal。
+
+## 21. phpredis `zAdd` 签名是 `($key, $score, $member)`，不是 predis 的 `($key, [$member => $score])`
+
+- **现象**：`Redis::zAdd() expects at least 3 arguments, 2 given`。
+- **根因**：Laravel Redis facade 默认走 phpredis connector，`zAdd($key, $score, $member, ...)` 是可变参展平形态；predis 风格 `zAdd($key, [$member => $score])`（关联数组）在 phpredis 下被当作单个 array 参数，参数数=2 不满足 ≥3 的要求。坑 13 同源（Laravel 连接层签名不等于客户端原生签名）。
+- **处理**：统一用 `Redis::zadd($zsetKey, (float) $e->tsMs, $eid)`（phpredis 形态）；涉及批量 zAdd 改用 pipeline 逐条 zAdd 或展平成 `zadd($key, $s1, $m1, $s2, $m2, ...)`。
+- **位置**：[LiquidationClusterer.php](../app/Domain/Liquidation/LiquidationClusterer.php)
+- **教训**：Laravel Redis facade 同时支持 phpredis/predis 两种 connector，写 Redis 调用前确认 `.env` 的 `REDIS_CLIENT`，按对应客户端签名写；关联数组形态只对 predis 成立。
+
+## 22. BinanceFuturesAdapter 必须覆写 `wsBaseUrl()` 强制主网：testnet 现货 WS 不支持合约强平流
+
+- **现象**：`poc:liquidation-demo` 启动即 `WS upgrade failed: stream.testnet.binance.vision:9443/ws/!forceOrder@arr err=104`。
+- **根因**：父类 `AbstractExchangeAdapter::wsBaseUrl()` 检测 `config('exchange.exchanges.binance.testnet')=true` 时返回现货 testnet URL（`wss://stream.testnet.binance.vision/ws`）；但 `!forceOrder@arr` 是**合约**强平流，testnet 现货 WS 根本没有这个 stream，upgrade 被拒。testnet 开关是为现货 P1 下单闭环设的，不能让合约流订阅复用。
+- **处理**：BinanceFuturesAdapter 覆写 `wsBaseUrl()`，强制返回主网 `wss://fstream.binance.com/ws`（读 `config('exchange.exchanges.binance.futures_ws_url')`，缺省回退硬编码主网）——合约公共流无需凭据，主网直连。
+- **位置**：[BinanceFuturesAdapter.php](../app/Domain/Exchange/Adapters/BinanceFuturesAdapter.php)
+- **教训**：同一交易所的现货/合约 endpoint 不同（binance: stream.binance.com vs fstream.binance.com），testnet 端点更不通用；Adapter 按市场分支时，每个市场的 WS/REST base URL 都要独立配置，不能让父类的 testnet 现货开关影响合约主网流。
+
+## 23. WSL 出口网络对 Binance 主网端点不可达（testnet 可达）
+
+- **现象**：`poc:liquidation-demo` 覆写 `wsBaseUrl()` 用主网后，`WS upgrade failed: fstream.binance.com:443/ws/!forceOrder@arr err=111`（ECONNREFUSED）；`api.binance.com:443` 同样 refused。但 `stream.testnet.binance.vision:9443` / `testnet.binance.vision:443` / `github.com:443` 均可通。
+- **排查**：`nslookup fstream.binance.com → 199.59.148.8`，`nc 199.59.148.8 443/9443` 均 Connection refused，说明不是 DNS 污染而是 IP/端口层被拦。出口公网 IP 112.49.194.245（动态宽带）可能被 Binance 主网地理封禁，或 ISP 层封禁 Binance 主网 IP 段。
+- **处理**：P5 接受离线 POC 15/15 PASS 作为验证通过，跳过真实 fstream 实跑；`poc:liquidation-demo` 命令保留，网络恢复后随时可补测。
+- **教训**：国内开发机访问 Binance 主网端点不稳定（testnet 通常放行，主网常被封）；依赖主网公共流的 POC 要准备好离线断言 + 真实流两条验证路径，网络阻塞时离线断言仍能证明核心逻辑正确；正式部署需配置代理或部署在境外节点。
+
 ## 环境类备忘
 
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。
