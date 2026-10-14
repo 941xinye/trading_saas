@@ -169,15 +169,15 @@ WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
 
 **已知边界**：无支付网关，状态流转由管理动作/命令显式驱动；无 Invoice/Filament 计费页；DEK 轮换需停实例（非热轮换），轮换期间账户操作应停窗；refreshStatus 需挂每日调度（POC 手工触发）。
 
-### 🚧 待实现：POC 路线图
+### 🚧 待实现：剩余路线图
+
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 已完成，实测结果见上方对应区块。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 |
 |---|---|---|---|
-| ~~**P2 AI 信号闭环**~~ ✅ | BarAggregator + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher（log 实测 / Telegram 待 token） | bar close → AI 分析 → Signal 落库 → 多渠道分发；AI 失败兜底 | 已验证：见上节 P2 实测结果 |
-| ~~**P3 多租户计费**~~ ✅ | PlanService + TwoPhaseMeter（Lua 原子闸门）+ QuotaGuard + SubscriptionService + DEK 轮换 | 双租户数据隔离；两阶段配额扣减；订阅状态机 | 已验证：62/62 离线断言 + 双租户同 WS 实跑（见上节） |
-| **P4 高级风控** | 4 维度 Rule 全实现 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏 → 熔断 → 通知 → HALF_OPEN → CLOSED/重置 | 回撤计算实时性；HALF_OPEN 并发安全 |
-| **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板展示 | 实时显示 BTC/ETH 大户爆仓密集区 | 强平流并发写入压力；历史数据缺失 |
-| **P6 扩展（可选）** | OKX/Bybit/Bitget Adapter + Custom DSL + ClickHouse | Adapter 抽象健壮性；DSL 引擎；分析层扩展 | — |
+| **P4 高级风控** | 4 维度 Rule 全实现（单笔/日内/回撤/连亏）+ HALF_OPEN 探测 + 自动恢复窗口 + BreakerTripped 事件分发 | 模拟连亏 → 熔断 → 通知 → 冷却 → HALF_OPEN 探测单 → CLOSED/重置 | 回撤计算实时性；HALF_OPEN 并发安全；探测单与正常策略调度解耦 |
+| **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板 LiquidationMap 接线 | 实时显示 BTC/ETH 大户爆仓密集区与挂单带 | 强平流并发写入压力；历史数据缺失；与策略层联动语义 |
+| **P6 扩展（可选）** | OKX/Bybit/Bitget Adapter 落地 + Custom DSL 引擎 + ClickHouse 历史归档 | Adapter 抽象跨所健壮性；DSL 自定义策略可装载；分析层迁移到列存 | 各所 WS 协议差异；DSL 安全沙箱；ClickHouse 迁移窗口 |
 
 ## 快速开始
 
@@ -356,7 +356,7 @@ php artisan test
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
-| [踩坑记录](docs/pitfalls.md) | P1 POC 实测坑（Swoole/Guzzle/协程/PSR-4）持续追加 |
+| [踩坑记录](docs/pitfalls.md) | P1/P2/P3 实测踩坑 16 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换等）持续追加 |
 
 ## 安全说明
 
