@@ -9,7 +9,11 @@ use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
 use App\Domain\Exchange\Exceptions\ExchangeApiException;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
+use Swoole\Coroutine;
+use Swoole\Coroutine\Http\Client as WsClient;
+use Throwable;
 
 /**
  * Bitget 现货适配器（V2 API）。
@@ -406,12 +410,305 @@ class BitgetAdapter extends AbstractExchangeAdapter
         callable $onBar,
         ?callable $onTick = null,
     ): string {
-        throw new \LogicException('Bitget subscribeKlineStream is implemented in US2.');
+        $channel = $this->toBitgetCandleChannel($interval);
+        $subscriptionId = 'bitget-spot-'.(++$this->subCounter).'-'.uniqid();
+
+        $cid = Coroutine::create(function () use ($symbol, $channel, $interval, $subscriptionId, $onBar, $onTick): void {
+            $backoff = (int) config('exchange.ws_reconnect.initial_delay', 1);
+            $maxBackoff = (int) config('exchange.ws_reconnect.max_delay', 60);
+            $heartbeatTimeout = (int) config('exchange.ws_reconnect.heartbeat_timeout', 30);
+
+            while (true) {
+                // constitution III 坑2：cancel 非 sticky——每分支显式检查并 return
+                if (Coroutine::isCanceled()) {
+                    return;
+                }
+
+                try {
+                    $this->runKlineWsLoop($symbol, $channel, $interval, $onBar, $onTick, $heartbeatTimeout);
+                    $backoff = 1; // 正常退出（不预期）重置退避
+                } catch (Coroutine\CancelException) {
+                    return;
+                } catch (Throwable $e) {
+                    // 取消后不再重连（坑2）
+                    if (Coroutine::isCanceled()) {
+                        return;
+                    }
+                    Log::warning('Bitget kline WS disconnected, reconnecting', [
+                        'subscription' => $subscriptionId,
+                        'channel' => $channel,
+                        'instId' => $symbol,
+                        'error' => $e->getMessage(),
+                        'backoff' => $backoff,
+                    ]);
+                }
+
+                if (Coroutine::isCanceled()) {
+                    return;
+                }
+
+                // 指数退避 1s→2s→4s…上限 60s
+                Coroutine::sleep($backoff);
+
+                if (Coroutine::isCanceled()) {
+                    return;
+                }
+
+                $backoff = min($backoff * 2, $maxBackoff);
+            }
+        });
+
+        $this->subscriptions[$subscriptionId] = [
+            'cid' => $cid,
+            'channel' => $channel,
+            'symbol' => $symbol,
+        ];
+
+        return $subscriptionId;
     }
 
     public function unsubscribeStream(string $subscriptionId): void
     {
-        throw new \LogicException('Bitget unsubscribeStream is implemented in US2.');
+        $sub = $this->subscriptions[$subscriptionId] ?? null;
+
+        if ($sub === null) {
+            return; // 幂等：未知 id 静默返回（镜像前三家范式）
+        }
+
+        unset($this->subscriptions[$subscriptionId]);
+
+        if (Coroutine::exists($sub['cid'])) {
+            Coroutine::cancel($sub['cid']);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // WS kline 流内部（US2）
+    // ------------------------------------------------------------------
+
+    /**
+     * kline WS 单连接事件循环（subscribeKlineStream 协程内调用）。
+     *
+     * Bitget V2 公共流（wss://ws.bitget.com/v2/ws/public，R-001 已核实）：
+     *  - 订阅帧 args 为对象数组 [{"instType":"SPOT","channel":"candle1m","instId":"BTCUSDT"}]
+     *  - 心跳：客户端每 25s 发文本帧字符串 ping，服务端回文本帧 pong（非 JSON op 帧，
+     *    与 OKX/Bybit JSON op 帧心跳不同，R-006/analyze F5 定值 25s）
+     *  - 推送帧：{action:"snapshot"|"update", arg:{...}, data:[[ts,O,H,L,C,baseVol,quoteVol]], ts}
+     *
+     * 每分支显式 Coroutine::isCanceled() 检查（constitution III 坑2）。
+     */
+    private function runKlineWsLoop(
+        string $symbol,
+        string $channel,
+        string $interval,
+        callable $onBar,
+        ?callable $onTick,
+        int $heartbeatTimeout,
+    ): void {
+        $url = (string) config('exchange.exchanges.bitget.ws_url');
+        $parts = parse_url($url);
+        if ($parts === false || ! isset($parts['host'])) {
+            throw new \RuntimeException("Invalid Bitget WS URL: {$url}");
+        }
+
+        $ssl = ($parts['scheme'] ?? 'wss') === 'wss';
+        $host = $parts['host'];
+        $port = (int) ($parts['port'] ?? ($ssl ? 443 : 80));
+        $path = ($parts['path'] ?? '/v2/ws/public');
+
+        $client = new WsClient($host, $port, $ssl);
+        // 1s 短超时轮询：心跳定时与取消检查得以周期执行（镜像前三家范式）
+        $client->set(['timeout' => 1]);
+
+        if (! $client->upgrade($path)) {
+            throw new \RuntimeException("Bitget WS upgrade failed: {$host}:{$port}{$path} err={$client->errCode}");
+        }
+
+        // 连接成功后立即发送订阅帧（args 对象数组——与 Bybit 字符串数组不同，R-006）
+        $client->push(json_encode([
+            'op' => 'subscribe',
+            'args' => [
+                ['instType' => 'SPOT', 'channel' => $channel, 'instId' => $symbol],
+            ],
+        ], JSON_UNESCAPED_SLASHES));
+
+        // bar 切换检测状态（R-006）：lastBarOpenTime + 上一 bar 缓存
+        $state = ['lastBarOpenTime' => null, 'lastBar' => null];
+        $lastPingAt = microtime(true);
+        $lastAliveAt = microtime(true);
+
+        while (true) {
+            if (Coroutine::isCanceled()) {
+                return;
+            }
+
+            $frame = $client->recv(1.0);
+            if ($frame === false) {
+                $now = microtime(true);
+
+                // 文本帧 ping 心跳（R-006 定值 25s）
+                if ($now - $lastPingAt >= 25) {
+                    $client->push('ping');
+                    $lastPingAt = $now;
+                }
+
+                // 超时未收到任何帧（含 pong）：抛异常触发上层重连
+                if ($now - $lastAliveAt >= $heartbeatTimeout) {
+                    throw new \RuntimeException(
+                        "Bitget WS heartbeat timeout ({$heartbeatTimeout}s) or disconnect: err={$client->errCode}",
+                    );
+                }
+
+                continue;
+            }
+
+            // 任意帧（含 pong）证明链路存活
+            $lastAliveAt = microtime(true);
+
+            if ($frame->opcode !== WEBSOCKET_OPCODE_TEXT || $frame->data === null || $frame->data === '') {
+                continue;
+            }
+
+            $payloadRaw = (string) $frame->data;
+
+            // 文本帧心跳：客户端 ping 的应答 pong / 服务端主动 ping 需回 pong（Bitget 特有）
+            if ($payloadRaw === 'pong') {
+                continue;
+            }
+            if ($payloadRaw === 'ping') {
+                $client->push('pong');
+
+                continue;
+            }
+
+            $payload = json_decode($payloadRaw, true);
+            if (! is_array($payload)) {
+                continue;
+            }
+
+            // 数据推送须含非空 data；订阅确认帧 {event:"subscribe"} 等无 data 跳过
+            $data = $payload['data'] ?? null;
+            if (! is_array($data) || $data === []) {
+                continue;
+            }
+
+            $action = (string) ($payload['action'] ?? '');
+
+            foreach ($data as $row) {
+                if (Coroutine::isCanceled()) {
+                    return;
+                }
+
+                $result = $this->processKlineFrame(
+                    (array) $row,
+                    $action,
+                    $symbol,
+                    $interval,
+                    $state,
+                );
+                $state = $result['state'];
+
+                if ($result['closedBar'] !== null) {
+                    $onBar($result['closedBar']);
+                } elseif ($result['liveBar'] !== null && $onTick !== null) {
+                    // 未闭 bar 更新：用 close 近似 lastPrice（镜像前三家 onTick 范式）
+                    $live = $result['liveBar'];
+                    $onTick(new ExchangeTicker(
+                        symbol: $live->symbol,
+                        lastPrice: $live->close,
+                        bidPrice: '0',
+                        askPrice: '0',
+                        volume24h: $live->quoteVolume,
+                        changePct24h: '0',
+                        timestamp: $live->openTime,
+                    ));
+                }
+            }
+        }
+    }
+
+    /**
+     * WS 推送行 → ExchangeKline（data-model.md ExchangeKline 表）。
+     *
+     * data[0] 元素 [ts, open, high, low, close, baseVolume, quoteVolume]；
+     * closeTime = openTime + intervalMs（bcmath 推算）；tradesCount = 0。
+     *
+     * @param  array<int,mixed>  $row
+     */
+    private function mapWsKlinePayload(array $row, string $symbol, string $interval): ExchangeKline
+    {
+        $openTime = (int) ($row[0] ?? 0);
+        $intervalMs = $this->intervalMs($interval);
+
+        return new ExchangeKline(
+            exchangeCode: 'bitget',
+            symbol: $symbol, // 直传（FR-011）
+            interval: $interval,
+            openTime: $openTime,
+            closeTime: (int) bcadd((string) $openTime, (string) $intervalMs, 0),
+            open: (string) ($row[1] ?? '0'),
+            high: (string) ($row[2] ?? '0'),
+            low: (string) ($row[3] ?? '0'),
+            close: (string) ($row[4] ?? '0'),
+            volume: (string) ($row[5] ?? '0'),
+            quoteVolume: (string) ($row[6] ?? '0'),
+            tradesCount: 0,
+        );
+    }
+
+    /**
+     * R-006 bar 切换检测（纯函数，T014 单测钩子；state 由调用方持有并回写）。
+     *
+     * Bitget kline 流无官方 bar-close 标志（与 OKX confirm / Bybit confirm 字段不同），
+     * 用 bar 切换检测判定上一 bar 关闭：
+     *  - 首帧/重订阅 action=snapshot：只播种 lastBarOpenTime 并缓存 bar 数据，不触发 onBar
+     *  - update 帧 ts == lastBarOpenTime（同 bar 快照更新）：刷新缓存 bar 数据，不触发
+     *  - update 帧 ts > lastBarOpenTime（bar 切换）：返回缓存的上一 bar 完整数据触发
+     *    onBar 恰好一次，并推进 lastBarOpenTime、缓存新 bar
+     *  - update 帧 ts < lastBarOpenTime（乱序/补发）：忽略，状态不变
+     *
+     * @param  array{lastBarOpenTime:int|null, lastBar:ExchangeKline|null}  $state
+     * @param  array<int,mixed>  $row
+     * @return array{state:array{lastBarOpenTime:int|null, lastBar:ExchangeKline|null}, closedBar:ExchangeKline|null, liveBar:ExchangeKline|null}
+     */
+    private function processKlineFrame(
+        array $row,
+        string $action,
+        string $symbol,
+        string $interval,
+        array $state,
+    ): array {
+        $kline = $this->mapWsKlinePayload($row, $symbol, $interval);
+
+        // 首帧/重订阅快照（或未播种的异常时序）：只播种不回调
+        if ($action === 'snapshot' || $state['lastBarOpenTime'] === null) {
+            return [
+                'state' => ['lastBarOpenTime' => $kline->openTime, 'lastBar' => $kline],
+                'closedBar' => null,
+                'liveBar' => null,
+            ];
+        }
+
+        if ($kline->openTime === $state['lastBarOpenTime']) {
+            // 同 bar 快照更新：刷新缓存（保证关闭时用最新完整数据），不触发 onBar
+            return [
+                'state' => ['lastBarOpenTime' => $state['lastBarOpenTime'], 'lastBar' => $kline],
+                'closedBar' => null,
+                'liveBar' => $kline, // 未闭 bar tick（onTick 存在时由调用方触发）
+            ];
+        }
+
+        if ($kline->openTime > $state['lastBarOpenTime']) {
+            // bar 切换：上一 bar 已关闭——用缓存完整数据触发 onBar 恰好一次，并推进状态
+            return [
+                'state' => ['lastBarOpenTime' => $kline->openTime, 'lastBar' => $kline],
+                'closedBar' => $state['lastBar'] ?? $kline,
+                'liveBar' => null,
+            ];
+        }
+
+        // 乱序/补发（ts < lastBarOpenTime）：忽略，状态不变
+        return ['state' => $state, 'closedBar' => null, 'liveBar' => null];
     }
 
     // ------------------------------------------------------------------

@@ -307,4 +307,77 @@ class BitgetAdapterTest extends TestCase
 
         Http::assertSentCount(1);
     }
+
+    // ------------------------------------------------------------------
+    // T013 WS 推送映射（US2）
+    // ------------------------------------------------------------------
+
+    public function test_map_ws_kline_payload(): void
+    {
+        // contracts/bitget-api-contract.md 推送样例：data[0] 为数组 [ts,O,H,L,C,baseVol,quoteVol]
+        $row = ['1697443200000', '65000', '65100', '64900', '65050', '12.5', '812500'];
+
+        $adapter = $this->adapter();
+        $method = new ReflectionMethod($adapter, 'mapWsKlinePayload');
+        $method->setAccessible(true);
+
+        $kline = $method->invoke($adapter, $row, 'BTCUSDT', '1m');
+
+        static::assertSame('bitget', $kline->exchangeCode);
+        static::assertSame('BTCUSDT', $kline->symbol, 'symbol 直传（FR-011）');
+        static::assertSame('1m', $kline->interval, 'interval 平台格式');
+        static::assertSame(1697443200000, $kline->openTime, '[0] → openTime');
+        static::assertSame(1697443260000, $kline->closeTime, 'closeTime=openTime+60000 bcmath 推算');
+        static::assertSame('65000', $kline->open, '[1] → open');
+        static::assertSame('65100', $kline->high, '[2] → high');
+        static::assertSame('64900', $kline->low, '[3] → low');
+        static::assertSame('65050', $kline->close, '[4] → close');
+        static::assertSame('12.5', $kline->volume, '[5] → volume');
+        static::assertSame('812500', $kline->quoteVolume, '[6] → quoteVolume');
+        static::assertSame(0, $kline->tradesCount, 'Bitget 不返 trades count');
+    }
+
+    // ------------------------------------------------------------------
+    // T014 bar 切换检测（US2，R-006 判定语义纯函数单测，无网络）
+    // ------------------------------------------------------------------
+
+    public function test_bar_switch_detection_triggers_on_bar_once(): void
+    {
+        $adapter = $this->adapter();
+        $method = new ReflectionMethod($adapter, 'processKlineFrame');
+        $method->setAccessible(true);
+
+        // bar A：ts=1697443200000（先快照播种，后 update 刷新至最终形态）
+        $barAFirst = ['1697443200000', '65000', '65100', '64900', '65000', '5.0', '325000'];
+        $barALast = ['1697443200000', '65000', '65100', '64900', '65050', '12.5', '812500'];
+        // bar B：ts=1697443260000（bar 切换帧）
+        $barB = ['1697443260000', '65050', '65200', '65000', '65100', '10.0', '651000'];
+
+        $state = ['lastBarOpenTime' => null, 'lastBar' => null];
+
+        // (1) 首帧 action=snapshot：只播种 lastBarOpenTime 不触发 onBar（R-006）
+        $r = $method->invoke($adapter, $barAFirst, 'snapshot', 'BTCUSDT', '1m', $state);
+        static::assertNull($r['closedBar'], 'snapshot 只播种不触发 onBar');
+        static::assertSame(1697443200000, $r['state']['lastBarOpenTime'], 'snapshot 播种 lastBarOpenTime');
+        $state = $r['state'];
+
+        // (2) update 帧 ts 与 lastBarOpenTime 相等（同 bar 快照更新）：不触发，刷新缓存
+        $r = $method->invoke($adapter, $barALast, 'update', 'BTCUSDT', '1m', $state);
+        static::assertNull($r['closedBar'], '同 bar update 不触发 onBar');
+        static::assertSame(1697443200000, $r['state']['lastBarOpenTime']);
+        static::assertSame('65050', $r['state']['lastBar']->close, '缓存刷新为最新完整 bar 数据');
+        $state = $r['state'];
+
+        // (3) update 帧 ts 大于 lastBarOpenTime（bar 切换）：用缓存的上一 bar 完整数据触发恰好一次
+        $r = $method->invoke($adapter, $barB, 'update', 'BTCUSDT', '1m', $state);
+        static::assertNotNull($r['closedBar'], 'bar 切换触发 onBar');
+        static::assertSame('65050', $r['closedBar']->close, '用缓存的上一 bar（刷新后）完整数据');
+        static::assertSame(1697443200000, $r['closedBar']->openTime, 'closedBar 是上一 bar 而非新 bar');
+        static::assertSame(1697443260000, $r['state']['lastBarOpenTime'], 'lastBarOpenTime 推进到新 bar');
+        $state = $r['state'];
+
+        // (4) 幂等：新 bar 同 ts 重复 update 不再触发（每 bar 一次语义，BarAggregator 零改动）
+        $r = $method->invoke($adapter, $barB, 'update', 'BTCUSDT', '1m', $state);
+        static::assertNull($r['closedBar'], '新 bar 同 ts 重复 update 不再触发');
+    }
 }
