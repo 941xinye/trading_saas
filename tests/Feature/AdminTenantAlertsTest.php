@@ -48,8 +48,10 @@ class AdminTenantAlertsTest extends TestCase
         $response->assertSee('window.__tenantAlerts', false);
         // Js::from 输出 JSON.parse('{\u0022tenantId\u0022:990071,...}')，按转义形态断言租户 ID
         $response->assertSee('tenantId' . '\u0022:' . self::TENANT_ID, false);
-        // Vite 构建产物带内容哈希（alerts-<hash>.js），按前缀断言
-        $response->assertSee('assets/alerts-', false);
+        // CI 无 npm 构建（无 Vite manifest → alerts.js 不注入）；本机 build 后按产物前缀断言
+        if (file_exists(public_path('build/manifest.json'))) {
+            $response->assertSee('assets/alerts-', false);
+        }
     }
 
     public function test_platform_admin_gets_no_tenant_alerts_config(): void
