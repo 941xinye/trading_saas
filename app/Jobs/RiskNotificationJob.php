@@ -21,8 +21,8 @@ use Throwable;
  *
  * 逐渠道处理：找到 NotifyBreakerTrip / ReconciliationService 落的 queued 行 → 发送 → 更新 sent/failed。
  * circuit_breaker_event_id 非空 → 熔断告警；为 null → 账实对账告警（P5.5 步骤 1 复用通知链）。
- * 渠道发送走 NotifierChannel 契约（NotificationPayload 泛化后与信号链共用 Log/Telegram 渠道类）；
- * wechat_work/mail 未在 config notifications.channel_classes 注册 → 落 failed（留后续）。
+ * 渠道发送走 NotifierChannel 契约（NotificationPayload 泛化后与信号链共用
+ * Log/Telegram/WeCom/Mail 渠道类）；未注册渠道落 failed。
  */
 class RiskNotificationJob implements ShouldQueue
 {

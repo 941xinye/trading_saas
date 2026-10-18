@@ -28,6 +28,8 @@ return [
         ],
         'mail' => [
             'enabled' => true,
+            // 业务告警收件地址（未配置时 MailChannel send 抛异常 → 落 failed）
+            'to' => env('NOTIFY_MAIL_TO'),
             'throttle_per_minute' => 5,
         ],
         'websocket' => [
@@ -38,11 +40,13 @@ return [
     ],
 
     // 已实现的通知渠道类映射：信号链（DispatchNotificationJob）与风控/对账链
-    // （RiskNotificationJob）共用；未列出的渠道（wechat_work/mail/websocket）
-    // 由 Job 落 failed，等后续阶段实现
+    // （RiskNotificationJob）共用；新增渠道 = 实现NotifierChannel + 在此注册一行。
+    // 未列出的渠道（websocket）由 Job 落 failed，等后续阶段实现
     'channel_classes' => [
         'log' => \App\Domain\Notification\Channels\LogChannel::class,
         'telegram' => \App\Domain\Notification\Channels\TelegramChannel::class,
+        'wechat_work' => \App\Domain\Notification\Channels\WeComChannel::class,
+        'mail' => \App\Domain\Notification\Channels\MailChannel::class,
     ],
 
     // 冷却去重配置
