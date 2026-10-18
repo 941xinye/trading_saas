@@ -380,4 +380,293 @@ class BitgetAdapterTest extends TestCase
         $r = $method->invoke($adapter, $barB, 'update', 'BTCUSDT', '1m', $state);
         static::assertNull($r['closedBar'], '新 bar 同 ts 重复 update 不再触发');
     }
+
+    // ------------------------------------------------------------------
+    // T019 凭据三段守卫（US3，FR-006/FR-007 前置失败不占限流额度）
+    // ------------------------------------------------------------------
+
+    public function test_credentials_three_part_guard_throws_before_http(): void
+    {
+        foreach (['api_key', 'api_secret', 'passphrase'] as $missing) {
+            config(['exchange.exchanges.bitget.weight_limit_per_minute' => 0]);
+            $credentials = ['api_key' => 'k', 'api_secret' => 's', 'passphrase' => 'p'];
+            $credentials[$missing] = '';
+
+            $adapter = new BitgetAdapter(new RateLimiter(), new ExchangeHealthChecker(), $credentials);
+
+            Http::fake();
+
+            try {
+                $adapter->getBalance();
+                static::fail("预期缺失 {$missing} 抛 ExchangeApiException");
+            } catch (ExchangeApiException $e) {
+                static::assertFalse($e->isRetryable(), '凭据缺失为 clientError 硬失败');
+            }
+        }
+
+        // 前置守卫失败：未发起任何 HTTP（签名器在限流前抛出，constitution V）
+        Http::assertNothingSent();
+    }
+
+    // ------------------------------------------------------------------
+    // T021 mapOrderStatus 状态机（data-model.md State Transitions）
+    // ------------------------------------------------------------------
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function orderStatusProvider(): array
+    {
+        return [
+            'new → submitted' => ['new', 'submitted'],
+            'init → submitted' => ['init', 'submitted'],
+            'partially_filled → partial' => ['partially_filled', 'partial'],
+            'filled → filled' => ['filled', 'filled'],
+            'cancelled → canceled' => ['cancelled', 'canceled'],
+            'failed → failed' => ['failed', 'failed'],
+            '未知 → failed（保守）' => ['something_else', 'failed'],
+        ];
+    }
+
+    #[DataProvider('orderStatusProvider')]
+    public function test_map_order_status_maps_to_platform_enum(string $bitgetStatus, string $expected): void
+    {
+        $method = new ReflectionMethod($this->adapter(), 'mapOrderStatus');
+        $method->setAccessible(true);
+
+        static::assertSame($expected, $method->invoke($this->adapter(), $bitgetStatus));
+    }
+
+    // ------------------------------------------------------------------
+    // T022 placeOrder（R-009：市价买 size=报价币 USDT 金额直传，无附加参数）
+    // ------------------------------------------------------------------
+
+    public function test_place_order_market_buy_uses_quote_size_without_extra_params(): void
+    {
+        Http::fake([
+            '*/api/v2/spot/trade/place-order' => Http::response([
+                'code' => '00000',
+                'msg' => 'success',
+                'data' => [
+                    'orderId' => '1635000000000123',
+                    'clientOid' => '1_1_1697443200_ab12',
+                ],
+            ]),
+        ]);
+
+        $order = $this->signedAdapter()->placeOrder(
+            'BTCUSDT',
+            'buy',
+            'market',
+            '100', // 市价买 size = 报价币 USDT 金额直传（R-009）
+            null,
+            null,
+            ['clientOrderId' => '1_1_1697443200_ab12'],
+        );
+
+        static::assertSame('1635000000000123', $order->exchangeOrderId);
+        static::assertSame('1_1_1697443200_ab12', $order->clientOrderId);
+        static::assertSame('BTCUSDT', $order->symbol);
+        static::assertSame('buy', $order->side);
+        static::assertSame('market', $order->type);
+        static::assertSame('100', $order->quantity);
+        static::assertNull($order->price);
+        static::assertSame('submitted', $order->status, 'place-order data 无 status，受理即 submitted');
+
+        // 发送 body 校验：四件套签名头 + size 直传、无 price/force/marketUnit 附加参数
+        Http::assertSent(function ($request) {
+            $body = json_decode((string) $request->body(), true);
+
+            return $request->hasHeader('ACCESS-SIGN')
+                && $body['symbol'] === 'BTCUSDT'
+                && $body['size'] === '100'
+                && ! isset($body['price'])
+                && ! isset($body['force'])
+                && ! isset($body['marketUnit']);
+        });
+    }
+
+    public function test_place_order_limit_includes_price_and_force(): void
+    {
+        Http::fake([
+            '*/api/v2/spot/trade/place-order' => Http::response([
+                'code' => '00000',
+                'msg' => 'success',
+                'data' => ['orderId' => '1635000000000124', 'clientOid' => 'oid-2'],
+            ]),
+        ]);
+
+        $order = $this->signedAdapter()->placeOrder(
+            'BTCUSDT',
+            'sell',
+            'limit',
+            '0.01',
+            '65100.5',
+            null,
+            ['clientOrderId' => 'oid-2'],
+        );
+
+        static::assertSame('65100.5', $order->price);
+        static::assertSame('sell', $order->side);
+        static::assertSame('limit', $order->type);
+        static::assertSame('oid-2', $order->clientOrderId);
+
+        // 限价单：price + force=gtc + clientOid 上限候选 64 字符不截断
+        Http::assertSent(function ($request) {
+            $body = json_decode((string) $request->body(), true);
+
+            return $body['price'] === '65100.5'
+                && ($body['force'] ?? null) === 'gtc'
+                && $body['clientOid'] === 'oid-2';
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // T023 双查幂等（R-005：orderInfo 主查 → history-orders 兜底 → null）
+    // ------------------------------------------------------------------
+
+    public function test_get_order_by_client_order_id_falls_back_to_history(): void
+    {
+        // 主查 orderInfo 候选 43001（订单不存在）→ 兜底 history-orders 命中
+        Http::fake([
+            '*/api/v2/spot/trade/orderInfo*' => Http::response([
+                'code' => '43001',
+                'msg' => 'The order does not exist',
+                'data' => null,
+            ]),
+            '*/api/v2/spot/trade/history-orders*' => Http::response([
+                'code' => '00000',
+                'msg' => 'success',
+                'data' => [[
+                    'orderId' => '1635000000000123',
+                    'clientOid' => '1_1_1697443200_ab12',
+                    'symbol' => 'BTCUSDT',
+                    'side' => 'buy',
+                    'orderType' => 'market',
+                    'size' => '100',
+                    'price' => '',
+                    'status' => 'filled',
+                    'baseVolume' => '0.00153800',
+                    'priceAvg' => '65010.5',
+                    'fee' => '0.0000015',
+                    'cTime' => '1697443200000',
+                    'uTime' => '1697443201000',
+                ]],
+            ]),
+        ]);
+
+        $order = $this->signedAdapter()->getOrderByClientOrderId('BTCUSDT', '1_1_1697443200_ab12');
+
+        static::assertNotNull($order, '主查 43001 → 兜底 history-orders 命中');
+        static::assertSame('1635000000000123', $order->exchangeOrderId);
+        static::assertSame('1_1_1697443200_ab12', $order->clientOrderId);
+        static::assertSame('filled', $order->status);
+        static::assertSame('0.001538', $order->filledQty, 'baseVolume trimZeros');
+        static::assertSame('65010.5', $order->avgFillPrice);
+        static::assertSame(1697443200, $order->placedAt, 'cTime/1000 秒级');
+        static::assertSame(1697443201, $order->filledAt, 'status=filled 时 uTime/1000');
+
+        Http::assertSentCount(2, 'orderInfo + history-orders 各一次');
+    }
+
+    public function test_get_order_by_client_order_id_returns_null_when_both_empty(): void
+    {
+        // 两端皆空 data → 返 null（FR-005 + constitution IV：真不存在返回 null）
+        Http::fake([
+            '*/api/v2/spot/trade/orderInfo*' => Http::response(['code' => '00000', 'msg' => 'success', 'data' => []]),
+            '*/api/v2/spot/trade/history-orders*' => Http::response(['code' => '00000', 'msg' => 'success', 'data' => []]),
+        ]);
+
+        $order = $this->signedAdapter()->getOrderByClientOrderId('BTCUSDT', 'nonexistent');
+
+        static::assertNull($order);
+        Http::assertSentCount(2);
+    }
+
+    // ------------------------------------------------------------------
+    // T024 cancelOrder 特判（候选 43001 → false 不抛，US3 场景3）
+    // ------------------------------------------------------------------
+
+    public function test_cancel_order_returns_false_on_order_not_found(): void
+    {
+        Http::fake([
+            '*/api/v2/spot/trade/cancel-order' => Http::response([
+                'code' => '43001',
+                'msg' => 'The order does not exist',
+                'data' => null,
+            ]),
+        ]);
+
+        $result = $this->signedAdapter()->cancelOrder('BTCUSDT', '1635', 'client-oid-1');
+
+        static::assertFalse($result, '候选 43001（已成交/已撤）→ 返 false 不抛');
+    }
+
+    public function test_cancel_order_reraises_other_client_errors(): void
+    {
+        Http::fake([
+            '*/api/v2/spot/trade/cancel-order' => Http::response([
+                'code' => '40009',
+                'msg' => 'Signature verification failed',
+                'data' => null,
+            ]),
+        ]);
+
+        $this->expectException(ExchangeApiException::class);
+
+        $this->signedAdapter()->cancelOrder('BTCUSDT', '1635', null);
+    }
+
+    // ------------------------------------------------------------------
+    // T025 时钟守卫（候选 40013 → clientError + 校准提示，与 Bybit 10002 对齐）
+    // ------------------------------------------------------------------
+
+    public function test_timestamp_exceeded_classified_client_error_with_clock_hint(): void
+    {
+        Http::fake([
+            '*/api/v2/spot/account/assets*' => Http::response([
+                'code' => '40013',
+                'msg' => 'request time expired',
+                'data' => null,
+            ]),
+        ]);
+
+        try {
+            $this->signedAdapter()->getBalance();
+            static::fail('预期 40013 抛 ExchangeApiException');
+        } catch (ExchangeApiException $e) {
+            static::assertFalse($e->isRetryable(), '40013 clientError 硬失败（不重试）');
+            static::assertStringContainsString('时钟', $e->getMessage(), '附带时钟校准提示');
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // T026 getBalance 镜像 BinanceSpotAdapter（R-010 现货余额近似）
+    // ------------------------------------------------------------------
+
+    public function test_get_balance_maps_spot_assets(): void
+    {
+        Http::fake([
+            '*/api/v2/spot/account/assets*' => Http::response([
+                'code' => '00000',
+                'msg' => 'success',
+                'data' => [
+                    ['coin' => 'USDT', 'available' => '900.5', 'frozen' => '100'],
+                    ['coin' => 'BTC', 'available' => '0.5', 'frozen' => '0.1'],
+                    ['coin' => 'ETH', 'available' => '0', 'frozen' => '0'], // 零余额不入明细
+                ],
+            ]),
+        ]);
+
+        $balance = $this->signedAdapter()->getBalance();
+
+        // R-010：available=USDT.available 直传；totalEquity=bcmath bcadd(available, frozen)
+        static::assertSame('900.5', $balance->available);
+        static::assertSame('1000.5', $balance->totalEquity, 'bcadd(available, frozen, 8)');
+        static::assertSame('0', $balance->totalMargin);
+        static::assertSame('0', $balance->unrealizedPnl);
+        static::assertSame(['USDT', 'BTC'], array_keys($balance->assets), '零余额资产不入明细');
+        static::assertSame('1000.5', $balance->assets['USDT']['total']);
+        static::assertSame('0.6', $balance->assets['BTC']['total'], 'bcmath 加总 trimZeros');
+    }
 }

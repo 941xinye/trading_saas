@@ -9,6 +9,8 @@ use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
 use App\Domain\Exchange\Exceptions\ExchangeApiException;
+use App\Domain\Exchange\Signing\BitgetRequestSigner;
+use App\Domain\Exchange\Signing\RequestSigner;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Swoole\Coroutine;
@@ -217,7 +219,7 @@ class BitgetAdapter extends AbstractExchangeAdapter
             side: strtolower((string) ($data['side'] ?? $side)),
             type: strtolower((string) ($data['orderType'] ?? $type)),
             quantity: (string) ($data['size'] ?? $quantity),
-            price: isset($data['price']) && (string) $data['price'] !== '' ? (string) $data['price'] : null,
+            price: isset($data['price']) && (string) $data['price'] !== '' ? (string) $data['price'] : $price,
             stopPrice: $stopPrice,
             leverage: null, // 现货无杠杆
             reduceOnly: false,
@@ -374,14 +376,70 @@ class BitgetAdapter extends AbstractExchangeAdapter
     }
 
     // ------------------------------------------------------------------
-    // US2 WS kline 流 / US3 账户与交易：占位（对应 story 实装）
+    // 账户与交易（US3）
     // ------------------------------------------------------------------
 
-    public function getBalance(): ExchangeBalance
+    /**
+     * Bitget V2 签名策略（US3）：三段凭据（api_key/api_secret/passphrase，同 OKX 构，FR-006）。
+     *
+     * 基类在限流前调用签名器——凭据缺失等守卫前置抛 clientError，不占限流额度（constitution V）。
+     */
+    protected function requestSigner(): RequestSigner
     {
-        throw new \LogicException('Bitget getBalance is implemented in US3.');
+        return new BitgetRequestSigner();
     }
 
+    /**
+     * Bitget GET /api/v2/spot/account/assets → ExchangeBalance（R-010 现货余额近似）。
+     *
+     * 镜像 BinanceSpotAdapter::getBalance：available = USDT.available 直传；
+     * totalEquity = bcmath bcadd(USDT.available, USDT.frozen)（现货无账户聚合字段）；
+     * totalMargin/unrealizedPnl = '0'；assets 非零聚合 + trimZeros（零余额资产不入明细）。
+     */
+    public function getBalance(): ExchangeBalance
+    {
+        $data = $this->httpSigned('GET', '/api/v2/spot/account/assets', [], weight: 1);
+
+        $assets = [];
+        foreach ((array) ($data['data'] ?? []) as $asset) {
+            $asset = (array) $asset;
+            $coin = (string) ($asset['coin'] ?? '');
+            if ($coin === '') {
+                continue;
+            }
+
+            $available = (string) ($asset['available'] ?? '0');
+            $frozen = (string) ($asset['frozen'] ?? '0');
+            $total = bcadd($available, $frozen, 8);
+            if (bccomp($total, '0', 8) !== 1) {
+                continue; // 零余额资产不入明细（镜像 Binance 范式）
+            }
+
+            $assets[$coin] = [
+                'total' => $this->trimZeros($total),
+                'available' => $this->trimZeros($available),
+            ];
+        }
+
+        $usdtAvail = $assets['USDT']['available'] ?? '0';
+        $usdtTotal = $assets['USDT']['total'] ?? '0';
+
+        return new ExchangeBalance(
+            totalEquity: $usdtTotal, // R-010：现货无账户聚合字段，以 USDT 总余额近似（镜像 Binance）
+            totalMargin: '0',
+            available: $usdtAvail,
+            unrealizedPnl: '0',
+            assets: $assets,
+        );
+    }
+
+    /**
+     * Bitget POST /api/v2/spot/trade/place-order → ExchangeOrder。
+     *
+     * R-009：市价买 size=报价币（USDT）金额直传（无 marketUnit 类附加参数）；
+     * 市价卖/限价单 size=base 数量；限价加 price + force='gtc'（枚举候选待核）；
+     * clientOid 上限候选 64 字符——平台模板天然满足无需截断；symbol 直传（FR-011）。
+     */
     public function placeOrder(
         string $symbol,
         string $side,
@@ -391,17 +449,155 @@ class BitgetAdapter extends AbstractExchangeAdapter
         ?string $stopPrice = null,
         array $opts = [],
     ): ExchangeOrder {
-        throw new \LogicException('Bitget placeOrder is implemented in US3.');
+        $body = [
+            'symbol' => $symbol,
+            'side' => strtolower($side),
+            'orderType' => strtolower($type),
+            'size' => $quantity,
+        ];
+
+        // 限价单：price 必传 + force（候选 gtc，实现期核对官方文档）
+        if (strtolower($type) === 'limit' && $price !== null) {
+            $body['price'] = (string) $price;
+            $body['force'] = 'gtc';
+        }
+
+        $clientOrderId = $opts['clientOrderId'] ?? null;
+        if (is_string($clientOrderId) && $clientOrderId !== '') {
+            $body['clientOid'] = $clientOrderId; // 上限候选 64 字符无需截断（R-009）
+        }
+
+        $data = $this->httpSigned('POST', '/api/v2/spot/trade/place-order', $body, weight: 1);
+
+        // place-order 响应 data 仅含 orderId/clientOid（无 status/side 等）——受理即 new → submitted
+        $row = (array) ($data['data'] ?? []);
+        $row['status'] = (string) ($row['status'] ?? 'new');
+
+        return $this->mapOrderResponse(
+            $row,
+            $symbol,
+            $side,
+            $type,
+            $quantity,
+            $price,
+            $stopPrice,
+            $opts,
+        );
     }
 
+    /**
+     * Bitget POST /api/v2/spot/trade/cancel-order。
+     *
+     * 特判候选 43001（订单不存在/已成交/已撤）→ 返 false 不抛异常（R-008，US3 场景3，
+     * 镜像 Bybit retCode=170213 特判）；其他错误原样抛出。
+     */
     public function cancelOrder(string $symbol, string $orderId, ?string $clientOrderId = null): bool
     {
-        throw new \LogicException('Bitget cancelOrder is implemented in US3.');
+        $body = ['symbol' => $symbol];
+        if ($clientOrderId !== null && $clientOrderId !== '') {
+            $body['clientOid'] = $clientOrderId;
+        } else {
+            $body['orderId'] = $orderId;
+        }
+
+        try {
+            $this->httpSigned('POST', '/api/v2/spot/trade/cancel-order', $body, weight: 1);
+
+            return true;
+        } catch (ExchangeApiException $e) {
+            // 候选 43001 订单不存在 → false 不抛（幂等语义）
+            if (str_contains($e->getMessage(), 'code=43001')) {
+                return false;
+            }
+
+            throw $e;
+        }
     }
 
+    /**
+     * Bitget 查询订单：orderInfo 主查 → history-orders 兜底（R-005 双查幂等）。
+     *
+     * 两端皆未命中抛 ExchangeApiException（getOrder 强语义：订单必须存在）。
+     */
     public function getOrder(string $symbol, string $orderId): ExchangeOrder
     {
-        throw new \LogicException('Bitget getOrder is implemented in US3.');
+        $row = $this->fetchOrderRow($symbol, ['orderId' => $orderId]);
+
+        if ($row === null) {
+            throw ExchangeApiException::clientError(
+                'bitget',
+                'GET /api/v2/spot/trade/orderInfo|history-orders',
+                404,
+                "order not found: {$orderId}",
+            );
+        }
+
+        return $this->mapOrderResponse(
+            $row,
+            $symbol,
+            strtolower((string) ($row['side'] ?? 'buy')),
+            strtolower((string) ($row['orderType'] ?? 'market')),
+            (string) ($row['size'] ?? '0'),
+            isset($row['price']) && (string) $row['price'] !== '' ? (string) $row['price'] : null,
+            null,
+            [],
+        );
+    }
+
+    /**
+     * 按 clientOrderId 幂等查询（崩溃恢复核实用）。
+     *
+     * orderInfo 主查（候选 43001/空 data）→ history-orders 兜底 → 皆空返 null
+     * （FR-005 + constitution IV：真不存在返回 null）。
+     */
+    public function getOrderByClientOrderId(string $symbol, string $clientOrderId): ?ExchangeOrder
+    {
+        $row = $this->fetchOrderRow($symbol, ['clientOid' => $clientOrderId]);
+
+        if ($row === null) {
+            return null;
+        }
+
+        return $this->mapOrderResponse(
+            $row,
+            $symbol,
+            strtolower((string) ($row['side'] ?? 'buy')),
+            strtolower((string) ($row['orderType'] ?? 'market')),
+            (string) ($row['size'] ?? '0'),
+            isset($row['price']) && (string) $row['price'] !== '' ? (string) $row['price'] : null,
+            null,
+            ['clientOrderId' => $clientOrderId],
+        );
+    }
+
+    /**
+     * R-005 双查实现：先 orderInfo（活跃单），候选 43001/空 data 回查 history-orders（终态单）；
+     * 两端皆空返 null。
+     *
+     * @param  array<string,string>  $selector  ['orderId'=>..] 或 ['clientOid'=>..]
+     * @return array<string,mixed>|null
+     */
+    private function fetchOrderRow(string $symbol, array $selector): ?array
+    {
+        foreach (['/api/v2/spot/trade/orderInfo', '/api/v2/spot/trade/history-orders'] as $path) {
+            try {
+                $data = $this->httpSigned('GET', $path, ['symbol' => $symbol] + $selector, weight: 1);
+            } catch (ExchangeApiException $e) {
+                // 候选 43001（订单不存在）→ 视为该端点未命中，继续兜底查询
+                if (str_contains($e->getMessage(), 'code=43001')) {
+                    continue;
+                }
+
+                throw $e;
+            }
+
+            $list = (array) ($data['data'] ?? []);
+            if ($list !== []) {
+                return (array) $list[0];
+            }
+        }
+
+        return null;
     }
 
     public function subscribeKlineStream(
