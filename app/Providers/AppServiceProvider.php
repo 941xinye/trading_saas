@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Domain\Archive\Contracts\ArchiveStore;
+use App\Domain\Archive\Stores\ClickHouseStore;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
 use App\Support\AesGcmCrypt;
@@ -23,6 +25,9 @@ class AppServiceProvider extends ServiceProvider
         $this->app->singleton(AesGcmCrypt::class, function ($app) {
             return new AesGcmCrypt($app->make(KeyResolver::class));
         });
+
+        // P8 历史归档存储（bind 非 singleton：Octane 长驻禁 static 缓存，spec 004 / T007）
+        $this->app->bind(ArchiveStore::class, fn () => ClickHouseStore::fromConfig());
     }
 
     /**
