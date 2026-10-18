@@ -149,6 +149,6 @@ var_dump($ok);  // 预期: false（已成交不可撤），不抛异常
 - **timestamp 超窗（候选 40013）**：本地时钟漂移所致，校准系统时钟（WSL 时钟漂移可先 `wsl --shutdown` 后重启触发同步）；该错误为硬失败不重试，勿靠重试掩盖。
 - **认证失败（候选 40011/40012/40014/40018）**：检查 key/passphrase 有效性（三段缺一不可）、API 权限（现货读写）、IP 白名单配置与出口 IP 一致。
 - **查单漏单**：orderInfo 对终态单可见窗口候选有限（R-005）；必须按 orderInfo→history-orders 双查，勿单查一端误判 null 导致崩溃恢复重复下单。
-- **WS 不推送 / bar 不触发**：检查订阅帧 args 结构（`instType:SPOT` + `channel:candle1m` + `instId:BTCUSDT` 三字段对象数组，非字符串数组）；文本帧 `ping`/`pong` 心跳（非 JSON op 帧）25-30s 周期与断线退避重连。
+- **WS 不推送 / bar 不触发**：检查订阅帧 args 结构（`instType:SPOT` + `channel:candle1m` + `instId:BTCUSDT` 三字段对象数组，非字符串数组）；文本帧 `ping`/`pong` 心跳（非 JSON op 帧）25s 周期（analyze F5 定值）与断线退避重连。
 - **bar 关闭判定证据（R-006 关键）**：POC 首次运行时记录连续推送帧日志（action 值、data[0][0] ts 序列），确认「snapshot 首帧→update 增量→新 ts 出现即上一 bar 关闭」行为序列；若实测帧含 confirm 类标志，退化实现为 confirm 过滤并更新 contract/data-model 对应节。
 - **kline 排序方向（R-011）**：场景 1+2 命令已打印首末 ts；若原始方向为升序，排序逻辑无操作（幂等），若为倒序则归一化为升序——两种方向均应输出升序数组。

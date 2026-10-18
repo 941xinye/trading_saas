@@ -88,7 +88,7 @@ description: "Task list for Bitget 现货适配器实现"
 ### Implementation for User Story 2
 
 - [ ] T015 [US2] 实现 `subscribeKlineStream(string $symbol, string $interval, callable $onBar, ?callable $onTick = null): string` 于 `app/Domain/Exchange/Adapters/BitgetAdapter.php`：镜像前三家 subscribeKlineStream 结构——`Coroutine::create` 内 while(true)：每分支显式 `Coroutine::isCanceled()` 检查并 return（constitution III 坑2：cancel 非 sticky），`try { runKlineWsLoop(...) } catch (CancelException) { return; } catch (Throwable) { Log::warning + 指数退避 1s→2s→4s…上限 60s 重连 }`，重连前/后退避中均检查 isCanceled；维护 `$this->subscriptions[$subId]`，subCounter 自增
-- [ ] T016 [US2] 实现私有 `runKlineWsLoop(...)` 于 `app/Domain/Exchange/Adapters/BitgetAdapter.php`：连接 `wss://ws.bitget.com/v2/ws/public`（config ws_url）parse_url 拆 host/port/path；`WsClient` upgrade；连接后立即 push 订阅帧 `{"op":"subscribe","args":[{"instType":"SPOT","channel":"candle{i}","instId":"{symbol}"}]}`（args 为对象数组非字符串数组，R-006）；**应用层心跳为文本帧**：每 25-30s push 字符串 `ping`（已核实机制，非 JSON op 帧），收字符串 `pong`；超时未回判断线抛异常走退避重连；while(true) recv 解析 `{action,arg,data}`，按 T014 语义做 bar 切换检测并调 `$onBar($kline)`；协程退出前关闭 Timer/心跳协程防泄漏
+- [ ] T016 [US2] 实现私有 `runKlineWsLoop(...)` 于 `app/Domain/Exchange/Adapters/BitgetAdapter.php`：连接 `wss://ws.bitget.com/v2/ws/public`（config ws_url）parse_url 拆 host/port/path；`WsClient` upgrade；连接后立即 push 订阅帧 `{"op":"subscribe","args":[{"instType":"SPOT","channel":"candle{i}","instId":"{symbol}"}]}`（args 为对象数组非字符串数组，R-006）；**应用层心跳为文本帧**：每 25s push 字符串 `ping`（analyze F5 定值：低于官方常见 30s 断开阈值留余量；已核实机制，非 JSON op 帧），收字符串 `pong`；超时未回判断线抛异常走退避重连；while(true) recv 解析 `{action,arg,data}`，按 T014 语义做 bar 切换检测并调 `$onBar($kline)`；协程退出前关闭 Timer/心跳协程防泄漏
 - [ ] T017 [US2] 实现私有 `mapWsKlinePayload(array $row, string $symbol, string $interval): ExchangeKline` 于 `app/Domain/Exchange/Adapters/BitgetAdapter.php`：按 contracts 推送格式映射（[0]→openTime、[1..4]→OHLC、[5]→volume、[6]→quoteVolume、closeTime=openTime+intervalMs bcmath 推算、tradesCount=0、symbol 直传、exchangeCode='bitget'、interval 平台格式）
 - [ ] T018 [US2] 实现 `unsubscribeStream(string $subscriptionId): void` 于 `app/Domain/Exchange/Adapters/BitgetAdapter.php`：镜像前三家 unsubscribeStream——`unset($this->subscriptions[$subId])`，若 `Coroutine::exists($cid)` 则 `Coroutine::cancel($cid)`
 
@@ -154,7 +154,7 @@ description: "Task list for Bitget 现货适配器实现"
 
 ### Implementation for User Story 5
 
-- [ ] T037 [US5] 全量回归验证 SC-004/SC-006：`php artisan test --filter='Binance|Okx|Bybit|Bitget|Signer|Translation|Route|Compatibility'` 全绿（前三家既有用例 100% 通过零变化）；人工核对 `AbstractExchangeAdapter` 自 002 落地后**零改动**（git diff 为空）且无任何按家分支（grep `instanceof`/按 `exchangeCode` 分支为零），四家 signed 请求统一走 限流→signer→HTTP→埋点→错误分类 单一路径
+- [ ] T037 [US5] 全量回归验证 SC-004/SC-006：`php artisan test --filter='Binance|Okx|Bybit|Bitget|Signer|Translation|Route|Compatibility'` 全绿（前三家既有用例 100% 通过零变化）；人工核对 `AbstractExchangeAdapter` 自 002 落地后**零改动**（git diff 为空）且无任何按家分支（grep `instanceof`/按 `exchangeCode` 分支为零），四家 signed 请求统一走 限流→signer→HTTP→埋点→错误分类 单一路径；grep `BitgetAdapter.php` 确认无自建 HTTP 通道——仅经基类 `httpSigned`/`doRequest`，无 curl/guzzle 直调（FR-004 显式补强，analyze F3）
 
 **Checkpoint**: US5 完整可测——四家签名/错误码/路由/策略契约统一，「第四家接入纯增量」架构承诺有显式回归保障。
 
@@ -166,7 +166,7 @@ description: "Task list for Bitget 现货适配器实现"
 
 - [ ] T038 [P] 新建 `app/Console/Commands/PocVerifyBitgetFeed.php` 镜像 `app/Console/Commands/PocVerifyBybitFeed.php` 范式（FR-012）：signature `poc:verify-bitget-feed --symbol=BTCUSDT --interval=1m --wait=120`；handle 内 `Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL)`（constitution III）→ `Coroutine\run` 内依次调 getTicker/getKline/subscribeKlineStream 等 wait 秒数 → unsubscribeStream → 打印 PASS/FAIL 与退出码；**额外打印两项证据**：(1) kline 首末 ts 与原始排序方向（R-011 验证指针）；(2) WS 连续帧 action 值与 data[0][0] ts 序列（R-006 bar 切换判定验证指针）；POC 阶段公共流无需凭据
 - [ ] T039 运行 [quickstart.md](file:///e:/Work/数字货币交易Saas平台/specs/003-bitget-spot-adapter/quickstart.md) 验收矩阵场景 1+2（poc:verify-bitget-feed，SC-001/SC-002，若主网不可达则记录待补）+ 场景 3（离线断言全绿）+ 场景 4（无模拟盘边界核查，已由 T032/T033 CI 覆盖）；场景 5（主网小额真实下单）**待用户 key 到位后补测**（决定 A，挂起不阻塞本 feature 收尾）
-- [ ] T040 [P] 运行 `/speckit-analyze` 跨产物一致性校验（spec.md ↔ plan.md ↔ tasks.md ↔ data-model.md ↔ contracts/bitget-api-contract.md），处理任何 flagged gap：补缺漏 task、修正 spec/plan 不一致点、更新 Complexity Tracking 若有违反需 justify
+- [X] T040 [P] 运行 `/speckit-analyze` 跨产物一致性校验（spec.md ↔ plan.md ↔ tasks.md ↔ data-model.md ↔ contracts/bitget-api-contract.md），处理任何 flagged gap：补缺漏 task、修正 spec/plan 不一致点、更新 Complexity Tracking 若有违反需 justify（implement 前已执行：0 CRITICAL/HIGH、2 MEDIUM——F1 候选码群/F2 bar 判定已由验证指针内嵌化解不阻塞、3 LOW——F3/F5/F6 已修补落盘）
 
 ---
 

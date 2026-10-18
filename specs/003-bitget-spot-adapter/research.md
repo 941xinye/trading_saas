@@ -99,7 +99,7 @@
 {"op":"subscribe","args":[{"instType":"SPOT","channel":"candle1m","instId":"BTCUSDT"}]}
 ```
 
-- 应用层心跳：**文本帧 ping/pong**（已核实——客户端发文本 `ping`，服务端回文本 `pong`；与前三家 JSON op 帧或协议层 ping 均不同）。周期候选 25-30s，超时未回判断线。
+- 应用层心跳：**文本帧 ping/pong**（已核实——客户端发文本 `ping`，服务端回文本 `pong`；与前三家 JSON op 帧或协议层 ping 均不同）。周期 25s（analyze F5 定值：低于官方常见 30s 断开阈值留余量），超时未回判断线。
 - kline 推送 `arg.channel=candle{i}`，`data[]` 元素为数组形态 `[ts, open, high, low, close, baseVolume, quoteVolume]`（ts 为 bar 开盘毫秒）。
 - **bar 关闭判定 = bar 切换检测**（候选待核，无 confirm 标志）：首帧 snapshot（action=snapshot）只播种 `lastBarOpenTime` 不回调；后续 update 帧中 bar ts 大于 `lastBarOpenTime` 时，判定上一 bar 已关闭 → 用缓存的上一 bar 完整数据触发 onBar，并推进 `lastBarOpenTime`。同一 bar 内的重复 update（ts 相等）不触发。
 - 断线指数退避 1s→2s→4s…上限 60s，各分支 isCanceled 检查（坑2 教训，cancel 非 sticky）。

@@ -117,7 +117,7 @@
 
 ### Functional Requirements
 
-- **FR-001**: 系统 MUST 实现 ExchangeAdapter 接口的现货子集：getTicker、getKline、getBalance、placeOrder、cancelOrder、getOrder、getOrderByClientOrderId，接口签名与返回 DTO 与前三家适配器完全对齐。
+- **FR-001**: 系统 MUST 实现 ExchangeAdapter 接口的现货子集：getTicker、getKline、getBalance、placeOrder、cancelOrder、getOrder、getOrderByClientOrderId 及前三家既有辅助接口面（symbolFilters、alignToStep），接口签名与返回 DTO 与前三家适配器完全对齐。
 - **FR-002**: 系统 MUST 实现 subscribeKlineStream 与 unsubscribeStream，在 Bitget 公共 WS K 线 bar 关闭时回调 onBar(ExchangeKline)，bar 更新帧不误触发，无需 login 鉴权；重连循环按指数退避（1s→2s→4s…上限 60s）且各分支显式检查协程取消状态。
 - **FR-003**: 系统 MUST 在现货适配器调用 subscribeLiquidationStream 时抛 LogicException（现货边界，与前三家一致）。
 - **FR-004**: 系统 MUST 复用 AbstractExchangeAdapter 基类的限流前置、健康检查埋点、异常分类（clientError 硬失败/serverError 可重试/networkError 可重试）能力，不绕过基类模板。

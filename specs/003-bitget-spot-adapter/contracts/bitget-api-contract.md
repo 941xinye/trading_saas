@@ -140,7 +140,7 @@ code 分类表（R-008，translateErrorCode Bitget 实现；码段全部候选�
 
 ### 心跳（R-006，已核实机制）
 
-应用层心跳为**文本帧**：客户端发字符串 `ping`，服务端回字符串 `pong`（与前三家 JSON op 帧不同）；周期候选 25-30s，超时未回判断线。断线指数退避 1s→2s→4s…上限 60s 自动重连，各重连分支显式 `Coroutine::isCanceled()` 检查（坑2：cancel 非 sticky，异常被吞后协程不退出）。
+应用层心跳为**文本帧**：客户端发字符串 `ping`，服务端回字符串 `pong`（与前三家 JSON op 帧不同）；周期 25s（analyze F5 定值），超时未回判断线。断线指数退避 1s→2s→4s…上限 60s 自动重连，各重连分支显式 `Coroutine::isCanceled()` 检查（坑2：cancel 非 sticky，异常被吞后协程不退出）。
 
 ## 限流（R-007）
 
