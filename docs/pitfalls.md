@@ -206,6 +206,14 @@
 - **现象**：数据提供方法存在，测试却报 `ArgumentCountError: 0 required, 1 passed`（或提供器永不执行）。
 - **处理**：注解风格 `/** @dataProvider xProvider */` 在 PHPUnit 10+ 已弃用、12 不识别；改为方法上方 `#[DataProvider('xProvider')]`（`use PHPUnit\Framework\Attributes\DataProvider;`）。
 
+## 28. phpunit.xml 引用空 testsuite 目录会让 CI PHPUnit 启动即 exit 2（P5.5 CI 首次接入，2026-10-18）
+
+- **现象**：P5.5 步骤 4 推送 `.github/workflows/tests.yml` 起，6 次 CI run 全红。Setup PHP / Composer install / Prepare application（含 `php artisan key:generate`）全绿，仅 `Run tests` 步骤 1 秒 failure，annotations 仅一行 `Process completed with exit code 2`。**本地 `php artisan test` 全套 157 项却全绿**——症状与代码、断言、swoole 扩展、PHP 版本、composer 依赖均无关。
+- **根因**：[phpunit.xml](../phpunit.xml) 定义 `<testsuite name="Feature"><directory>tests/Feature</directory></testsuite>`，但本地 `tests/Feature/` 目录**存在却为空**（Laravel 安装骨架自带）。Git 不跟踪空目录 → push 后 CI checkout 不存在该目录 → PHPUnit 12 启动时解析 testsuite 引用立即 fatal 退出，exit 2、0 测试执行。本地能跑纯粹因为本地目录在（PHPUnit 扫到 0 个 `*Test.php` 不报错），属于"环境差异伪装成代码问题"。
+- **诊断路径**：①公共 API `/actions/runs` 看到所有 run 全 failure 且 ~35s 秒退；②`/actions/runs/{id}/jobs` steps 元数据显示只有 `Run tests` 1s failure，其余步骤全 success——锁定问题在 PHPUnit 启动而非应用 boot；③`/check-runs/{id}/annotations` 拿到 `exit code 2`（PHPUnit 文档：0=全过、1=有 failure/error、2=配置/启动错误）；④`git ls-files tests/` 对比 phpunit.xml 四个 testsuite 目录，发现 `tests/Feature` 在 git 中 0 个文件。日志 API `/actions/jobs/{id}/logs` 需 admin 权限拿不到时，steps + annotations 已足够定位。
+- **处理**：`tests/Feature/.gitkeep` 占位让 git 跟踪空目录，文件内注释说明根因与"后续添加首个 Feature 测试时可删除"。修复后 CI 双 job（PHP 8.4 / SQLite + Redis、PHP 8.4 / MySQL 8.4 + Redis）`Run tests` 各 4-6s 全绿（Ubuntu + SQLite `:memory:` + RefreshDatabase migrate 一次仅几十毫秒，比 Windows 本地快得多，4-6s 跑完全套合理）。
+- **教训**：①**空 testsuite 目录必须放 `.gitkeep`**——凡是 phpunit.xml、composer.json autoload、`.env.example` 等配置里引用的目录，要么确保有文件被 git 跟踪，要么从配置中移除；②CI 秒退 + exit 2 ≠ 测试失败，优先怀疑 phpunit.xml / bootstrap / 路径引用，而不是代码；③本地 vs CI 环境差异中，"Git 不跟踪空目录"是极易忽视的盲区——本地能跑不代表 CI 能跑；④GitHub Actions 公共 API 不需授权即可查 runs/jobs/steps/annotations，无 gh CLI 时可用 `Invoke-RestMethod` 直接诊断。
+
 ## 环境类备忘（P5.5 步骤 0 补充）
 
 - phpunit.xml 的 XML 注释中**不能出现 `--`**（XML 规范）：在注释里写命令示例 `--group=redis` 会导致整套测试报 `Comment must not contain '--' (double-hyphen)`，注释里用「group=redis」等不含双连字符的写法。
