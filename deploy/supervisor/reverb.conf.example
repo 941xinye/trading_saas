@@ -1,0 +1,26 @@
+; ---------------------------------------------------------------------------
+; Reverb WebSocket Server：租户实时推送（熔断告警 / 信号 / 面板数据）。
+;   前端订阅见 resources/js/alerts.js（Admin 面板 panels::body.end 注入），
+;   频道授权见 routes/channels.php（private-tenant.{tenantId}.*）。
+;
+; 需要 .env：BROADCAST_CONNECTION=reverb + REVERB_APP_ID/KEY/SECRET（三段随机值，
+; 与 config/broadcasting.php 对应）。安装步骤与日志轮转同 market-feed.conf.example 顶部说明。
+; ---------------------------------------------------------------------------
+
+[program:reverb]
+process_name=%(program_name)s
+command=/usr/bin/php /var/www/crypto-saas/artisan reverb:start --host=0.0.0.0 --port=8080
+directory=/var/www/crypto-saas
+user=www-data
+numprocs=1
+autostart=true
+autorestart=true
+startsecs=5
+startretries=3
+stopwaitsecs=30
+stopsignal=TERM
+redirect_stderr=true
+stdout_logfile=/var/log/crypto-saas/reverb.log
+stdout_logfile_maxbytes=100MB
+stdout_logfile_backups=5
+environment=APP_ENV="production",APP_DEBUG="false"

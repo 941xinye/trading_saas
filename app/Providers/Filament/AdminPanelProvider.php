@@ -10,6 +10,8 @@ use Filament\Http\Middleware\DisableBladeIconComponents;
 use Filament\Http\Middleware\DispatchServingFilamentEvent;
 use Filament\Panel;
 use Filament\PanelProvider;
+use Filament\View\PanelsRenderHook;
+use Illuminate\Contracts\View\View;
 
 use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
 use Illuminate\Cookie\Middleware\EncryptCookies;
@@ -76,6 +78,11 @@ class AdminPanelProvider extends PanelProvider
                 BootstrapTenancy::class,
             ])
             ->brandName('币圈 SaaS · 控制台')
-            ->sidebarCollapsibleOnDesktop();
+            ->sidebarCollapsibleOnDesktop()
+            // B7：登录租户用户后注入 Reverb 告警订阅（window.__tenantAlerts + alerts.js）
+            ->renderHook(
+                PanelsRenderHook::BODY_END,
+                fn (): View => view('filament.admin.tenant-alerts'),
+            );
     }
 }
