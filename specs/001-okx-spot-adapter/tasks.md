@@ -134,9 +134,9 @@ description: "Task list for OKX 现货适配器实现"
 
 ### Tests for User Story 4
 
-- [ ] T033 [P] [US4] 在 `tests/Domain/Exchange/OkxAdapterTest.php` 写 `testTestnetSwitchInjectsHeader`：`config(['exchange.exchanges.okx.testnet' => true])`，实例化带凭据 OkxAdapter，调 `getBalance()`，用 `Http::fake` 捕获请求，断言请求头含 `x-simulated-trading: 1` + OK-ACCESS-* 四件套
-- [ ] T034 [P] [US4] 在 `tests/Domain/Exchange/OkxAdapterTest.php` 写 `testTestnetSwitchRoutesWsUrl`：`config(['exchange.exchanges.okx.testnet' => true])`，实例化 OkxAdapter，断言通过反射或保护方法访问 `wsBaseUrl()` 返回 `wss://wspap.okx.com:8443/ws/v5/public`（research.md R-001）
-- [ ] T035 [P] [US4] 在 `tests/Domain/Exchange/OkxAdapterTest.php` 写 `testProductionSwitchNoHeader`：`config(['exchange.exchanges.okx.testnet' => false])`，实例化 OkxAdapter，`Http::fake` 捕获请求，断言请求头不含 `x-simulated-trading`；`wsBaseUrl()` 返回 `wss://ws.okx.com:8443/ws/v5/public`
+- [x] T033 [P] [US4] 在 `tests/Domain/Exchange/OkxAdapterTest.php` 写 `testTestnetSwitchInjectsHeader`：`config(['exchange.exchanges.okx.testnet' => true])`，实例化带凭据 OkxAdapter，调 `getBalance()`，用 `Http::fake` 捕获请求，断言请求头含 `x-simulated-trading: 1` + OK-ACCESS-* 四件套
+- [x] T034 [P] [US4] 在 `tests/Domain/Exchange/OkxAdapterTest.php` 写 `testTestnetSwitchRoutesWsUrl`：`config(['exchange.exchanges.okx.testnet' => true])`，实例化 OkxAdapter，断言通过反射或保护方法访问 `wsBaseUrl()` 返回 `wss://wspap.okx.com:8443/ws/v5/public`（research.md R-001）
+- [x] T035 [P] [US4] 在 `tests/Domain/Exchange/OkxAdapterTest.php` 写 `testProductionSwitchNoHeader`：`config(['exchange.exchanges.okx.testnet' => false])`，实例化 OkxAdapter，`Http::fake` 捕获请求，断言请求头不含 `x-simulated-trading`；`wsBaseUrl()` 返回 `wss://ws.okx.com:8443/ws/v5/public`
 
 **Checkpoint**: US4 完整可测——testnet 开关在 REST header 与 WS 路径双路径生效，证明 spec FR-003 与 SC-004 满足。无需 demo key 即可离线断言开关行为。
 
@@ -147,8 +147,8 @@ description: "Task list for OKX 现货适配器实现"
 **Purpose**: POC 验证命令、quickstart 端到端验收、跨产物一致性校验。
 
 - [ ] T036 [P] 新建 `app/Console/Commands/PocVerifyOkxFeed.php` 镜像 `app/Console/Commands/PocVerifyFeedCommand.php` 范式：signature `poc:verify-okx-feed --symbol=BTCUSDT --interval=1m --wait=120`；handle 内 `Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL)`（constitution III）→ `Coroutine\run` 内依次调 getTicker/getKline x5/subscribeKlineStream 等 wait 秒数 → unsubscribeStream → 报 PASS/FAIL。POC 阶段公共流无需凭据。description 注明 OKX 公共 REST+WS 验证
-- [ ] T037 运行 [quickstart.md](file:///e:/Work/数字货币交易Saas平台/specs/001-okx-spot-adapter/quickstart.md) 验收矩阵场景 1（REST 行情）+ 场景 2（WS bar）+ 场景 3（离线断言），确认 SC-001/SC-002 通过；场景 4（模拟盘开关）+ 场景 5（真实下单）待 OKX demo key + 网络可达后补测，不阻塞本 feature 收尾
-- [ ] T038 [P] 运行 `/speckit-analyze` 跨产物一致性校验（spec.md ↔ plan.md ↔ tasks.md ↔ data-model.md ↔ contracts/okx-api-contract.md），处理任何 flagged gap：补缺漏 task、修正 spec/plan 不一致点、更新 Complexity Tracking 若有违反需 justify
+- [ ] T037 运行 [quickstart.md](file:///e:/Work/数字货币交易Saas平台/specs/001-okx-spot-adapter/quickstart.md) 验收矩阵场景 1（REST 行情）+ 场景 2（WS bar）+ 场景 3（离线断言），确认 SC-001/SC-002 通过；场景 4 离线断言已由 T033-T035 覆盖（testnet header 注入 + WS 路径切换），quickstart 场景 4（真实 demo 账户 getBalance）+ 场景 5（真实下单）待 OKX demo key + 网络可达后补测，不阻塞本 feature 收尾
+- [x] T038 [P] 运行 `/speckit-analyze` 跨产物一致性校验（spec.md ↔ plan.md ↔ tasks.md ↔ data-model.md ↔ contracts/okx-api-contract.md），处理任何 flagged gap：补缺漏 task、修正 spec/plan 不一致点、更新 Complexity Tracking 若有违反需 justify
 
 ---
 

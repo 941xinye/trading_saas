@@ -12,7 +12,7 @@
 
 **Language/Version**: PHP 8.4（项目已确立，WSL Ubuntu-22.04 开发机 + ServBay MySQL 8.4 生产）
 
-**Primary Dependencies**: Laravel 12 + Swoole 6.2.3 协程 + Filament v5 + Reverb + Redis（phpredis connector）+ MySQL 8.4。OKX 适配器复用现有 `AbstractExchangeAdapter` 基类与 `ExchangeAdapter` 契约，无新依赖。
+**Primary Dependencies**: Laravel 13.x + Swoole 6.2.3 协程 + Filament v5 + Reverb + Redis（phpredis connector）+ MySQL 8.4。OKX 适配器复用现有 `AbstractExchangeAdapter` 基类与 `ExchangeAdapter` 契约，无新依赖。
 
 **Storage**: MySQL 8.4（strategy_orders / kline_bars / exchange_accounts / balance_snapshots / exchange_health）+ Redis（限流令牌桶 key `market:ratelimit`、symbol filters 缓存 `market:symbols:okx:{symbol}:filters`、崩溃恢复 state）。OKX 适配器不新增表，复用现有 schema。
 
@@ -28,8 +28,8 @@
 - 协程隔离（constitution III）：`Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL & ~SWOOLE_HOOK_TCP & ~SWOOLE_HOOK_UNIX & ~SWOOLE_HOOK_UDG)`，REST 走阻塞 curl，WS 走 Swoole 原生 socket 协程。
 - 金融精度（constitution II）：bcmath 字符串计算，UTC 时间戳，clientOrderId 模板 `{tenant_id}_{instance_id}_{timestamp}_{random}`。
 - 崩溃恢复幂等（constitution IV）：getOrderByClientOrderId 必须实现，pending 单崩溃恢复核实。
-- OKX 模拟盘 WS 路径：[NEEDS CLARIFICATION: OKX demo trading WS endpoint path — 生产用 wss://ws.okx.com:8443/ws/v5/public，模拟盘路径待 research 确认]
-- OKX 限流权重：[NEEDS CLARIFICATION: OKX V5 限流维度与权重参数，与 Binance 1200/min 不同，待 research 确认按 endpoint 类别的实际限制]
+- OKX 模拟盘 WS 路径：`wss://wspap.okx.com:8443/ws/v5/public`（research.md R-001 已 resolve，生产用 `wss://ws.okx.com:8443/ws/v5/public`）
+- OKX 限流权重：按 endpoint 类别 + 2s 窗口（research.md R-002 已 resolve）：公共 20/2s per IP、账户 10/2s per UID、交易 60/2s per UID；config 增加 `rate_limits` 分类配置
 
 **Scale/Scope**: 单实例多租户，OKX 作为第二交易所接入；现有 Binance 适配器零改动；现有 spot_grid/spot_dca 策略代码零改动（满足接口契约即满足）。
 
@@ -45,7 +45,7 @@
 | IV | 状态持久化与崩溃恢复幂等 | getOrderByClientOrderId 实现（pending 核实用独立标志不复用业务字段，坑9）；Redis 每 bar 写 state + DB 快照双写由上层 StrategyRunner 负责，适配器只提供查询能力 | ✓ PASS |
 | V | 计费语义与风控边界 | OKX placeOrder 由上层 OrderExecutor 包裹 QuotaGuard（freeze/settle/reverse），适配器只负责交易所受理；未知 plan_code 抛异常不降级；信号只通知不下单（适配器不触发信号） | ✓ PASS |
 | VI | 测试隔离与完整路径 | OKX 适配器测试用离线断言（mock 响应）+ `#[DataProvider]`；测试间共享 TTL 键（限流桶）在 setUp/tearDown 精确清理；真实流验收可后补不阻塞 | ✓ PASS |
-| VII | PSR-4 与框架基类对齐 | OkxAdapter 单文件单类；覆写 `signQuery`/`httpHeaders`/`wsBaseUrl`/`buildQuery` 前核对父类声明形态；readonly trait 不引入；Redis facade 按 phpredis 签名（zAdd/eval） | ✓ PASS |
+| VII | PSR-4 与框架基类对齐 | OkxAdapter 单文件单类；覆写 `signQuery`/`doRequest` 前核对父类声明形态（doRequest 由 private 改 protected，T003）；readonly trait 不引入；Redis facade 按 phpredis 签名（zAdd/eval） | ✓ PASS |
 
 **Gate Result**: 全部 7 项 PASS，无违反，Complexity Tracking 为空。可进入 Phase 0 research。
 

@@ -535,4 +535,148 @@ class OkxAdapterTest extends TestCase
         // spec FR-006 + constitution IV：崩溃恢复幂等查询，查无此单返回 null（不抛异常）
         static::assertNull($order, 'OKX 订单不存在错误码应返回 null 而非抛异常');
     }
+
+    // ------------------------------------------------------------------
+    // T033-T035 US4 模拟盘环境开关
+    // ------------------------------------------------------------------
+
+    /**
+     * T033：testnet=true 时签名请求同时注入 x-simulated-trading:1 与 OK-ACCESS-* 四件套。
+     *
+     * spec FR-003 + research.md R-005：OKX 模拟盘 REST 同域，靠 header 区分；
+     * 四件套证明 signed 路径生效；x-simulated-trading 证明 testnet 开关生效。
+     */
+    public function test_testnet_switch_injects_simulated_trading_header(): void
+    {
+        config(['exchange.exchanges.okx.testnet' => true]);
+
+        $capturedHeaders = [];
+        Http::fake(function ($request) use (&$capturedHeaders): array {
+            $capturedHeaders = $request->headers();
+
+            return [
+                'code' => '0',
+                'msg' => '',
+                'data' => [[
+                    'totalEq' => '1000',
+                    'margin' => '0',
+                    'upl' => '0',
+                    'details' => [],
+                ]],
+            ];
+        });
+
+        $adapter = new OkxAdapter(new RateLimiter(), new ExchangeHealthChecker(), [
+            'api_key' => 'k',
+            'api_secret' => 's',
+            'passphrase' => 'p',
+        ]);
+
+        $adapter->getBalance();
+
+        Http::assertSentCount(1);
+
+        // 模拟盘标识（FR-003）
+        static::assertSame(
+            ['1'],
+            $capturedHeaders['x-simulated-trading'] ?? null,
+            'testnet=true 必须注入 x-simulated-trading: 1'
+        );
+
+        // OK-ACCESS-* 四件套（signed 路径生效）
+        foreach (['OK-ACCESS-KEY', 'OK-ACCESS-SIGN', 'OK-ACCESS-TIMESTAMP', 'OK-ACCESS-PASSPHRASE'] as $name) {
+            static::assertArrayHasKey($name, $capturedHeaders, "缺少签名头 {$name}");
+            static::assertNotEmpty($capturedHeaders[$name][0] ?? '', "签名头 {$name} 不应为空");
+        }
+
+        static::assertSame(['k'], $capturedHeaders['OK-ACCESS-KEY']);
+        static::assertSame(['p'], $capturedHeaders['OK-ACCESS-PASSPHRASE']);
+        // ISO 8601 UTC 时间戳（research.md R-003）
+        static::assertMatchesRegularExpression(
+            '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/',
+            $capturedHeaders['OK-ACCESS-TIMESTAMP'][0],
+            'OK-ACCESS-TIMESTAMP 必须是 ISO 8601 UTC 毫秒格式'
+        );
+    }
+
+    /**
+     * T034：testnet=true 时 wsBaseUrl() 路由到 wspap 模拟盘 WS。
+     *
+     * spec FR-003 + research.md R-001：WS 公共流模拟盘独立域名 wspap.okx.com:8443。
+     */
+    public function test_testnet_switch_routes_ws_url_to_wspap(): void
+    {
+        config(['exchange.exchanges.okx.testnet' => true]);
+
+        $adapter = $this->adapter();
+
+        $method = new ReflectionMethod($adapter, 'wsBaseUrl');
+        $method->setAccessible(true);
+        $url = $method->invoke($adapter);
+
+        static::assertSame(
+            'wss://wspap.okx.com:8443/ws/v5/public',
+            $url,
+            'testnet=true 应路由到 OKX 模拟盘 wspap 公共 WS'
+        );
+    }
+
+    /**
+     * T035：testnet=false 时签名请求不带 x-simulated-trading，wsBaseUrl() 走生产 ws.okx.com。
+     *
+     * spec FR-003：生产环境不携带模拟盘标识，WS 连生产公共流。
+     */
+    public function test_production_switch_omits_simulated_header_and_uses_production_ws(): void
+    {
+        config(['exchange.exchanges.okx.testnet' => false]);
+
+        $capturedHeaders = [];
+        Http::fake(function ($request) use (&$capturedHeaders): array {
+            $capturedHeaders = $request->headers();
+
+            return [
+                'code' => '0',
+                'msg' => '',
+                'data' => [[
+                    'totalEq' => '1000',
+                    'margin' => '0',
+                    'upl' => '0',
+                    'details' => [],
+                ]],
+            ];
+        });
+
+        $adapter = new OkxAdapter(new RateLimiter(), new ExchangeHealthChecker(), [
+            'api_key' => 'k',
+            'api_secret' => 's',
+            'passphrase' => 'p',
+        ]);
+
+        $adapter->getBalance();
+
+        Http::assertSentCount(1);
+
+        // 生产环境不得携带模拟盘标识（FR-003）
+        static::assertArrayNotHasKey(
+            'x-simulated-trading',
+            $capturedHeaders,
+            'testnet=false 不应注入 x-simulated-trading header'
+        );
+
+        // 但签名四件套仍应存在（signed 路径依然生效）
+        foreach (['OK-ACCESS-KEY', 'OK-ACCESS-SIGN', 'OK-ACCESS-TIMESTAMP', 'OK-ACCESS-PASSPHRASE'] as $name) {
+            static::assertArrayHasKey($name, $capturedHeaders, "生产环境签名头 {$name} 必须存在");
+        }
+
+        // wsBaseUrl() 走生产 ws.okx.com
+        $method = new ReflectionMethod($adapter, 'wsBaseUrl');
+        $method->setAccessible(true);
+        $url = $method->invoke($adapter);
+
+        static::assertSame(
+            'wss://ws.okx.com:8443/ws/v5/public',
+            $url,
+            'testnet=false 应路由到 OKX 生产公共 WS'
+        );
+    }
 }
