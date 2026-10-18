@@ -224,3 +224,17 @@
 - PowerShell 不支持 heredoc（`<<'EOF'`），git commit 多行信息用 `@'...'@` here-string。
 - Windows/WSL 双 clone 同步：Windows 提交后 push 失败时，用 tar 打包 `app/ config/ database/` 解到 WSL clone（脚本模式避免 wsl 嵌套引号）；脚本文件先 `tr -d '\r'` 去掉 CRLF。
 - `wsl -- bash -c "..."` 嵌套两层坑（P2 实测）：① `$(...)` 与内层双引号会被 PowerShell 吞/改写，`php -r '...'` 直接语法错误——临时 PHP 一律用 Write 工具写 Windows 文件再 `cp` 进 WSL 执行（坑 6 同源）；② `pkill -f 'market:feed'` 会匹配到**承载这条命令的 bash -c 自身命令行**（里面就含字面 `market:feed`）而自杀，退出码 15；排查进程用 `pgrep -af '[m]arket:f[e]ed'`（正则不匹配自身字面量），杀进程拆成独立命令、且命令行中不出现未加括号的目标串。
+
+## 29. 骨架缺 config/broadcasting.php 时 broadcast() 静默失败，被 Listener try/catch 吞掉（B7 前端订阅接入，2026-10-18）
+
+- **现象**：`BroadcastBreakerAlert` 早就 `broadcast(new BreakerAlert(...))`，事件/频道授权齐备，但前端从未收到任何推送。
+- **根因**：`composer create-project` 骨架不自带 `config/broadcasting.php`（需 `install:broadcasting` 生成）。缺文件时 `broadcasting.connections.reverb` 为 null，`broadcast()` 直接抛「connection not defined」；而 Listener 按设计 try/catch 只记 warning（不影响状态迁移），异常被完全吞掉，表现为「什么都不发生」。
+- **处理**：补标准 `config/broadcasting.php`（reverb/log/null 三连接）。`/broadcasting/auth` 路由无需手挂——`bootstrap/app.php` 的 `withRouting(channels:)` 会自动 `Broadcast::routes()`。
+- **教训**：「广播不生效」先查 `config/broadcasting.php` 是否存在、`BROADCAST_CONNECTION` 是否指向已配置连接；容错的 try/catch 会把配置缺失伪装成「静默无事件」，验收时必须看 Reverb 侧连接日志或前端实际收帧。
+
+## 30. Blade `@json` 指令解析不了数组内的嵌套函数调用括号，截断后 PHP ParseError（B7 前端注入，2026-10-18）
+
+- **现象**：视图里写 `window.__tenantAlerts = @json(['key' => (string) config('broadcasting...', ''), ...])`，运行时抛 `Unclosed '[' ... does not match ')'`；`php artisan view:cache` 却编译成功。
+- **根因**：Blade 指令的正则只支持有限层级的嵌套括号匹配，`@json([... config('...', '') ...])` 中 `config()` 的闭合 `)` 被当成 `@json` 自身的结尾，数组从中间截断。view:cache 的批量编译与运行时编译路径不同（运行时经 Livewire ExtendBlade 处理），因此「编译通过」不等于「运行时可用」。
+- **处理**：复杂数组一律在 `@php` 块预计算成变量，再用 `{{ \Illuminate\Support\Js::from($var) }}` 输出（Js::from 产出 `JSON.parse('{...}')` 且实现 Htmlable 不被二次转义）。断言其输出时注意引号被转成 `\u0022`。
+- **教训**：Blade 指令参数里只放「变量/字面量」级表达式；凡含函数调用的复合结构都先 @php 落地为变量。

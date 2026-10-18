@@ -21,7 +21,7 @@
 | WebSocket | Laravel Reverb（用户推送）+ 独立 Swoole 协程（交易所行情） |
 | 数据库 | MySQL 8.4（业务主库） + Redis（行情/状态/队列/限流） + ClickHouse（P8 历史归档，当前未引入） |
 | AI 分析 | 抽象 AIPrompter + OpenAI/DeepSeek/Qwen/Ollama 适配器 + RuleEngineFallback 兜底 |
-| 交易所 | ExchangeAdapter 抽象 + RequestSigner 签名域（Binance/OKX/Bybit 三家）+ Binance 现货（完整实跑）/Binance 合约（仅强平流）+ OKX 现货（spec 001 完成，真实链路待 demo key）+ Bybit 现货（spec 002 完成，真实链路待 testnet key）+ Bitget（骨架预留） |
+| 交易所 | ExchangeAdapter 抽象 + RequestSigner 签名域（Binance/OKX/Bybit/Bitget 四家）+ Binance 现货（完整实跑）/Binance 合约（仅强平流）+ OKX 现货（spec 001 完成，真实链路待 demo key）+ Bybit 现货（spec 002 完成，真实链路待 testnet key）+ Bitget 现货（spec 003 完成，无公开模拟盘，主网小额单待 key） |
 | 后台 | Filament 5.x 双面板（Platform 超管 / Admin 租户） |
 | 加密 | AES-256-GCM（libsodium）三段密钥层级 KEK → DEK → API Key |
 | 风控 | Circuit Breaker 四维度状态机（单笔/日内/回撤/连亏） |
@@ -55,7 +55,7 @@ app/
 │   ├── Signal/                  # AI 信号（AIPrompter 接口 + RuleEngineFallback 兜底）
 │   ├── Risk/                    # 熔断风控（CircuitBreaker 状态机 + 4 维度 Rule）
 │   ├── Billing/                 # 订阅计费（两阶段计量）
-│   ├── Notification/            # 信号通知（Log/Telegram 渠道 + 冷却去重；企微/邮件仅风控链路占位）
+│   ├── Notification/            # 通知（NotificationPayload 契约 + Log/Telegram 渠道信号/风控双链共用 + 冷却去重；企微/邮件仅占位）
 │   └── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
 ├── Http/                        # 中间件 + Controllers + Resources
 ├── Filament/{Admin,Platform}/   # Filament 两套面板
@@ -241,21 +241,45 @@ Bybit V5 现货适配器全量落地，46/46 任务；同步抽取 Signing 签�
 
 **实测结果**：`tests/Domain/Exchange` 98 passed / 1 incomplete / 2 skipped（均为既有基线）/ 381 assertions，无回归；`AbstractExchangeAdapter` 保持零按家分支。
 
-**已知边界**：OKX demo / Bybit testnet 真实行情与下单实跑待 key 与海外网络到位后按 quickstart 补测；Bitget 仍为骨架（P6 收尾）。
+**已知边界**：OKX demo / Bybit testnet 真实行情与下单实跑待 key 与海外网络到位后按 quickstart 补测。
+
+### ✅ 已完成：spec 003 Bitget 现货适配器（2026-10-18，HEAD d49f509）
+
+Bitget V2 现货适配器全量落地，40/40 任务；验证「第四家接入纯增量」架构承诺——`AbstractExchangeAdapter` 零改动（git diff 为空）、前三家既有测试 100% 通过零变化，差异全部收敛在 BitgetRequestSigner / 错误码翻译实现内。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| REST 行情 | getTicker/getKline（V2 `/api/v2/spot/public/*`、升序重排）/getBalance/symbolFilters（Redis 缓存） | [spec](specs/003-bitget-spot-adapter/spec.md) |
+| WS K 线流 | subscribeKlineStream——**bar 切换检测判定关闭**（V2 candle 无 confirm 标志：snapshot 首帧只播种不回调，新 bar ts 出现 ⇒ 旧 bar 关闭）；文本帧 ping/pong 心跳 25s | [contracts](specs/003-bitget-spot-adapter/contracts/bitget-api-contract.md) |
+| 签名下单 | V2 prehash（timestamp+METHOD+requestPath(+queryString)+body，HMAC-SHA256 base64）+ ACCESS-KEY/SIGN/TIMESTAMP/PASSPHRASE 四件套；三段凭据守卫（key/secret/passphrase 任一缺失抛 ExchangeApiException） | [research](specs/003-bitget-spot-adapter/research.md) |
+| 无模拟盘边界 | Bitget 现货无公开 testnet/模拟盘 → config 不含 testnet 键（结构性断言覆盖 FR-013）；真实下单验收 = 主网小额市价单待 key | [quickstart](specs/003-bitget-spot-adapter/quickstart.md) |
+| 四家横切 | ErrorCodeTranslation / ExchangeManagerRoute / StrategyExchangeCompatibility 全部扩展至四家；策略源码零具体适配器引用 | — |
+| POC 命令 | `poc:verify-bitget-feed`（REST ticker/kline + WS 120s，公共流无需凭据） | [quickstart](specs/003-bitget-spot-adapter/quickstart.md) |
+
+**实测结果**：`tests/Domain/Exchange` **147 passed / 1 incomplete / 3 skipped / 574 assertions**（spec 002 基线 98 passed 之上纯增量 +49，前三家零回归）。
+
+**已知边界**：Bitget 主网小额下单与 WS 实跑待 key 与海外网络到位后按 quickstart 补测（连同 OKX demo / Bybit testnet 一并打包，见 [海外节点 Runbook](docs/overseas-node-runbook.md) 验收总清单）。
 
 ### 🚧 待实现：剩余路线图
 
-> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit 已完成，实测结果见上方对应区块。
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget 已完成，实测结果见上方对应区块。
 > **P5.5 上线前工程化加固代码侧已完成（2026-10-15）**——步骤 1–4 产物、三环境实测证据与待节点侧实跑清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md#执行结果与实测证据2026-10-15步骤-14-代码侧全部完成)。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 | 依赖 |
 |---|---|---|---|---|
 | **P5.5 上线前工程化加固 ✅ 代码侧完成** | ①账实对账（内存持仓 vs 交易所）②SpotDca 落地（free 套餐已售卖）③poc:verify-\* 断言迁入 PHPUnit（157 项三环境全绿）+ CI ④supervisor 样板 / billing+reconcile 调度 / 海外节点 runbook | 代码侧验收全过；testnet 真实成交/转出对账/强平 120 秒/supervisor kill -9/Actions 绿灯待节点与首次推送，清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md) | 资金安全基线、断言迁移回归面 | P1–P5 |
-| **P6 多交易所 Adapter 扩展 🚧 进行中** | ~~OKX / Bybit~~ / Bitget 三家现货+合约 Adapter 落地，复用 P1 BinanceSpotAdapter 范式（REST 签名/WS 订阅/错误码映射/testnet 切换）；统一错误码 → `ExchangeApiException` 翻译表。**OKX（spec 001）/ Bybit（spec 002）现货已完成**（含 Signing 签名域抽取 + 三家错误码一致性 + 策略兼容性断言，见上方区块），剩 Bitget + 三家真实链路实跑 | 三家 testnet 各跑通 1 笔市价单 + 1 路 WS 1m closed bar（Binance 已验证；OKX/Bybit 待 demo/testnet key 与海外网络，quickstart 已备）；P1 `market:feed` 切换所代码 ≤10 行（策略兼容性已由 StrategyExchangeCompatibilityTest 断言） | 各所 WS 协议差异（heartbeat/订阅格式/重连规则）、签名算法差异（OKX HMAC+passphrase、Bybit reversal key）、testnet 配额/可用性 | P1 |
+| **P6 多交易所 Adapter 扩展 ✅ 代码侧完成** | ~~OKX / Bybit / Bitget~~ 三家现货 Adapter 全部落地（spec 001/002/003），复用 P1 BinanceSpotAdapter 范式；Signing 签名域统一四家；统一错误码 → `ExchangeApiException` 翻译表四家一致性。**「第四家接入纯增量」验证通过**：spec 003 落地期 `AbstractExchangeAdapter` 零改动、前三家测试零回归 | Binance 已实跑；OKX demo / Bybit testnet / Bitget 主网小额单待 key + 海外网络（quickstart 齐备，验收总清单见 [海外节点 Runbook](docs/overseas-node-runbook.md)）；P1 `market:feed` 切换所代码 ≤10 行（StrategyExchangeCompatibilityTest 四家断言） | 各所 WS 协议差异（confirm 标志 vs bar 切换检测、心跳形态）、签名算法差异、testnet 配额/可用性 | P1 |
+| **P8 ClickHouse 历史数据归档**（执行顺序先于 P7，理由见下） | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
 | **P7 Custom DSL 策略引擎** | YAML/TOML 声明式策略定义（entry/exit/filter/risk 四段）；DSL 解释器 + 沙箱执行；Filament 在线编辑器 + 回测预览 | 一条 DSL 装载后能跑通 onBar→信号→下单；与 PHP 内置策略语义等价 | DSL 表达力 vs 安全（禁 eval/exec/fs）、性能（每 bar 解释开销）、与 RiskGuard 接线 | P1, P2 |
-| **P8 ClickHouse 历史数据归档** | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
-| **P9 支付网关 + 计费 UI** | Stripe + 支付宝/微信 支付集成；Filament 计费页（套餐升级/Invoice/用量看板）；订阅状态机自动续费触发；webhook 幂等 | 完整一笔从下单→支付→订阅激活→配额刷新；续费失败走 P3 past_due→suspended 流程 | 支付回调幂等（同 ref 不双激活）、汇率/税额、地区合规 | P3 |
+| **P9 支付网关 + 计费 UI** | 支付集成（**通道选型前置合规调研，见下行注记**）；Filament 计费页（套餐升级/Invoice/用量看板）；订阅状态机自动续费触发；webhook 幂等 | 完整一笔从下单→支付→订阅激活→配额刷新；续费失败走 P3 past_due→suspended 流程 | 支付回调幂等（同 ref 不双激活）、汇率/税额、**通道合规（数字货币 SaaS 品类受限）** | P3 |
 | **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；策略绩效（Sharpe/最大回撤/胜率/盈亏比）；Filament 绩效页；与 P4 风控参数自动调优建议 | 一条 DSL 策略回测 1 年数据 < 30s；与 P1 实跑同策略净值曲线误差 < 1% | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
+
+> **执行顺序说明（2026-10-18 决策）**：P8 先于 P7。理由：①kline_bars/liquidation_events 持续增长，归档越晚迁移窗口越大、历史校验越难；②P10 回测与 P7 的回测预览都依赖 P8 的 `HistoricalQuery`。阶段编号保持不动（P7/P8 仅为标识）；P7 的表达力设计可与 P8 实现并行做 specify（纯文档阶段）。
+> **P9 前置注记（2026-10-18 合规调研结论）**：
+> - **Stripe**：加密货币交易所/钱包属「受限业务，需联系销售审批」；本平台是服务交易者的 SaaS（非交易所本体），属灰色地带，需走受限品类申报，且 Stripe 主体需支持地区实体——**不确定、周期长，不作为首发通道**。
+> - **支付宝/微信**：境内虚拟币相关业务明确禁止，**直接排除**。
+> - **加密原生通道**：Coinbase Commerce 已于 2026-03-31 关停（继任 Coinbase Business 仅美/新商户+KYB 托管）；可选 **BTCPay Server**（自托管、零费率、无 KYC）、**NOWPayments**（托管、350+ 币种）、BitPay、Binance Pay。
+> - **产品形态推论**：加密支付是 push 模式、无卡基代扣，自动续费只能走「到期前提醒→手工续付→P3 past_due→suspended 既有流转」，P3 状态机天然兼容；specify 时按「USDT 收单（BTCPay 自托管为先）+ 手工续费」为基线方案，Stripe 申报作远期并行线。
 
 ### 🧾 技术债与已知边界汇总（截至 P5，2026-10-15 盘点）
 
@@ -276,11 +300,11 @@ Bybit V5 现货适配器全量落地，46/46 任务；同步抽取 Signing 签�
 |---|---|---|
 | B1 | ~~SpotDca 等 5 策略全抛异常~~ **P5.5 步骤 2：SpotDca 已实现并带 16 项测试**；FuturesGrid / FuturesDca / SmartMartingale / TrendRolling 仍为骨架，且已从套餐白名单摘除（不再"卖了不能用"），随合约阶段落地 | 方法体全部 `throw new RuntimeException('Not implemented')` |
 | B2 | Custom DSL（DslParser / DslStrategy） | parse/onBar/onTick 等全部抛异常，P7 落地 |
-| B3 | ~~OKX / Bybit~~ / Bitget Adapter | **OKX（spec 001）/ Bybit（spec 002）现货已落地**（REST/WS/签名下单/testnet 开关，真实链路实跑待 key + 海外网络）；Bitget 仍仅覆写交易所代码，P6 收尾落地 |
+| B3 | ~~OKX / Bybit / Bitget Adapter~~ **已全还**：spec 001/002/003 三家现货落地（REST/WS/签名下单；OKX 模拟盘 header + Bybit testnet 域名开关 + Bitget 无模拟盘边界）；四家横切契约测试齐备（错误码/路由/策略兼容性）；真实链路实跑待 key + 海外网络（验收总清单见 runbook） | 无骨架残留 |
 | B4 | BinanceFuturesAdapter 交易接口 | 仅实现 subscribeLiquidationStream，其余接口抛 LogicException |
-| B5 | 企微 / 邮件通知渠道 | 无 Channel 类；风控链路只落 `risk_notifications.status=failed` |
-| B6 | Telegram 渠道 | 代码就绪，未配 TELEGRAM_BOT_TOKEN/CHAT_ID 真实实测（信号 + 风控两处） |
-| B7 | Reverb 告警广播 | 事件已分发，缺前端 WebSocket 客户端订阅 `tenant.{tid}.alerts` |
+| B5 | 企微 / 邮件通知渠道 | 仍无 Channel 类；风控/信号链路落 failed。~~契约阻碍~~已消除：NotifierChannel 载荷泛化为 NotificationPayload（信号/风控/对账共用 Log+Telegram 渠道类），新增渠道 = 加一个类 + `config('notifications.channel_classes')` 注册一行 |
+| B6 | Telegram 渠道 | 代码就绪，未配 TELEGRAM_BOT_TOKEN/CHAT_ID 真实实测（信号 + 风控两处，同一渠道类双链复用） |
+| B7 | ~~Reverb 告警广播缺前端~~ **已接（2026-10-18）**：补 `config/broadcasting.php`（原缺失导致 broadcast 静默失败，[坑 #29](docs/pitfalls.md)）+ Admin 面板 BODY_END 注入 `window.__tenantAlerts` 与 alerts.js（Echo 订阅 `private-tenant.{tid}.alerts` → FilamentNotification 弹窗），Feature 测试覆盖注入/平台面板不串订阅；待 reverb 进程 + REVERB_* 实跑联调 |
 | B8 | P5 真实强平流 | 离线 15/15 已迁入 PHPUnit（`tests/*/Liquidation`，@redis）；**主网实跑待海外节点**——部署 runbook 与验收步骤已交付：[海外节点 Runbook](docs/overseas-node-runbook.md)，节点就绪后 `poc:liquidation-demo --duration=120` 即销此项 |
 
 **C. 工程 / 运维类**
@@ -288,7 +312,7 @@ Bybit V5 现货适配器全量落地，46/46 任务；同步抽取 Signing 签�
 | # | 欠债 | 影响 |
 |---|---|---|
 | C1 | ~~无正式测试/CI~~ **P5.5 步骤 0+3 已还**：default/redis/mysql/smoke 分组 + GitHub Actions 双 job；154 项手工断言已全部迁移（150 项入 PHPUnit、5 项真实服务 smoke 保留于 poc 命令、1 项非断言丢弃，映射表见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)）；当前三环境实测 157 项全绿；Actions 绿灯待首次推送 | P6 多交易所后回归成本指数上升 |
-| C2 | ~~手工 nohup 保活~~ **P5.5 步骤 4 已交付**：[deploy/supervisor/](deploy/supervisor) 四样板（market-feed / worker-ai / worker-default / octane，autorestart + 轮转说明）；节点 kill -9 拉起验收待海外节点执行 | 进程退出无人拉起 |
+| C2 | ~~手工 nohup 保活~~ **P5.5 步骤 4 已交付**：[deploy/supervisor/](deploy/supervisor) 五样板（market-feed / worker-ai / worker-default / octane / reverb，autorestart + 轮转说明）；节点 kill -9 拉起验收待海外节点执行 | 进程退出无人拉起 |
 | C3 | ~~refreshStatus 未挂调度~~ **P5.5 步骤 4 已还**：`billing:refresh-status` 薄命令 + 每日 UTC 00:05 调度（`schedule:list` 可查，带流转测试） | past_due→suspended 需手工触发 |
 | C4 | DEK 轮换为非热轮换，需停实例 + 操作停窗 | 运维窗口期限制 |
 | C5 | REST 走阻塞 curl（Swoole hook 关闭 CURL，坑 #1） | 单实例可接受，多租户高密度需换协程 HTTP client |
@@ -528,7 +552,7 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
 | [踩坑记录](docs/pitfalls.md) | P1–P5.5 实测踩坑 28 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2 等）持续追加 |
 | [spec-kit constitution](.specify/memory/constitution.md) | v1.0.0 七条原则（SDD 优先/金融精度/协程隔离/崩溃恢复幂等/计费语义/测试隔离/PSR-4 与基类对齐），约束所有 plan/analyze 阶段 |
-| [specs/](specs/) | spec-kit SDD feature 规格：001 OKX 现货适配器 / 002 Bybit 现货适配器（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
+| [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
 
 ## 安全说明
 

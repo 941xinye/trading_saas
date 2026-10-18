@@ -78,7 +78,7 @@ sudo cp deploy/supervisor/*.conf.example /etc/supervisor/conf.d/
 # 逐个把 /var/www/crypto-saas、/usr/bin/php、user=www-data 按本机实际修改
 sudo supervisorctl reread
 sudo supervisorctl update
-sudo supervisorctl status        # octane / market-feed / worker-ai / worker-default 全 RUNNING
+sudo supervisorctl status        # octane / market-feed / worker-ai / worker-default / reverb 全 RUNNING
 ```
 
 验收（步骤 4 验收 #1）：
@@ -150,4 +150,47 @@ php artisan poc:liquidation-demo --duration=120
 - [ ] 安全组仅放行 22（限源 IP）、80、443
 - [ ] `APP_DEBUG=false`；Filament 后台仅经 HTTPS 访问
 - [ ] 节点只放需要的交易所 API key 权限（现货交易，禁提现/禁合约）
-- [ ] supervisor 四个程序 RUNNING，logrotate 已生效，`schedule:list` 两条调度在列
+- [ ] supervisor 五个程序（octane / market-feed / worker-ai / worker-default / reverb）RUNNING，logrotate 已生效，`schedule:list` 两条调度在列
+- [ ] `.env` 已配 `BROADCAST_CONNECTION=reverb` + `REVERB_APP_ID/KEY/SECRET`，Admin 面板登录后可收到熔断告警实时推送（B7 前端订阅已接）
+
+## 8. 真实链路验收总清单（OKX / Bybit / Bitget / Telegram / 对账）
+
+> 2026-10-18 增补：把散落在 spec 001/002/003 quickstart、P5.5 待办与技术债表（A1/B6/B8）中的
+> 「待真实链路」项收敛为一份清单。节点网络与 key 到位后**一次性按序执行**，逐项销账；
+> 每项完成后同步 README 对应区块与技术债表。
+
+### 8.0 前置：key 与网络
+
+| 凭据 | 来源 | 配置 |
+|---|---|---|
+| OKX demo 三段（key/secret/passphrase） | OKX 模拟盘账户 | `EXCHANGE_OKX_TESTNET=true` + `EXCHANGE_OKX_KEY/SECRET/PASSPHRASE` |
+| Bybit testnet 两段（key/secret） | testnet.bybit.com | `EXCHANGE_BYBIT_TESTNET=true` + `EXCHANGE_BYBIT_KEY/SECRET` |
+| Bitget 主网三段（key/secret/passphrase，**现货交易权限、禁提现**，小额资金） | Bitget 主网 | `EXCHANGE_BITGET_KEY/SECRET/PASSPHRASE`（无 testnet 键，003 澄清决定 A） |
+| Telegram Bot | @BotFather | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` |
+
+出口探测（全部 `succeeded` 才继续，任一失败换机房，与第 0 节同规）：
+
+```bash
+nc -vz www.okx.com 443 && nc -vz ws.okx.com 8443          # OKX 主网（demo 同域）
+nc -vz api-testnet.bybit.com 443 && nc -vz stream-testnet.bybit.com 443   # Bybit testnet
+nc -vz api.bitget.com 443 && nc -vz ws.bitget.com 443     # Bitget 主网
+```
+
+### 8.1 验收矩阵
+
+| # | 验收项 | 命令 / 操作 | 通过标准 | 销账 |
+|---|---|---|---|---|
+| 1 | supervisor kill -9 自愈 | 第 4 节验收 #1 | 10s 内重新 RUNNING，hydrate 日志正常 | P5.5 待办 |
+| 2 | 调度双命令 | 第 5 节验收 #2 | `schedule:list` 含 billing+reconcile | P5.5 待办 |
+| 3 | B8 真实强平流 | 第 6 节 `poc:liquidation-demo --duration=120` | total 增长 + 事件入库 + 三档 Redis 有数 | 技术债 B8、README P5 已知边界 |
+| 4 | OKX 公共行情 | `poc:verify-okx-feed --symbol=BTCUSDT --interval=1m --wait=120` | REST+WS PASS（001 SC-001/002） | — |
+| 5 | OKX 模拟盘 + 真实下单 | 001 quickstart 场景 4/5 | `x-simulated-trading:1` 生效；1 笔市价单按 clientOrderId 查回成交（SC-003/004） | spec 001 T037 |
+| 6 | Bybit 公共行情 | `poc:verify-bybit-feed --symbol=BTCUSDT --interval=1m --wait=120` | REST+WS PASS（002 SC-001/002） | — |
+| 7 | Bybit testnet 下单 | 002 quickstart 场景 5 | 1 笔 testnet 市价单查回成交（SC-003） | spec 002 场景 5 |
+| 8 | Bitget 公共行情 | `poc:verify-bitget-feed --symbol=BTCUSDT --interval=1m --wait=120` | REST+WS PASS；WS 连续帧证据佐证 bar 切换检测语义（003 R-006 验证指针） | 003 已知边界 |
+| 9 | Bitget 主网小额下单 | 003 quickstart 主网小额场景 | 1 笔 BTCUSDT 小额市价单按 clientOrderId 查回成交，余额变动吻合（SC-003） | 003 已知边界 |
+| 10 | Telegram 渠道 | 配 token 后触发一次信号通知（`poc:signal-setup` 探测或等真实信号） | 收到消息；`notifications` 落库 sent | 技术债 B6 |
+| 11 | 账实对账 testnet 实跑 | Binance testnet 实例跑 `reconcile:run`，手工转入一笔制造 drift | drift/critical 报告正确、实例按配置暂停 | 技术债 A1 尾巴 |
+
+证据归档：每项截图/日志/订单号存档；全部通过后 README 技术债表 B6/B8/A1 行销账、
+P6 行「待 key」措辞移除、本清单各行标 ✅ 并注明日期。
