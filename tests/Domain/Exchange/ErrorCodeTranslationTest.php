@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Domain\Exchange;
 
 use App\Domain\Exchange\Adapters\BinanceSpotAdapter;
+use App\Domain\Exchange\Adapters\BitgetAdapter;
 use App\Domain\Exchange\Adapters\BybitAdapter;
 use App\Domain\Exchange\Adapters\OkxAdapter;
 use App\Domain\Exchange\ExchangeHealthChecker;
@@ -34,6 +35,10 @@ class ErrorCodeTranslationTest extends TestCase
             'Binance -2011 订单不存在' => [self::binance(), '-2011', 'client'],
             'OKX 51404 订单不存在' => [self::okx(), '51404', 'client'],
             'OKX 50111 API key 无效' => [self::okx(), '50111', 'client'],
+            'Bitget 40012 API key 无效' => [self::bitget(), '40012', 'client'],
+            'Bitget 40009 签名不匹配' => [self::bitget(), '40009', 'client'],
+            'Bitget 40013 时钟超窗（硬失败 + 校准提示）' => [self::bitget(), '40013', 'client'],
+            'Bitget 43001 订单不存在' => [self::bitget(), '43001', 'client'],
         ];
     }
 
@@ -47,6 +52,7 @@ class ErrorCodeTranslationTest extends TestCase
             'Bybit 10016 服务器繁忙' => [self::bybit(), '10016', 'server'],
             'Binance -1003 访问频率限制' => [self::binance(), '-1003', 'client'],
             'OKX 50011 触发限流' => [self::okx(), '50011', 'server'],
+            'Bitget 40725 触发限流' => [self::bitget(), '40725', 'server'],
         ];
     }
 
@@ -59,6 +65,7 @@ class ErrorCodeTranslationTest extends TestCase
             'Bybit 未知码' => [self::bybit(), '999999', 'server'],
             'Binance 未知码' => [self::binance(), '-999999', 'client'],
             'OKX 未知码' => [self::okx(), '999999', 'server'],
+            'Bitget 未知码（保守 server）' => [self::bitget(), '999999', 'server'],
         ];
     }
 
@@ -111,5 +118,10 @@ class ErrorCodeTranslationTest extends TestCase
     private static function okx(): OkxAdapter
     {
         return new OkxAdapter(new RateLimiter(), new ExchangeHealthChecker(), []);
+    }
+
+    private static function bitget(): BitgetAdapter
+    {
+        return new BitgetAdapter(new RateLimiter(), new ExchangeHealthChecker(), []);
     }
 }

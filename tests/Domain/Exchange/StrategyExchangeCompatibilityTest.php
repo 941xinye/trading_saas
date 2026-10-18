@@ -6,6 +6,7 @@ namespace Tests\Domain\Exchange;
 
 use App\Domain\Exchange\Adapters\AbstractExchangeAdapter;
 use App\Domain\Exchange\Adapters\BinanceSpotAdapter;
+use App\Domain\Exchange\Adapters\BitgetAdapter;
 use App\Domain\Exchange\Adapters\BybitAdapter;
 use App\Domain\Exchange\Adapters\OkxAdapter;
 use App\Domain\Exchange\Contracts\ExchangeAdapter;
@@ -36,9 +37,9 @@ use Tests\TestCase;
  * attachClientOrderId → placeOrder → onFill，崩溃恢复链：pendingClientOrderIds
  * → getOrderByClientOrderId → applyRecoveredOrder），全程离线无网络无凭据。
  *
- * 三家一致断言链：策略只依赖 ExchangeAdapter 接口（源码零具体适配器引用）
- * + ExchangeManager 三家路由返回同接口实现 + 关键方法签名与接口逐一对齐
- * → RecordingAdapter 记录的调用序列对三家实现可原样平移。
+ * 四家一致断言链：策略只依赖 ExchangeAdapter 接口（源码零具体适配器引用）
+ * + ExchangeManager 四家路由返回同接口实现 + 关键方法签名与接口逐一对齐
+ * → RecordingAdapter 记录的调用序列对四家实现可原样平移。
  */
 #[Group('offline')]
 class StrategyExchangeCompatibilityTest extends TestCase
@@ -49,7 +50,7 @@ class StrategyExchangeCompatibilityTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['binance', 'okx', 'bybit'] as $code) {
+        foreach (['binance', 'okx', 'bybit', 'bitget'] as $code) {
             config(["exchange.exchanges.{$code}.weight_limit_per_minute" => 0]);
         }
 
@@ -195,12 +196,13 @@ class StrategyExchangeCompatibilityTest extends TestCase
         static::assertMatchesRegularExpression('/^1_1_\d{10}_[0-9a-f]{6}$/', $buy['args']['opts']['clientOrderId']);
     }
 
-    public function test_three_exchanges_share_adapter_contract(): void
+    public function test_all_exchanges_share_adapter_contract(): void
     {
         $routes = [
             'binance' => BinanceSpotAdapter::class,
             'okx' => OkxAdapter::class,
             'bybit' => BybitAdapter::class,
+            'bitget' => BitgetAdapter::class,
         ];
 
         foreach ($routes as $code => $expected) {
@@ -223,6 +225,7 @@ class StrategyExchangeCompatibilityTest extends TestCase
             BinanceSpotAdapter::class,
             OkxAdapter::class,
             BybitAdapter::class,
+            BitgetAdapter::class,
         ];
 
         foreach ($implementations as $class) {

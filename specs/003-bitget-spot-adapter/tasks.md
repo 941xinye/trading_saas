@@ -148,13 +148,13 @@ description: "Task list for Bitget 现货适配器实现"
 
 ### Tests for User Story 5
 
-- [ ] T034 [P] [US5] 扩展 `tests/Domain/Exchange/ErrorCodeTranslationTest.php` 至四家（FR-008）：Bitget 候选 `40012`（key 无效）/`40009`（签名）/`40011`（passphrase）与 Binance `-2011`/OKX `51404`/Bybit `10003` 同归 clientError（认证类硬失败，跨所语义一致）；Bitget 候选 `40725`（限流）归 serverError 可重试，与前三家限流类重试语义一致；Bitget 候选 `40013`（timestamp 超窗）归 clientError 硬失败；四家未知码均保守 serverError（数据驱动只加 Bitget 数据集，不改断言结构）
-- [ ] T035 [P] [US5] 扩展 `tests/Domain/Exchange/ExchangeManagerRouteTest.php` 至四家（FR-009）：断言 `ExchangeManager::adapter('bitget','spot',$credentials)` 返回 BitgetAdapter（路由代码已预留 L48，零改动只补断言）；四家 spot 路由（binance/okx/bybit/bitget）+ binance futures 分支 + 非法 exchange/market 组合抛异常均有显式断言
-- [ ] T036 [US5] 扩展 `tests/Domain/Exchange/StrategyExchangeCompatibilityTest.php` 至四家（FR-010）：RecordingAdapter 驱动（stub/mock 注入，无网络无凭据），分别经 `ExchangeManager::adapter('bitget','spot')` 与其他三家获取适配器驱动 spot_grid 与 spot_dca 策略核心流程，断言：策略代码零具体适配器引用，且下单（placeOrder 含 clientOrderId 模板）/撤单（cancelOrder）/查单（getOrderByClientOrderId）调用序列四家一致（SC-005）
+- [X] T03[P] [US5] 扩展 `tests/Domain/Exchange/ErrorCodeTranslationTest.php` 至四家（FR-008）：Bitget 候选 `40012`（key 无效）/`40009`（签名）/`40011`（passphrase）与 Binance `-2011`/OKX `51404`/Bybit `10003` 同归 clientError（认证类硬失败，跨所语义一致）；Bitget 候选 `40725`（限流）归 serverError 可重试，与前三家限流类重试语义一致；Bitget 候选 `40013`（timestamp 超窗）归 clientError 硬失败；四家未知码均保守 serverError（数据驱动只加 Bitget 数据集，不改断言结构）
+- [X] T03[P] [US5] 扩展 `tests/Domain/Exchange/ExchangeManagerRouteTest.php` 至四家（FR-009）：断言 `ExchangeManager::adapter('bitget','spot',$credentials)` 返回 BitgetAdapter（路由代码已预留 L48，零改动只补断言）；四家 spot 路由（binance/okx/bybit/bitget）+ binance futures 分支 + 非法 exchange/market 组合抛异常均有显式断言
+- [X] T03[US5] 扩展 `tests/Domain/Exchange/StrategyExchangeCompatibilityTest.php` 至四家（FR-010）：RecordingAdapter 驱动（stub/mock 注入，无网络无凭据），分别经 `ExchangeManager::adapter('bitget','spot')` 与其他三家获取适配器驱动 spot_grid 与 spot_dca 策略核心流程，断言：策略代码零具体适配器引用，且下单（placeOrder 含 clientOrderId 模板）/撤单（cancelOrder）/查单（getOrderByClientOrderId）调用序列四家一致（SC-005）
 
 ### Implementation for User Story 5
 
-- [ ] T037 [US5] 全量回归验证 SC-004/SC-006：`php artisan test --filter='Binance|Okx|Bybit|Bitget|Signer|Translation|Route|Compatibility'` 全绿（前三家既有用例 100% 通过零变化）；人工核对 `AbstractExchangeAdapter` 自 002 落地后**零改动**（git diff 为空）且无任何按家分支（grep `instanceof`/按 `exchangeCode` 分支为零），四家 signed 请求统一走 限流→signer→HTTP→埋点→错误分类 单一路径；grep `BitgetAdapter.php` 确认无自建 HTTP 通道——仅经基类 `httpSigned`/`doRequest`，无 curl/guzzle 直调（FR-004 显式补强，analyze F3）
+- [X] T03[US5] 全量回归验证 SC-004/SC-006：`php artisan test --filter='Binance|Okx|Bybit|Bitget|Signer|Translation|Route|Compatibility'` 全绿（前三家既有用例 100% 通过零变化）；人工核对 `AbstractExchangeAdapter` 自 002 落地后**零改动**（git diff 为空）且无任何按家分支（grep `instanceof`/按 `exchangeCode` 分支为零），四家 signed 请求统一走 限流→signer→HTTP→埋点→错误分类 单一路径；grep `BitgetAdapter.php` 确认无自建 HTTP 通道——仅经基类 `httpSigned`/`doRequest`，无 curl/guzzle 直调（FR-004 显式补强，analyze F3）
 
 **Checkpoint**: US5 完整可测——四家签名/错误码/路由/策略契约统一，「第四家接入纯增量」架构承诺有显式回归保障。
 

@@ -6,6 +6,7 @@ namespace Tests\Domain\Exchange;
 
 use App\Domain\Exchange\Adapters\BinanceFuturesAdapter;
 use App\Domain\Exchange\Adapters\BinanceSpotAdapter;
+use App\Domain\Exchange\Adapters\BitgetAdapter;
 use App\Domain\Exchange\Adapters\BybitAdapter;
 use App\Domain\Exchange\Adapters\OkxAdapter;
 use App\Domain\Exchange\ExchangeHealthChecker;
@@ -30,7 +31,7 @@ class ExchangeManagerRouteTest extends TestCase
     {
         parent::setUp();
 
-        foreach (['binance', 'okx', 'bybit'] as $code) {
+        foreach (['binance', 'okx', 'bybit', 'bitget'] as $code) {
             config(["exchange.exchanges.{$code}.weight_limit_per_minute" => 0]);
         }
 
@@ -52,6 +53,11 @@ class ExchangeManagerRouteTest extends TestCase
     public function test_routes_bybit_spot_to_bybit_adapter(): void
     {
         static::assertInstanceOf(BybitAdapter::class, $this->manager->adapter('bybit', 'spot'));
+    }
+
+    public function test_routes_bitget_spot_to_bitget_adapter(): void
+    {
+        static::assertInstanceOf(BitgetAdapter::class, $this->manager->adapter('bitget', 'spot'));
     }
 
     public function test_routes_binance_futures_to_futures_adapter(): void
