@@ -167,6 +167,8 @@ php artisan poc:liquidation-demo --duration=120
 | Bybit testnet 两段（key/secret） | testnet.bybit.com | `EXCHANGE_BYBIT_TESTNET=true` + `EXCHANGE_BYBIT_KEY/SECRET` |
 | Bitget 主网三段（key/secret/passphrase，**现货交易权限、禁提现**，小额资金） | Bitget 主网 | `EXCHANGE_BITGET_KEY/SECRET/PASSPHRASE`（无 testnet 键，003 澄清决定 A） |
 | Telegram Bot | @BotFather | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` |
+| 企微群机器人 | 群设置 → 群机器人 → 添加（任一群） | `WECHAT_WORK_WEBHOOK`（完整 webhook 地址） |
+| 邮件告警收件 | 任意可收信邮箱 + SMTP 配置 | `NOTIFY_MAIL_TO` + 框架 `MAIL_*` |
 
 出口探测（全部 `succeeded` 才继续，任一失败换机房，与第 0 节同规）：
 
@@ -175,6 +177,11 @@ nc -vz www.okx.com 443 && nc -vz ws.okx.com 8443          # OKX 主网（demo �
 nc -vz api-testnet.bybit.com 443 && nc -vz stream-testnet.bybit.com 443   # Bybit testnet
 nc -vz api.bitget.com 443 && nc -vz ws.bitget.com 443     # Bitget 主网
 ```
+
+> **开发机本地预检记录（2026-10-18）**：Windows 侧与 WSL 侧 curl 探测 OKX（www/ws.okx.com）、
+> Bybit（api/api-testnet.bybit.com）、Bitget（api/ws.bitget.com）共 7 端点全部超时（000），
+> 仅 Binance testnet 可达（200）——与坑 #23 同源（宽带出口对境外交易所端点被网络层阻断）。
+> 结论：8.1 矩阵 11 项全部只能在海外节点执行，本地无任何可提前销账项，勿重复探测。
 
 ### 8.1 验收矩阵
 
@@ -189,7 +196,7 @@ nc -vz api.bitget.com 443 && nc -vz ws.bitget.com 443     # Bitget 主网
 | 7 | Bybit testnet 下单 | 002 quickstart 场景 5 | 1 笔 testnet 市价单查回成交（SC-003） | spec 002 场景 5 |
 | 8 | Bitget 公共行情 | `poc:verify-bitget-feed --symbol=BTCUSDT --interval=1m --wait=120` | REST+WS PASS；WS 连续帧证据佐证 bar 切换检测语义（003 R-006 验证指针） | 003 已知边界 |
 | 9 | Bitget 主网小额下单 | 003 quickstart 主网小额场景 | 1 笔 BTCUSDT 小额市价单按 clientOrderId 查回成交，余额变动吻合（SC-003） | 003 已知边界 |
-| 10 | Telegram 渠道 | 配 token 后触发一次信号通知（`poc:signal-setup` 探测或等真实信号） | 收到消息；`notifications` 落库 sent | 技术债 B6 |
+| 10 | 通知渠道实测（Telegram / 企微 / 邮件） | 分别配 `TELEGRAM_*` / `WECHAT_WORK_WEBHOOK` / `NOTIFY_MAIL_TO` 后触发一次信号通知（`poc:signal-setup` 探测或等真实信号） | 三渠道各收到消息；`notifications` 落库 sent | 技术债 B6、B5 |
 | 11 | 账实对账 testnet 实跑 | Binance testnet 实例跑 `reconcile:run`，手工转入一笔制造 drift | drift/critical 报告正确、实例按配置暂停 | 技术债 A1 尾巴 |
 
 证据归档：每项截图/日志/订单号存档；全部通过后 README 技术债表 B6/B8/A1 行销账、

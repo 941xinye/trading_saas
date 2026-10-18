@@ -55,7 +55,7 @@ app/
 │   ├── Signal/                  # AI 信号（AIPrompter 接口 + RuleEngineFallback 兜底）
 │   ├── Risk/                    # 熔断风控（CircuitBreaker 状态机 + 4 维度 Rule）
 │   ├── Billing/                 # 订阅计费（两阶段计量）
-│   ├── Notification/            # 通知（NotificationPayload 契约 + Log/Telegram 渠道信号/风控双链共用 + 冷却去重；企微/邮件仅占位）
+│   ├── Notification/            # 通知（NotificationPayload 契约 + Log/Telegram/企微/邮件渠道信号/风控双链共用 + 冷却去重；企微/邮件待实测）
 │   └── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
 ├── Http/                        # 中间件 + Controllers + Resources
 ├── Filament/{Admin,Platform}/   # Filament 两套面板
@@ -302,7 +302,7 @@ Bitget V2 现货适配器全量落地，40/40 任务；验证「第四家接入�
 | B2 | Custom DSL（DslParser / DslStrategy） | parse/onBar/onTick 等全部抛异常，P7 落地 |
 | B3 | ~~OKX / Bybit / Bitget Adapter~~ **已全还**：spec 001/002/003 三家现货落地（REST/WS/签名下单；OKX 模拟盘 header + Bybit testnet 域名开关 + Bitget 无模拟盘边界）；四家横切契约测试齐备（错误码/路由/策略兼容性）；真实链路实跑待 key + 海外网络（验收总清单见 runbook） | 无骨架残留 |
 | B4 | BinanceFuturesAdapter 交易接口 | 仅实现 subscribeLiquidationStream，其余接口抛 LogicException |
-| B5 | 企微 / 邮件通知渠道 | 仍无 Channel 类；风控/信号链路落 failed。~~契约阻碍~~已消除：NotifierChannel 载荷泛化为 NotificationPayload（信号/风控/对账共用 Log+Telegram 渠道类），新增渠道 = 加一个类 + `config('notifications.channel_classes')` 注册一行 |
+| B5 | ~~企微 / 邮件通知渠道~~ **已实现（2026-10-18）**：WeComChannel（群机器人 markdown webhook）+ MailChannel（DomainNotificationMail 纯文本）注册入 channel_classes，信号/风控/对账三链共用；未配置即抛异常落 failed（与 Telegram 同契约，既有 failed 断言不变）；6 项渠道测试；待 WECHAT_WORK_WEBHOOK / NOTIFY_MAIL_TO 实测（入 runbook 验收矩阵 #10） | 配置缺失=failed 语义 |
 | B6 | Telegram 渠道 | 代码就绪，未配 TELEGRAM_BOT_TOKEN/CHAT_ID 真实实测（信号 + 风控两处，同一渠道类双链复用） |
 | B7 | ~~Reverb 告警广播缺前端~~ **已接（2026-10-18）**：补 `config/broadcasting.php`（原缺失导致 broadcast 静默失败，[坑 #29](docs/pitfalls.md)）+ Admin 面板 BODY_END 注入 `window.__tenantAlerts` 与 alerts.js（Echo 订阅 `private-tenant.{tid}.alerts` → FilamentNotification 弹窗），Feature 测试覆盖注入/平台面板不串订阅；待 reverb 进程 + REVERB_* 实跑联调 |
 | B8 | P5 真实强平流 | 离线 15/15 已迁入 PHPUnit（`tests/*/Liquidation`，@redis）；**主网实跑待海外节点**——部署 runbook 与验收步骤已交付：[海外节点 Runbook](docs/overseas-node-runbook.md)，节点就绪后 `poc:liquidation-demo --duration=120` 即销此项 |
@@ -546,11 +546,12 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | [完整架构方案](.trae/documents/币圈交易SaaS平台架构方案.md) | 11 节：技术选型/多租户/目录结构/数据库表/接口契约/熔断/面板聚合/POC 优先级/风险权衡 |
 | [架构总览](docs/architecture.md) | 核心决策速查 + 目录结构 + POC 路线图 |
 | [P5.5 工程化加固执行计划](docs/p5.5-hardening-plan.md) | 上线前还债：账实对账 / SpotDca / 测试正式化 / 运维化，含验收标准 |
+| [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) | 支付基线（BTCPay 自托管）收单/webhook 幂等/P3 接线的最小验证清单，环境就绪后照单执行 |
 | [ADR-0001 双进程模型](docs/adr/0001-dual-process-model.md) | 为什么 Octane + 独立 Swoole |
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
-| [踩坑记录](docs/pitfalls.md) | P1–P5.5 实测踩坑 28 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2 等）持续追加 |
+| [踩坑记录](docs/pitfalls.md) | P1–P5.5 实测踩坑 30 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号等）持续追加 |
 | [spec-kit constitution](.specify/memory/constitution.md) | v1.0.0 七条原则（SDD 优先/金融精度/协程隔离/崩溃恢复幂等/计费语义/测试隔离/PSR-4 与基类对齐），约束所有 plan/analyze 阶段 |
 | [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
 
