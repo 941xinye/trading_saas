@@ -164,8 +164,8 @@ description: "Task list for Bitget 现货适配器实现"
 
 **Purpose**: POC 验证命令、quickstart 端到端验收、跨产物一致性校验。
 
-- [ ] T038 [P] 新建 `app/Console/Commands/PocVerifyBitgetFeed.php` 镜像 `app/Console/Commands/PocVerifyBybitFeed.php` 范式（FR-012）：signature `poc:verify-bitget-feed --symbol=BTCUSDT --interval=1m --wait=120`；handle 内 `Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL)`（constitution III）→ `Coroutine\run` 内依次调 getTicker/getKline/subscribeKlineStream 等 wait 秒数 → unsubscribeStream → 打印 PASS/FAIL 与退出码；**额外打印两项证据**：(1) kline 首末 ts 与原始排序方向（R-011 验证指针）；(2) WS 连续帧 action 值与 data[0][0] ts 序列（R-006 bar 切换判定验证指针）；POC 阶段公共流无需凭据
-- [ ] T039 运行 [quickstart.md](file:///e:/Work/数字货币交易Saas平台/specs/003-bitget-spot-adapter/quickstart.md) 验收矩阵场景 1+2（poc:verify-bitget-feed，SC-001/SC-002，若主网不可达则记录待补）+ 场景 3（离线断言全绿）+ 场景 4（无模拟盘边界核查，已由 T032/T033 CI 覆盖）；场景 5（主网小额真实下单）**待用户 key 到位后补测**（决定 A，挂起不阻塞本 feature 收尾）
+- [X] T03[P] 新建 `app/Console/Commands/PocVerifyBitgetFeed.php` 镜像 `app/Console/Commands/PocVerifyBybitFeed.php` 范式（FR-012）：signature `poc:verify-bitget-feed --symbol=BTCUSDT --interval=1m --wait=120`；handle 内 `Runtime::enableCoroutine(SWOOLE_HOOK_ALL & ~SWOOLE_HOOK_CURL)`（constitution III）→ `Coroutine\run` 内依次调 getTicker/getKline/subscribeKlineStream 等 wait 秒数 → unsubscribeStream → 打印 PASS/FAIL 与退出码；**额外打印两项证据**：(1) kline 首末 ts 与原始排序方向（R-011 验证指针）；(2) WS 连续帧 action 值与 data[0][0] ts 序列（R-006 bar 切换判定验证指针）；POC 阶段公共流无需凭据
+- [X] T03运行 [quickstart.md](file:///e:/Work/数字货币交易Saas平台/specs/003-bitget-spot-adapter/quickstart.md) 验收矩阵场景 1+2（poc:verify-bitget-feed，SC-001/SC-002，若主网不可达则记录待补）+ 场景 3（离线断言全绿）+ 场景 4（无模拟盘边界核查，已由 T032/T033 CI 覆盖）；场景 5（主网小额真实下单）**待用户 key 到位后补测**（决定 A，挂起不阻塞本 feature 收尾）
 - [X] T040 [P] 运行 `/speckit-analyze` 跨产物一致性校验（spec.md ↔ plan.md ↔ tasks.md ↔ data-model.md ↔ contracts/bitget-api-contract.md），处理任何 flagged gap：补缺漏 task、修正 spec/plan 不一致点、更新 Complexity Tracking 若有违反需 justify（implement 前已执行：0 CRITICAL/HIGH、2 MEDIUM——F1 候选码群/F2 bar 判定已由验证指针内嵌化解不阻塞、3 LOW——F3/F5/F6 已修补落盘）
 
 ---
