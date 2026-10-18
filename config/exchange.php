@@ -77,11 +77,19 @@ return [
             'weight_warn_threshold' => 0.8,
             'health_check_interval' => 60,
         ],
+        // Bitget 现货无公开 testnet/模拟盘（003 澄清决定 A / FR-013）：config 不含 testnet 键，
+        // 仅生产端点 env 化 + rate_limits（R-007：public 20/s per IP 已核实，trade/account 10/s per UID 候选待核）
         'bitget' => [
             'name' => 'Bitget',
-            'rest_url' => 'https://api.bitget.com',
-            'ws_url' => 'wss://ws.bitget.com/v2/ws/public',
+            'rest_url' => env('EXCHANGE_BITGET_REST', 'https://api.bitget.com'),
+            'ws_url' => env('EXCHANGE_BITGET_WS', 'wss://ws.bitget.com/v2/ws/public'),
             'markets' => ['spot', 'futures'],
+            // v2 无 weight 概念，按类别窗口限流（结构镜像 bybit 段）
+            'rate_limits' => [
+                'public' => ['limit' => 20, 'window' => 1],
+                'trade' => ['limit' => 10, 'window' => 1],
+                'account' => ['limit' => 10, 'window' => 1],
+            ],
             'weight_limit_per_minute' => 600,
             'weight_warn_threshold' => 0.8,
             'health_check_interval' => 60,
