@@ -4,15 +4,17 @@ declare(strict_types=1);
 
 namespace App\Domain\Notification\Channels;
 
+use App\Domain\Notification\Contracts\NotificationPayload;
 use App\Domain\Notification\Contracts\NotifierChannel;
-use App\Domain\Signal\Contracts\Signal;
 use Illuminate\Support\Facades\Http;
 
 /**
- * Telegram 渠道（P2 POC 顺带实现；未配置 token/chat_id 时不启用）。
+ * Telegram 渠道（未配置 token/chat_id 时 send 抛异常，由调用方落 failed）。
  *
  * 配置：TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID（getUpdates 获取）。
- * 使用 Bot API sendMessage，parse_mode=HTML。
+ * 使用 Bot API sendMessage，parse_mode=HTML；通用渲染：
+ * title 加粗首行 → fields 逐行 label：value → footer 斜体，全部 e() 转义。
+ * 信号/风控/对账链路共用本实现。
  */
 class TelegramChannel implements NotifierChannel
 {
@@ -21,7 +23,7 @@ class TelegramChannel implements NotifierChannel
         return 'telegram';
     }
 
-    public function send(Signal $signal): ?string
+    public function send(NotificationPayload $payload): ?string
     {
         $cfg = (array) config('notifications.channels.telegram');
         $token = (string) ($cfg['bot_token'] ?? '');
@@ -36,7 +38,7 @@ class TelegramChannel implements NotifierChannel
             ->acceptJson()
             ->post(rtrim((string) $cfg['api_base'], '/') . "/bot{$token}/sendMessage", [
                 'chat_id' => $chatId,
-                'text' => $this->format($signal),
+                'text' => $this->format($payload),
                 'parse_mode' => 'HTML',
                 'disable_web_page_preview' => true,
             ]);
@@ -45,31 +47,25 @@ class TelegramChannel implements NotifierChannel
             throw new \RuntimeException('Telegram API HTTP ' . $response->status() . ': ' . mb_substr($response->body(), 0, 300));
         }
 
-        $payload = $response->json();
-        if (! ($payload['ok'] ?? false)) {
+        $result = $response->json();
+        if (! ($result['ok'] ?? false)) {
             throw new \RuntimeException('Telegram API 返回 ok=false: ' . mb_substr($response->body(), 0, 300));
         }
 
-        return isset($payload['result']['message_id']) ? (string) $payload['result']['message_id'] : null;
+        return isset($result['result']['message_id']) ? (string) $result['result']['message_id'] : null;
     }
 
-    private function format(Signal $signal): string
+    private function format(NotificationPayload $payload): string
     {
-        $icon = $signal->direction === 'long' ? '🟢' : '🔴';
-        $label = $signal->direction === 'long' ? '做多 LONG' : '做空 SHORT';
-        $source = $signal->source === 'ai' ? 'AI' : '规则兜底';
+        $lines = ['<b>' . e($payload->title) . '</b>'];
 
-        $lines = [
-            "<b>{$icon} 信号：" . e($signal->symbol) . " {$label}</b>",
-            '周期：' . e($signal->interval) . '（来源：' . $source . '，置信度 ' . $signal->confidence . '）',
-            '入场：<code>' . e((string) $signal->entryPrice) . '</code>',
-            '止盈：<code>' . e((string) $signal->exitPrice) . '</code>',
-            '止损：<code>' . e((string) ($signal->stopLoss ?? '-')) . '</code>',
-        ];
-        if ($signal->rationale !== null) {
-            $lines[] = '依据：' . e($signal->rationale);
+        foreach ($payload->fields as $label => $value) {
+            $lines[] = e((string) $label) . '：' . e($value);
         }
-        $lines[] = '<i>信号 ID：' . (int) $signal->persistedId . '｜' . gmdate('Y-m-d H:i') . ' UTC</i>';
+
+        if ($payload->footer !== null) {
+            $lines[] = '<i>' . e($payload->footer) . '</i>';
+        }
 
         return implode("\n", $lines);
     }

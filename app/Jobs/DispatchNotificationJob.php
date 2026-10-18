@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
-use App\Domain\Notification\Channels\LogChannel;
-use App\Domain\Notification\Channels\TelegramChannel;
+use App\Domain\Notification\Contracts\NotificationPayload;
 use App\Domain\Notification\Contracts\NotifierChannel;
+use App\Domain\Notification\Payloads\SignalNotificationPayload;
 use App\Domain\Signal\Contracts\Signal;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -29,12 +29,6 @@ class DispatchNotificationJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public int $tries = 3;
-
-    /** POC 已实现的渠道（其余渠道落 failed，等后续阶段） */
-    private const CHANNELS = [
-        'log' => LogChannel::class,
-        'telegram' => TelegramChannel::class,
-    ];
 
     public function __construct(
         public readonly int $tenantId,
@@ -66,14 +60,14 @@ class DispatchNotificationJob implements ShouldQueue
             return;
         }
 
-        $signal = $this->toSignal($row);
+        $payload = SignalNotificationPayload::fromSignal($this->toSignal($row));
 
         foreach ($this->channels as $channel) {
-            $this->sendOne($channel, $signal);
+            $this->sendOne($channel, $payload);
         }
     }
 
-    private function sendOne(string $channelName, Signal $signal): void
+    private function sendOne(string $channelName, NotificationPayload $payload): void
     {
         $notificationId = DB::table('signal_notifications')
             ->where('signal_id', $this->signalId)
@@ -88,7 +82,7 @@ class DispatchNotificationJob implements ShouldQueue
             return;
         }
 
-        $channelClass = self::CHANNELS[$channelName] ?? null;
+        $channelClass = ((array) config('notifications.channel_classes', []))[$channelName] ?? null;
         if ($channelClass === null) {
             $this->markFailed((int) $notificationId, "不支持的渠道：{$channelName}");
 
@@ -99,7 +93,7 @@ class DispatchNotificationJob implements ShouldQueue
         $channel = app($channelClass);
 
         try {
-            $messageId = $channel->send($signal);
+            $messageId = $channel->send($payload);
             DB::table('signal_notifications')
                 ->where('id', $notificationId)
                 ->update([

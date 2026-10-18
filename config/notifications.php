@@ -37,6 +37,14 @@ return [
         ],
     ],
 
+    // 已实现的通知渠道类映射：信号链（DispatchNotificationJob）与风控/对账链
+    // （RiskNotificationJob）共用；未列出的渠道（wechat_work/mail/websocket）
+    // 由 Job 落 failed，等后续阶段实现
+    'channel_classes' => [
+        'log' => \App\Domain\Notification\Channels\LogChannel::class,
+        'telegram' => \App\Domain\Notification\Channels\TelegramChannel::class,
+    ],
+
     // 冷却去重配置
     'dedup' => [
         'driver' => 'redis',

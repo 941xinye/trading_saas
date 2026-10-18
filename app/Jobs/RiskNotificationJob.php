@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Domain\Notification\Contracts\NotifierChannel;
+use App\Domain\Notification\Payloads\RiskNotificationPayload;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -11,7 +13,6 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -20,8 +21,8 @@ use Throwable;
  *
  * 逐渠道处理：找到 NotifyBreakerTrip / ReconciliationService 落的 queued 行 → 发送 → 更新 sent/failed。
  * circuit_breaker_event_id 非空 → 熔断告警；为 null → 账实对账告警（P5.5 步骤 1 复用通知链）。
- * P4 实现 log/telegram；wechat_work/mail 标 failed（留后续）。
- * 不走 NotifierChannel 契约（该契约绑定 Signal 对象，风控/对账无 signal 概念）。
+ * 渠道发送走 NotifierChannel 契约（NotificationPayload 泛化后与信号链共用 Log/Telegram 渠道类）；
+ * wechat_work/mail 未在 config notifications.channel_classes 注册 → 落 failed（留后续）。
  */
 class RiskNotificationJob implements ShouldQueue
 {
@@ -72,12 +73,18 @@ class RiskNotificationJob implements ShouldQueue
 
         $notificationId = (int) $row->id;
 
+        $channelClass = ((array) config('notifications.channel_classes', []))[$channel] ?? null;
+        if ($channelClass === null) {
+            $this->markFailed($notificationId, "不支持的渠道：{$channel}");
+
+            return;
+        }
+
+        /** @var NotifierChannel $notifier */
+        $notifier = app($channelClass);
+
         try {
-            $messageId = match ($channel) {
-                'log' => $this->sendLog($row),
-                'telegram' => $this->sendTelegram($row),
-                default => throw new \RuntimeException("风控通知不支持的渠道：{$channel}"),
-            };
+            $messageId = $notifier->send(RiskNotificationPayload::fromRow($row));
 
             DB::table('risk_notifications')->where('id', $notificationId)->update([
                 'status' => 'sent',
@@ -89,63 +96,6 @@ class RiskNotificationJob implements ShouldQueue
         } catch (Throwable $e) {
             $this->markFailed($notificationId, $e->getMessage());
         }
-    }
-
-    private function sendLog(object $row): ?string
-    {
-        $tag = $row->circuit_breaker_event_id !== null ? '[BREAKER] 熔断告警' : '[RECONCILE] 账实对账告警';
-
-        Log::info($tag, [
-            'notification_id' => $row->id,
-            'tenant_id' => $row->tenant_id,
-            'instance_id' => $row->instance_id,
-            'channel' => $row->channel,
-            'circuit_breaker_event_id' => $row->circuit_breaker_event_id,
-            'timestamp' => gmdate('Y-m-d H:i:s').' UTC',
-        ]);
-
-        return 'logged';
-    }
-
-    private function sendTelegram(object $row): ?string
-    {
-        $cfg = (array) config('notifications.channels.telegram');
-        $token = (string) ($cfg['bot_token'] ?? '');
-        $chatId = (string) ($cfg['chat_id'] ?? '');
-
-        if ($token === '' || $chatId === '') {
-            throw new \RuntimeException('Telegram 未配置 bot_token/chat_id');
-        }
-
-        $subject = $row->circuit_breaker_event_id !== null
-            ? '<b>⚠️ 熔断告警</b>'
-            : '<b>🚨 账实对账告警</b>';
-
-        $text = $subject."\n"
-            .'实例 #'.(int) $row->instance_id."\n"
-            .'事件 #'.($row->circuit_breaker_event_id ?? '-')."\n"
-            .'<i>'.gmdate('Y-m-d H:i').' UTC</i>';
-
-        $response = Http::timeout((int) ($cfg['timeout'] ?? 10))
-            ->asJson()
-            ->acceptJson()
-            ->post(rtrim((string) $cfg['api_base'], '/')."/bot{$token}/sendMessage", [
-                'chat_id' => $chatId,
-                'text' => $text,
-                'parse_mode' => 'HTML',
-                'disable_web_page_preview' => true,
-            ]);
-
-        if ($response->failed()) {
-            throw new \RuntimeException('Telegram API HTTP '.$response->status());
-        }
-
-        $payload = $response->json();
-        if (! ($payload['ok'] ?? false)) {
-            throw new \RuntimeException('Telegram API ok=false');
-        }
-
-        return isset($payload['result']['message_id']) ? (string) $payload['result']['message_id'] : null;
     }
 
     private function markFailed(int $notificationId, string $error): void
