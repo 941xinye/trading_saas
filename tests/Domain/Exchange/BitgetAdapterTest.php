@@ -669,4 +669,41 @@ class BitgetAdapterTest extends TestCase
         static::assertSame('1000.5', $balance->assets['USDT']['total']);
         static::assertSame('0.6', $balance->assets['BTC']['total'], 'bcmath 加总 trimZeros');
     }
+
+    // ------------------------------------------------------------------
+    // T032 config 结构性断言（US4，决定 A：无 testnet 键 / FR-013）
+    // ------------------------------------------------------------------
+
+    public function test_bitget_config_has_no_testnet_keys(): void
+    {
+        $config = config('exchange.exchanges.bitget');
+        static::assertIsArray($config);
+
+        // FR-013 / 决定 A：Bitget 现货无公开模拟盘——config MUST NOT 引入 testnet 键
+        foreach (['testnet', 'testnet_rest_url', 'testnet_ws_url'] as $forbidden) {
+            static::assertArrayNotHasKey($forbidden, $config, "bitget 段 MUST NOT 含 {$forbidden}");
+        }
+
+        // .env.example 无 EXCHANGE_BITGET_TESTNET 变量（T002 决定 A）
+        $envExample = file_get_contents(base_path('.env.example'));
+        static::assertNotFalse($envExample);
+        static::assertStringNotContainsString('EXCHANGE_BITGET_TESTNET', (string) $envExample);
+    }
+
+    // ------------------------------------------------------------------
+    // T033 生产端点与限流结构（与前三家风格对齐）
+    // ------------------------------------------------------------------
+
+    public function test_production_urls_and_rate_limits_resolved(): void
+    {
+        $config = config('exchange.exchanges.bitget');
+
+        static::assertSame('https://api.bitget.com', $config['rest_url']);
+        static::assertSame('wss://ws.bitget.com/v2/ws/public', $config['ws_url']);
+
+        // rate_limits 三类（R-007：public 20/1s per IP 已核实；trade/account 10/1s per UID 候选待核）
+        static::assertSame(['limit' => 20, 'window' => 1], $config['rate_limits']['public']);
+        static::assertSame(['limit' => 10, 'window' => 1], $config['rate_limits']['trade']);
+        static::assertSame(['limit' => 10, 'window' => 1], $config['rate_limits']['account']);
+    }
 }

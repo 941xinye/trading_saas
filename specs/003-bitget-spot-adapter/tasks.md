@@ -133,8 +133,8 @@ description: "Task list for Bitget 现货适配器实现"
 
 ### Tests for User Story 4
 
-- [ ] T032 [P] [US4] 在 `tests/Domain/Exchange/BitgetAdapterTest.php` 写 `testBitgetConfigHasNoTestnetKeys`：读 `config('exchange.exchanges.bitget')`，断言**不含** `testnet`/`testnet_rest_url`/`testnet_ws_url` 键（FR-013 结构性断言，防未来误加死开关）；断言含 `rest_url`=`https://api.bitget.com`、`ws_url`=`wss://ws.bitget.com/v2/ws/public`、`rate_limits` 三类（public/trade/account，各含 `limit`/`window` 键，结构镜像 bybit 段）；US4 场景1
-- [ ] T033 [P] [US4] 在 `tests/Domain/Exchange/BitgetAdapterTest.php` 写 `testProductionUrlsResolved`：实例化 BitgetAdapter，断言（反射或 protected 钩子）`restBaseUrl()` 返回 `https://api.bitget.com`、`wsBaseUrl()` 返回 `wss://ws.bitget.com/v2/ws/public`；`Http::fake` 捕获公共请求，断言请求目标域名为 api.bitget.com 且签名头**不含任何环境标识附加头**（决定 A：无 OKX x-simulated-trading 类机制）
+- [X] T03[P] [US4] 在 `tests/Domain/Exchange/BitgetAdapterTest.php` 写 `testBitgetConfigHasNoTestnetKeys`：读 `config('exchange.exchanges.bitget')`，断言**不含** `testnet`/`testnet_rest_url`/`testnet_ws_url` 键（FR-013 结构性断言，防未来误加死开关）；断言含 `rest_url`=`https://api.bitget.com`、`ws_url`=`wss://ws.bitget.com/v2/ws/public`、`rate_limits` 三类（public/trade/account，各含 `limit`/`window` 键，结构镜像 bybit 段）；US4 场景1
+- [X] T03[P] [US4] 在 `tests/Domain/Exchange/BitgetAdapterTest.php` 写 `testProductionUrlsResolved`：实例化 BitgetAdapter，断言（反射或 protected 钩子）`restBaseUrl()` 返回 `https://api.bitget.com`、`wsBaseUrl()` 返回 `wss://ws.bitget.com/v2/ws/public`；`Http::fake` 捕获公共请求，断言请求目标域名为 api.bitget.com 且签名头**不含任何环境标识附加头**（决定 A：无 OKX x-simulated-trading 类机制）
 
 **Checkpoint**: US4 完整可测——「无模拟盘」边界以结构性断言固化，US4 场景1/2 离线覆盖达成；US4 场景3（主网小额单）挂起待 key。
 
