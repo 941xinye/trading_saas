@@ -1,0 +1,7 @@
+# 占位文件：让 git 跟踪空目录 tests/Feature。
+#
+# 根因（P5.5 CI 红灯，2026-10-18 定位）：phpunit.xml 定义了 <testsuite name="Feature">
+# 引用本目录，但本地该目录为空 → git 不跟踪 → CI checkout 后目录不存在 →
+# PHPUnit 12 启动即 exit 2（"Test directory ... not found"），1 秒退出、0 测试执行。
+#
+# 后续添加首个 Feature 测试时可删除本文件。
