@@ -269,4 +269,119 @@ class OkxAdapterTest extends TestCase
 
         Http::assertSentCount(1);
     }
+
+    // ------------------------------------------------------------------
+    // T016/T017 WS K 线 payload 映射（US2）
+    // ------------------------------------------------------------------
+
+    /**
+     * OKX WS 推送 data[0] 样本（参考 contracts/okx-api-contract.md）：
+     * [ts, O, H, L, C, vol, volCcy, volCcyQuote, confirm, ...]
+     */
+    public static function wsKlinePayloadProvider(): array
+    {
+        return [
+            'confirm=1 bar close' => [
+                // row 12 字段，data[0] 中 OKX 实际推送
+                ['1697443200000', '0.001', '0.002', '0.0005', '0.0015', '100', '0.1', '1', '1', '0', '0', '0'],
+                'BTC-USDT',
+                'candle1m',
+                1, // confirm
+            ],
+            'confirm=0 mid bar' => [
+                ['1697443200000', '0.001', '0.002', '0.0005', '0.0015', '100', '0.1', '1', '0', '0', '0', '0'],
+                'BTC-USDT',
+                'candle1m',
+                0,
+            ],
+        ];
+    }
+
+    #[DataProvider('wsKlinePayloadProvider')]
+    public function test_mapWsKlinePayload_maps_okx_ws_row_to_dto(
+        array $row,
+        string $okxInstId,
+        string $channel,
+        int $confirm,
+    ): void {
+        $adapter = $this->adapter();
+
+        $method = new ReflectionMethod($adapter, 'mapWsKlinePayload');
+        $method->setAccessible(true);
+
+        $kline = $method->invoke($adapter, $row, $okxInstId, $channel);
+
+        // 平台格式 symbol（去 -）
+        static::assertSame('BTCUSDT', $kline->symbol, 'instId 归一化为平台格式');
+        // exchangeCode/interval 固定
+        static::assertSame('okx', $kline->exchangeCode);
+        static::assertSame('1m', $kline->interval, 'channel candle1m 去前缀 candle 得 1m');
+
+        // 时间字段：openTime 直传，closeTime=openTime+60000（1m intervalMs 推算）
+        static::assertSame(1697443200000, $kline->openTime);
+        static::assertSame(1697443260000, $kline->closeTime);
+
+        // OHLCV 字段映射：[1-4]=OHLC、[5]=vol、[7]=volCcyQuote
+        static::assertSame('0.001', $kline->open);
+        static::assertSame('0.002', $kline->high);
+        static::assertSame('0.0005', $kline->low);
+        static::assertSame('0.0015', $kline->close);
+        static::assertSame('100', $kline->volume);
+        static::assertSame('1', $kline->quoteVolume);
+
+        // tradesCount=0（OKX 不返回 trades count，data-model.md）
+        static::assertSame(0, $kline->tradesCount);
+
+        // OHLCV 字符串非空
+        foreach (['open', 'high', 'low', 'close', 'volume', 'quoteVolume'] as $field) {
+            static::assertNotSame('', (string) $kline->$field, "field {$field} should be non-empty");
+        }
+    }
+
+    /**
+     * T017：confirm 标志位（row[8]）决定 onBar/onTick 触发分支。
+     *
+     * 真实 WS 触发分支需网络手测（无网络环境无法起 WsClient）；本测试以纯函数
+     * 方式验证 mapWsKlinePayload 对 confirm=0 与 confirm=1 的 row 都能正确映射，
+     * 且 confirm 字段不进入 DTO（两 row 映射结果除时间戳外完全一致）。
+     *
+     * 标 #[Group('ws-integration')] 跳 CI，手动验证用——onBar/onTick 触发分支
+     * 需要起 runKlineWsLoop 接 wspap.okx.com:8443 公共流实测。
+     */
+    #[Group('ws-integration')]
+    public function test_confirm_flag_does_not_affect_dto_mapping(): void
+    {
+        $adapter = $this->adapter();
+
+        $method = new ReflectionMethod($adapter, 'mapWsKlinePayload');
+        $method->setAccessible(true);
+
+        $rowBase = ['1697443200000', '0.001', '0.002', '0.0005', '0.0015', '100', '0.1', '1'];
+        $rowClosed = array_merge($rowBase, ['1', '0', '0', '0']); // confirm=1
+        $rowMid = array_merge($rowBase, ['0', '0', '0', '0']); // confirm=0
+
+        $closed = $method->invoke($adapter, $rowClosed, 'BTC-USDT', 'candle1m');
+        $mid = $method->invoke($adapter, $rowMid, 'BTC-USDT', 'candle1m');
+
+        // confirm 字段不入 DTO——除确认位外两 row 字段相同，DTO 完全一致
+        static::assertSame($closed->exchangeCode, $mid->exchangeCode);
+        static::assertSame($closed->symbol, $mid->symbol);
+        static::assertSame($closed->interval, $mid->interval);
+        static::assertSame($closed->openTime, $mid->openTime);
+        static::assertSame($closed->closeTime, $mid->closeTime);
+        static::assertSame($closed->open, $mid->open);
+        static::assertSame($closed->high, $mid->high);
+        static::assertSame($closed->low, $mid->low);
+        static::assertSame($closed->close, $mid->close);
+        static::assertSame($closed->volume, $mid->volume);
+        static::assertSame($closed->quoteVolume, $mid->quoteVolume);
+        static::assertSame($closed->tradesCount, $mid->tradesCount);
+
+        // 标记说明：onBar 触发分支（confirm=1）与 onTick 触发分支（confirm=0）
+        // 在 runKlineWsLoop 内判断，本测试不覆盖，需手测真实 WS 接 OKX 公共流
+        static::markTestIncomplete(
+            'onBar/onTick 触发分支需手测真实 WS（wspap.okx.com:8443/ws/v5/public）；'
+            . '本测试只覆盖 mapWsKlinePayload 的 DTO 映射纯函数行为'
+        );
+    }
 }
