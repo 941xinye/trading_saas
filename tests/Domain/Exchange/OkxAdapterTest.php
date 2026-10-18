@@ -679,4 +679,18 @@ class OkxAdapterTest extends TestCase
             'testnet=false 应路由到 OKX 生产公共 WS'
         );
     }
+
+    /**
+     * C4（speckit-analyze 补）：FR-004 现货适配器调用 subscribeLiquidationStream
+     * 必须抛 LogicException —— 强平流是合约专属能力，现货适配器不应提供。
+     */
+    public function test_subscribe_liquidation_stream_throws_logic_exception(): void
+    {
+        $adapter = $this->adapter();
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('Liquidation stream is futures-only');
+
+        $adapter->subscribeLiquidationStream(static function (): void {});
+    }
 }
