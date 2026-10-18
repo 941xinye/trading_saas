@@ -40,10 +40,20 @@ return [
         ],
         'okx' => [
             'name' => 'OKX',
-            'rest_url' => 'https://www.okx.com',
-            'ws_url' => 'wss://ws.okx.com:8443/ws/v5/public',
+            'rest_url' => env('EXCHANGE_OKX_REST', 'https://www.okx.com'),
+            'ws_url' => env('EXCHANGE_OKX_WS', 'wss://ws.okx.com:8443/ws/v5/public'),
             'markets' => ['spot', 'futures'],
-            'weight_limit_per_minute' => 600,
+            // OKX 模拟盘开关（research.md R-005：REST 同域 + x-simulated-trading header 区分，无独立域名）
+            'testnet' => env('EXCHANGE_OKX_TESTNET', false),
+            'testnet_rest_url' => null, // OKX REST 模拟盘同域，由 doRequest 注入 x-simulated-trading:1
+            'testnet_ws_url' => env('EXCHANGE_OKX_TESTNET_WS', 'wss://wspap.okx.com:8443/ws/v5/public'),
+            // OKX 限流：2s 分类别窗口（research.md R-002），不用 Binance 的 1 分钟 weight 制
+            'rate_limits' => [
+                'public' => 20,  // 20 req/2s per IP
+                'account' => 10, // 10 req/2s per UID
+                'trade' => 60,   // 60 req/2s per UID
+            ],
+            'window_seconds' => 2,
             'weight_warn_threshold' => 0.8,
             'health_check_interval' => 60,
         ],

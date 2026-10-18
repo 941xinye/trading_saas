@@ -75,9 +75,13 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     /**
      * REST 调用统一模板：限流 → HTTP → 健康埋点 → 异常分类。
      *
+     * 可见性 protected（T003）：解锁 OkxAdapter 覆写 OKX 签名路径（OKX prehash =
+     * timestamp+method+requestPath+body，与 Binance queryString&signature 根本不同）。
+     * BinanceSpotAdapter 不受影响——继承不变，签名模板对子类透明。
+     *
      * @return array<string,mixed>
      */
-    private function doRequest(string $method, string $path, array $query, bool $signed, int $weight): array
+    protected function doRequest(string $method, string $path, array $query, bool $signed, int $weight): array
     {
         $exchange = $this->exchangeCode();
         $endpoint = "{$method} {$path}";

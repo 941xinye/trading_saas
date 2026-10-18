@@ -23,6 +23,9 @@
         <testsuite name="Integration">
             <directory>tests/Integration</directory>
         </testsuite>
+        <testsuite name="Domain">
+            <directory>tests/Domain</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>
