@@ -10,6 +10,7 @@ use App\Domain\Exchange\Contracts\ExchangePosition;
 use App\Domain\Exchange\Exceptions\ExchangeApiException;
 use App\Domain\Exchange\ExchangeHealthChecker;
 use App\Domain\Exchange\RateLimiter;
+use App\Domain\Exchange\Signing\RequestSigner;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -17,10 +18,11 @@ use Throwable;
 /**
  * 交易所适配器抽象基类。
  *
- * 子类（BinanceSpotAdapter / OkxAdapter 等）实现具体 HTTP/WS 行为，
+ * 子类（BinanceSpotAdapter / OkxAdapter / BybitAdapter 等）通过两个抽象点接入差异：
+ *  - 签名策略 requestSigner()：交易所签名差异内聚在 Signing/*RequestSigner（FR-008）
+ *  - 业务错误码 extractErrorCode()/translateErrorCode()：原始码→client/server 二分类（FR-009）
  * 父类提供公共能力：
- *  - REST 调用模板（限流前置 → HTTP → 健康埋点 → 异常分类）
- *  - 签名模板方法（HMAC，按交易所差异重写 signQuery()）
+ *  - REST 调用统一模板（三家共用）：签名策略 → 限流 → HTTP → 健康埋点 → 异常分类
  *  - testnet/prod URL 解析（config('exchange.exchanges.{code}.testnet')）
  *  - API 凭据注入（StrategyRunner 从 exchange_accounts 解密后传入）
  *
@@ -73,33 +75,38 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     }
 
     /**
-     * REST 调用统一模板：限流 → HTTP → 健康埋点 → 异常分类。
+     * REST 调用统一模板（三家完全共用，FR-005/FR-008）：
+     * 签名策略 → 限流 → HTTP → 健康埋点 → 异常分类。
      *
-     * 可见性 protected（T003）：解锁 OkxAdapter 覆写 OKX 签名路径（OKX prehash =
-     * timestamp+method+requestPath+body，与 Binance queryString&signature 根本不同）。
-     * BinanceSpotAdapter 不受影响——继承不变，签名模板对子类透明。
+     * signed 请求委托 requestSigner() 策略产出 SignedRequest：
+     *  - GET 走 query 通道（base+path+'?'+query）；POST/DELETE 走 body 通道（withBody）。
+     *  - 序列化由策略负责，且与实际发送串逐字节一致（"签名串=发送串"）。
+     *  - 策略内守卫（凭据缺失等）先于限流抛出，不占额度（FR-007/constitution V）。
+     *
+     * unsigned 请求走 httpHeaders()（子类可重写）+ query/form_params 通道。
      *
      * @return array<string,mixed>
      */
     protected function doRequest(string $method, string $path, array $query, bool $signed, int $weight): array
     {
         $exchange = $this->exchangeCode();
+        $method = strtoupper($method);
         $endpoint = "{$method} {$path}";
+
+        // 签名策略前置：凭据缺失等守卫在限流前抛出（FR-007：前置失败不占额度）
+        $signedRequest = $signed
+            ? $this->requestSigner()->signRequest(
+                $method,
+                $path,
+                $query,
+                null,
+                $this->credentials,
+                $this->currentTimestampMs(),
+            )
+            : null;
 
         if (! $this->rateLimiter->tryAcquire($exchange, $endpoint, $weight)) {
             throw ExchangeApiException::rateLimited($exchange, $endpoint);
-        }
-
-        // 签名参数必须用「同一序列化串」签名与发送：Binance 用实际收到的 raw
-        // query/body（去掉 signature）验签，若签名串用 ksort 排序而 Guzzle
-        // form_params 按数组插入顺序编码，两者顺序不一致即 -1022 Signature invalid。
-        // 因此这里生成确定性 payload 字符串，GET 拼到 URL、POST/DELETE 作为 raw body。
-        $signedPayload = null;
-        if ($signed) {
-            $query['timestamp'] = $this->currentTimestampMs();
-            $query['recvWindow'] = (int) config('exchange.recv_window', 5000);
-            $serialized = $this->buildQuery($query);
-            $signedPayload = $serialized.'&signature='.$this->signQuery($serialized);
         }
 
         $base = $this->restBaseUrl();
@@ -108,36 +115,49 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
         $error = null;
 
         try {
-            $request = Http::timeout(10)->withHeaders($this->httpHeaders());
-
-            if ($signedPayload !== null) {
-                if ($method === 'GET') {
-                    $response = $request->send($method, $base.$path.'?'.$signedPayload);
-                } else {
-                    $response = $request
-                        ->withBody($signedPayload, 'application/x-www-form-urlencoded')
-                        ->send($method, $base.$path);
+            if ($signedRequest !== null) {
+                $url = $base.$path;
+                if (is_string($signedRequest->query) && $signedRequest->query !== '') {
+                    $url .= '?'.$signedRequest->query;
                 }
+
+                $request = Http::timeout(10)->withHeaders($signedRequest->headers);
+                $response = $signedRequest->body !== null
+                    ? $request
+                        ->withBody($signedRequest->body, $signedRequest->contentType ?? 'application/x-www-form-urlencoded')
+                        ->send($method, $url)
+                    : $request->send($method, $url);
             } else {
-                $response = $request->send(
+                $response = Http::timeout(10)->withHeaders($this->httpHeaders())->send(
                     $method,
                     $base.$path,
                     $method === 'GET' ? ['query' => $query] : ['form_params' => $query],
                 );
             }
 
-            $latency = (int) ((microtime(true) - $startedAt) * 1000);
-
             if ($response->failed()) {
                 $status = $response->serverError() ? 'down' : 'degraded';
                 $error = $response->body();
-                // 4xx 参数/签名类错误：硬失败；5xx/网络：可重试
+                // HTTP 4xx 参数/签名类错误：硬失败；5xx/网络：可重试
                 throw $response->serverError()
                     ? ExchangeApiException::serverError($exchange, $endpoint, $response->body())
                     : ExchangeApiException::clientError($exchange, $endpoint, $response->status(), $response->body());
             }
 
-            return $response->json() ?? [];
+            $json = $response->json() ?? [];
+
+            // 业务错误（FR-009）：部分交易所 HTTP 200 + body 错误码（OKX code / Bybit retCode）
+            $rawCode = $this->extractErrorCode($json);
+            if ($rawCode !== null) {
+                $message = $this->businessErrorMessage($rawCode, $json);
+                $status = 'degraded';
+                $error = $message;
+                throw $this->translateErrorCode($rawCode, (int) $response->status()) === 'server'
+                    ? ExchangeApiException::serverError($exchange, $endpoint, $message)
+                    : ExchangeApiException::clientError($exchange, $endpoint, 400, $message);
+            }
+
+            return $json;
         } catch (ExchangeApiException $e) {
             throw $e;
         } catch (Throwable $e) {
@@ -160,28 +180,44 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
         }
     }
 
+    // ------------------------------------------------------------------
+    // 签名策略与业务错误抽象点（FR-008/FR-009）
+    // ------------------------------------------------------------------
+
     /**
-     * Binance 风格：HMAC SHA256(queryString, apiSecret) → hex。
+     * 签名策略（FR-008）：差异内聚在 Signing/*RequestSigner，策略纯函数可独立单测。
+     * 默认抛 LogicException（未接入签名策略的适配器不支持签名请求）。
      */
-    protected function signQuery(string $queryString): string
+    protected function requestSigner(): RequestSigner
     {
-        return hash_hmac('sha256', $queryString, (string) ($this->credentials['api_secret'] ?? ''));
+        throw new \LogicException(static::class.' does not support signed requests');
     }
 
     /**
-     * 稳定 query 序列化（按 key 升序，URL encode）。
+     * 从 HTTP 200 响应体中抽取业务错误码（FR-009）。
+     * 返回 null 表示无业务错误（响应体直接透传）。
      *
-     * @param  array<string,mixed>  $query
+     * @param  array<string,mixed>  $responseBody
      */
-    protected function buildQuery(array $query): string
-    {
-        ksort($query);
+    abstract protected function extractErrorCode(array $responseBody): ?string;
 
-        return http_build_query($query);
+    /**
+     * 业务错误码二分类（FR-009）：'client'（硬失败不重试）| 'server'（可重试）。
+     */
+    abstract protected function translateErrorCode(string $rawCode, int $httpStatus): string;
+
+    /**
+     * 业务错误消息（子类可附加提示，如 Bybit 10002 时钟校准提示）。
+     *
+     * @param  array<string,mixed>  $responseBody
+     */
+    protected function businessErrorMessage(string $rawCode, array $responseBody): string
+    {
+        return "code={$rawCode} msg=".(string) ($responseBody['msg'] ?? ($responseBody['retMsg'] ?? ''));
     }
 
     /**
-     * 请求头。Binance 用 X-MBX-APIKEY，子类可重写。
+     * 请求头（仅 unsigned 请求用；signed 请求头由签名策略产出）。
      *
      * @return array<string,string>
      */
@@ -206,7 +242,7 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     /**
      * 按 clientOrderId 查单的默认实现：未支持该查询方式的交易所直接抛异常，
      * 由崩溃恢复逻辑按「网络异常」保守处理（pending 保持阻塞）。
-     * BinanceSpot 已实装；其余交易所随对应策略落地时补。
+     * BinanceSpot/Okx/Bybit 已实装；其余交易所随对应策略落地时补。
      */
     public function getOrderByClientOrderId(string $symbol, string $clientOrderId): ?ExchangeOrder
     {

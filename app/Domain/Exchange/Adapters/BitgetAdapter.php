@@ -29,4 +29,17 @@ class BitgetAdapter extends AbstractExchangeAdapter
     {
         return new static($this->rateLimiter, $this->healthChecker, $credentials);
     }
+
+    /**
+     * Bitget 未实装（P6+）：无 HTTP 200 + 业务错误码结构。
+     */
+    protected function extractErrorCode(array $responseBody): ?string
+    {
+        return null;
+    }
+
+    protected function translateErrorCode(string $rawCode, int $httpStatus): string
+    {
+        return 'server';
+    }
 }

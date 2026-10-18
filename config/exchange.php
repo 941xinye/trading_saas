@@ -59,9 +59,20 @@ return [
         ],
         'bybit' => [
             'name' => 'Bybit',
-            'rest_url' => 'https://api.bybit.com',
-            'ws_url' => 'wss://stream.bybit.com/v5/public/linear',
+            'rest_url' => env('EXCHANGE_BYBIT_REST', 'https://api.bybit.com'),
+            // v5 现货公共流路径 /v5/public/spot（002 R-001：修正原 linear 合约路径）
+            'ws_url' => env('EXCHANGE_BYBIT_WS', 'wss://stream.bybit.com/v5/public/spot'),
             'markets' => ['spot', 'futures'],
+            // Bybit testnet 独立域名（R-001：与 OKX header 标识机制不同，整体替换 base URL）
+            'testnet' => env('EXCHANGE_BYBIT_TESTNET', false),
+            'testnet_rest_url' => env('EXCHANGE_BYBIT_TESTNET_REST', 'https://api-testnet.bybit.com'),
+            'testnet_ws_url' => env('EXCHANGE_BYBIT_TESTNET_WS', 'wss://stream-testnet.bybit.com/v5/public/spot'),
+            // v5 无 weight 概念，按类别窗口限流（R-007：public 600/5s per IP，trade/account 10/s per UID）
+            'rate_limits' => [
+                'public' => ['limit' => 600, 'window' => 5],
+                'trade' => ['limit' => 10, 'window' => 1],
+                'account' => ['limit' => 10, 'window' => 1],
+            ],
             'weight_limit_per_minute' => 600,
             'weight_warn_threshold' => 0.8,
             'health_check_interval' => 60,

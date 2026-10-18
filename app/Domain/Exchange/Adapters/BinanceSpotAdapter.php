@@ -9,6 +9,8 @@ use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
 use App\Domain\Exchange\Exceptions\ExchangeApiException;
+use App\Domain\Exchange\Signing\BinanceRequestSigner;
+use App\Domain\Exchange\Signing\RequestSigner;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Swoole\Coroutine;
@@ -43,6 +45,30 @@ class BinanceSpotAdapter extends AbstractExchangeAdapter
     protected function market(): string
     {
         return 'spot';
+    }
+
+    /**
+     * 签名策略（FR-008 迁移）：queryString+signature hex HMAC，行为与原基类签名路径一致。
+     */
+    protected function requestSigner(): RequestSigner
+    {
+        return new BinanceRequestSigner();
+    }
+
+    /**
+     * Binance 用标准 HTTP 状态码传错误（4xx/5xx），HTTP 200 响应体无业务错误码结构（现状保持）。
+     */
+    protected function extractErrorCode(array $responseBody): ?string
+    {
+        return null;
+    }
+
+    /**
+     * Binance 业务错误码为负数（客户端语义：参数/签名/权限/订单状态）。
+     */
+    protected function translateErrorCode(string $rawCode, int $httpStatus): string
+    {
+        return str_starts_with($rawCode, '-') ? 'client' : 'server';
     }
 
     public function withCredentials(array $credentials): static

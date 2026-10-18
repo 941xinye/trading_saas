@@ -9,8 +9,8 @@ use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
 use App\Domain\Exchange\Exceptions\ExchangeApiException;
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
+use App\Domain\Exchange\Signing\OkxRequestSigner;
+use App\Domain\Exchange\Signing\RequestSigner;
 use Illuminate\Support\Facades\Redis;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Http\Client as WsClient;
@@ -19,7 +19,7 @@ use Throwable;
 /**
  * OKX 适配器。
  *
- * REST: https://www.okx.com（testnet 同域 + x-simulated-trading:1 header）
+ * REST: https://www.okx.com（testnet 同域 + x-simulated-trading:1 header，签名请求由 signer 注入）
  * WS:   wss://ws.okx.com:8443/ws/v5/public（公共流无需 login）
  *
  * 特点：passphrase 鉴权、ISO 8601 签名 timestamp、模拟盘同域 + x-simulated-trading header。
@@ -28,7 +28,7 @@ use Throwable;
  * US1 MVP 实装：getTicker / getKline / symbolFilters / alignToStep / subscribeLiquidationStream（占位）。
  * US2 WS 实装：subscribeKlineStream / unsubscribeStream / runKlineWsLoop / mapWsKlinePayload。
  * US3 签名实装：getBalance / placeOrder / cancelOrder / getOrder / getOrderByClientOrderId
- *              + signQuery/doRequest override（OK-ACCESS-* 四件套 + passphrase 守卫 + raw JSON body）。
+ *              + requestSigner() 策略（Signing/OkxRequestSigner，T040 自 doRequest/signQuery override 迁移）。
  */
 class OkxAdapter extends AbstractExchangeAdapter
 {
@@ -50,6 +50,36 @@ class OkxAdapter extends AbstractExchangeAdapter
     public function withCredentials(array $credentials): static
     {
         return new static($this->rateLimiter, $this->healthChecker, $credentials);
+    }
+
+    // ------------------------------------------------------------------
+    // 业务错误码抽象点（FR-009，T004 平移；T040 删除 doRequest override 后由基类消费）
+    // ------------------------------------------------------------------
+
+    /**
+     * OKX 业务错误结构：HTTP 200 + code != '0'（平移自 doRequest override 内联判断）。
+     *
+     * @param  array<string,mixed>  $responseBody
+     */
+    protected function extractErrorCode(array $responseBody): ?string
+    {
+        $code = (string) ($responseBody['code'] ?? '0');
+
+        return $code !== '' && $code !== '0' ? $code : null;
+    }
+
+    /**
+     * OKX retCode 分类：认证类/订单不存在 → client 硬失败；限流/服务器/未知 → server 保守可重试
+     * （FR-009 跨所一致；T040 删除 doRequest override 后生效，未知码从 client 收敛为 server）。
+     */
+    protected function translateErrorCode(string $rawCode, int $httpStatus): string
+    {
+        return match ($rawCode) {
+            '50111', '50113', // API key 无效 / IP 白名单不匹配（认证硬失败）
+            '51404', '51408', // 订单不存在 / 订单已完成（幂等查询特判依赖）
+            => 'client',
+            default => 'server', // 50011 触发限流等 + 未知码保守可重试
+        };
     }
 
     // ------------------------------------------------------------------
@@ -547,144 +577,16 @@ class OkxAdapter extends AbstractExchangeAdapter
     }
 
     // ------------------------------------------------------------------
-    // 签名路径覆写（US3）
+    // 签名策略（US3，T040 自 doRequest/signQuery override 迁移）
     // ------------------------------------------------------------------
 
     /**
-     * OKX 签名：base64_encode(HMAC-SHA256(secret, prehash, raw_binary))。
-     *
-     * 与父类 Binance 的 HMAC SHA256 hex 根本不同——OKX prehash 是
-     * timestamp+method+requestPath+body 完整串，签名输出 base64 非 hex。
-     * 参考 contracts/okx-api-contract.md 签名 prehash 构造。
+     * 签名策略（FR-008）：OKX prehash=ISO timestamp+method+requestPath+body → base64，
+     * OK-ACCESS-* 四件套 + testnet x-simulated-trading（Signing/OkxRequestSigner）。
      */
-    protected function signQuery(string $prehash): string
+    protected function requestSigner(): RequestSigner
     {
-        return base64_encode(hash_hmac('sha256', $prehash, (string) ($this->credentials['api_secret'] ?? ''), true));
-    }
-
-    /**
-     * OKX REST 调用模板：限流 → passphrase 守卫 → 签名 → HTTP → 健康埋点 → 异常分类。
-     *
-     * 与父类 Binance 范式根本不同（参考 contracts/okx-api-contract.md）：
-     *  - requestPath：GET 拼 ?http_build_query，POST/DELETE 同 path（body 单独）
-     *  - body：GET 空字符串，POST/DELETE raw JSON（json_encode，非 form-encoded）
-     *  - timestamp：ISO 8601 UTC（gmdate 'Y-m-d\TH:i:s.v\Z'，非 Binance 毫秒整数）
-     *  - prehash = timestamp.method.requestPath.body（4 段拼接）
-     *  - headers：OK-ACCESS-KEY/SIGN/TIMESTAMP/PASSPHRASE 四件套 + testnet x-simulated-trading
-     *  - passphrase 守卫前置（FR-007：失败不占额度）
-     *  - 错误响应 OKX 是 HTTP 200 + code!=0，需检查 code 字段
-     *
-     * constitution III：REST 走阻塞 curl（CURL hook 关闭），无协程化担忧。
-     */
-    protected function doRequest(string $method, string $path, array $query, bool $signed, int $weight): array
-    {
-        $exchange = $this->exchangeCode();
-        $endpoint = "{$method} {$path}";
-
-        // passphrase 守卫前置（constitution V：前置失败不占额度）
-        if ($signed && empty($this->credentials['passphrase'])) {
-            throw ExchangeApiException::clientError(
-                $exchange,
-                $endpoint,
-                401,
-                'passphrase is required for signed OKX requests',
-            );
-        }
-
-        if (! $this->rateLimiter->tryAcquire($exchange, $endpoint, $weight)) {
-            throw ExchangeApiException::rateLimited($exchange, $endpoint);
-        }
-
-        // 构造 requestPath 与 body
-        $method = strtoupper($method);
-        if ($method === 'GET' && $query !== []) {
-            $requestPath = $path.'?'.http_build_query($query);
-            $body = '';
-        } else {
-            $requestPath = $path;
-            $body = ($method === 'POST' || $method === 'DELETE') && $query !== []
-                ? json_encode($query, JSON_UNESCAPED_SLASHES)
-                : '';
-        }
-
-        $timestamp = gmdate('Y-m-d\TH:i:s.v\Z');
-        $prehash = $timestamp.$method.$requestPath.$body;
-        $sign = $this->signQuery($prehash);
-
-        $headers = ['Content-Type' => 'application/json'];
-        if ($signed) {
-            $headers['OK-ACCESS-KEY'] = (string) ($this->credentials['api_key'] ?? '');
-            $headers['OK-ACCESS-SIGN'] = $sign;
-            $headers['OK-ACCESS-TIMESTAMP'] = $timestamp;
-            $headers['OK-ACCESS-PASSPHRASE'] = (string) $this->credentials['passphrase'];
-        }
-        if ($this->isTestnet()) {
-            $headers['x-simulated-trading'] = '1';
-        }
-
-        $base = $this->restBaseUrl();
-        $startedAt = microtime(true);
-        $status = 'ok';
-        $error = null;
-
-        try {
-            $request = Http::timeout(10)->withHeaders($headers);
-
-            $options = $method !== 'GET' && $body !== '' ? ['body' => $body] : [];
-            $response = $request->send($method, $base.$requestPath, $options);
-
-            $latency = (int) ((microtime(true) - $startedAt) * 1000);
-
-            if ($response->failed()) {
-                $status = $response->serverError() ? 'down' : 'degraded';
-                $error = $response->body();
-                throw $response->serverError()
-                    ? ExchangeApiException::serverError($exchange, $endpoint, $response->body())
-                    : ExchangeApiException::clientError($exchange, $endpoint, $response->status(), $response->body());
-            }
-
-            $json = $response->json() ?? [];
-
-            // OKX 业务错误：HTTP 200 但 code != '0'
-            $code = (string) ($json['code'] ?? '0');
-            if ($code !== '0') {
-                $msg = (string) ($json['msg'] ?? '');
-                $status = 'degraded';
-                $error = "code={$code} msg={$msg}";
-                throw ExchangeApiException::clientError(
-                    $exchange,
-                    $endpoint,
-                    400,
-                    "OKX code={$code} msg={$msg}",
-                );
-            }
-
-            return $json;
-        } catch (ExchangeApiException $e) {
-            throw $e;
-        } catch (Throwable $e) {
-            $status = 'down';
-            $error = $e->getMessage();
-            throw ExchangeApiException::networkError($exchange, $endpoint, $e->getMessage());
-        } finally {
-            try {
-                $this->healthChecker->record($exchange, $endpoint, (int) ((microtime(true) - $startedAt) * 1000), $status, $error);
-            } catch (Throwable $recordError) {
-                Log::warning('Exchange health record failed', [
-                    'exchange' => $exchange,
-                    'endpoint' => $endpoint,
-                    'error' => $recordError->getMessage(),
-                ]);
-            }
-        }
-    }
-
-    /**
-     * testnet 开关（doRequest 注入 x-simulated-trading header 用）。
-     */
-    private function isTestnet(): bool
-    {
-        return (bool) config('exchange.exchanges.okx.testnet', false);
+        return new OkxRequestSigner();
     }
 
     // ------------------------------------------------------------------

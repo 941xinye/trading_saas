@@ -6,6 +6,8 @@ namespace App\Domain\Exchange\Adapters;
 
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\LiquidationEvent;
+use App\Domain\Exchange\Signing\BinanceRequestSigner;
+use App\Domain\Exchange\Signing\RequestSigner;
 use Illuminate\Support\Facades\Log;
 use Swoole\Coroutine;
 use Swoole\Coroutine\Http\Client as WsClient;
@@ -45,6 +47,27 @@ class BinanceFuturesAdapter extends AbstractExchangeAdapter
     protected function market(): string
     {
         return 'futures';
+    }
+
+    /**
+     * 签名策略（FR-008 迁移）：与 BinanceSpotAdapter 同一策略（P6+ 下单接口启用时生效）。
+     */
+    protected function requestSigner(): RequestSigner
+    {
+        return new BinanceRequestSigner();
+    }
+
+    /**
+     * Binance 用标准 HTTP 状态码传错误（4xx/5xx），HTTP 200 响应体无业务错误码结构（现状保持）。
+     */
+    protected function extractErrorCode(array $responseBody): ?string
+    {
+        return null;
+    }
+
+    protected function translateErrorCode(string $rawCode, int $httpStatus): string
+    {
+        return str_starts_with($rawCode, '-') ? 'client' : 'server';
     }
 
     public function withCredentials(array $credentials): static
