@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Domain\Exchange;
 
 use App\Domain\Exchange\Adapters\OkxAdapter;
+use App\Domain\Exchange\Exceptions\ExchangeApiException;
 use App\Domain\Exchange\ExchangeHealthChecker;
 use App\Domain\Exchange\RateLimiter;
 use Illuminate\Support\Facades\Http;
@@ -383,5 +384,155 @@ class OkxAdapterTest extends TestCase
             'onBar/onTick 触发分支需手测真实 WS（wspap.okx.com:8443/ws/v5/public）；'
             . '本测试只覆盖 mapWsKlinePayload 的 DTO 映射纯函数行为'
         );
+    }
+
+    // ------------------------------------------------------------------
+    // T022 passphrase 守卫（US3）
+    // ------------------------------------------------------------------
+
+    public function test_passphrase_missing_guard_throws_before_http(): void
+    {
+        // 构造 credentials 仅含 api_key/api_secret 无 passphrase
+        $adapter = new OkxAdapter(new RateLimiter(), new ExchangeHealthChecker(), [
+            'api_key' => 'k',
+            'api_secret' => 's',
+            // 故意缺 passphrase
+        ]);
+
+        // 任何请求都视为意外（fake 空响应）；守卫应在前置抛错，不应触发任何请求
+        Http::fake([]);
+
+        try {
+            $adapter->getBalance();
+            static::fail('预期抛 ExchangeApiException::clientError（passphrase 缺失守卫）');
+        } catch (ExchangeApiException $e) {
+            // FR-007：前置失败不占额度，retryable=false（硬失败）
+            static::assertStringContainsString('passphrase', strtolower($e->getMessage()));
+            static::assertFalse($e->isRetryable(), 'passphrase 缺失属硬失败，不重试');
+        }
+
+        Http::assertSentCount(0);
+        // passphrase 守卫前置抛错，不应发起任何 HTTP（不占额度，FR-007）
+    }
+
+    // ------------------------------------------------------------------
+    // T023 mapOrderStatus 状态映射（US3）
+    // ------------------------------------------------------------------
+
+    /**
+     * @return array<string,array{0:string,1:string}>
+     */
+    public static function okxOrderStatusProvider(): array
+    {
+        return [
+            'live → submitted' => ['live', 'submitted'],
+            'partially_filled → partial' => ['partially_filled', 'partial'],
+            'filled → filled' => ['filled', 'filled'],
+            'canceled → canceled' => ['canceled', 'canceled'],
+            'mmp_canceled → failed' => ['mmp_canceled', 'failed'],
+            '空字符串 → failed' => ['', 'failed'],
+        ];
+    }
+
+    #[DataProvider('okxOrderStatusProvider')]
+    public function test_map_order_status_maps_okx_state_to_platform_enum(string $okxState, string $expected): void
+    {
+        $adapter = $this->adapter();
+
+        $method = new ReflectionMethod($adapter, 'mapOrderStatus');
+        $method->setAccessible(true);
+
+        static::assertSame($expected, $method->invoke($adapter, $okxState));
+    }
+
+    // ------------------------------------------------------------------
+    // T024 placeOrder 响应映射（US3）
+    // ------------------------------------------------------------------
+
+    public function test_place_order_maps_okx_response_to_dto(): void
+    {
+        Http::fake([
+            '*/api/v5/trade/order*' => Http::response([
+                'code' => '0',
+                'msg' => '',
+                'data' => [[
+                    'ordId' => '1234567890',
+                    'clOrdId' => '1_1_1697443200_abcd1234',
+                    'state' => 'live',
+                    'side' => 'buy',
+                    'ordType' => 'limit',
+                    'sz' => '0.001',
+                    'px' => '50000',
+                    'accFillSz' => '0',
+                    'accFillPx' => '0',
+                    'fee' => '0',
+                    'cTime' => '1697443200000',
+                    'uTime' => '1697443200000',
+                ]],
+            ]),
+        ]);
+
+        $adapter = new OkxAdapter(new RateLimiter(), new ExchangeHealthChecker(), [
+            'api_key' => 'k',
+            'api_secret' => 's',
+            'passphrase' => 'p',
+        ]);
+
+        $order = $adapter->placeOrder(
+            symbol: 'BTCUSDT',
+            side: 'buy',
+            type: 'limit',
+            quantity: '0.001',
+            price: '50000',
+            opts: ['clientOrderId' => '1_1_1697443200_abcd1234'],
+        );
+
+        // ordId 透传
+        static::assertSame('1234567890', $order->exchangeOrderId);
+        // clientOrderId 与传入一致（constitution II 模板）
+        static::assertSame('1_1_1697443200_abcd1234', $order->clientOrderId);
+        // state=live → submitted
+        static::assertSame('submitted', $order->status);
+        // side/type lower
+        static::assertSame('buy', $order->side);
+        static::assertSame('limit', $order->type);
+        // symbol 平台格式
+        static::assertSame('BTCUSDT', $order->symbol);
+        // sz 透传
+        static::assertSame('0.001', $order->quantity);
+        // px 透传
+        static::assertSame('50000', $order->price);
+        // placedAt = cTime/1000（ms→s）
+        static::assertSame(1697443200, $order->placedAt);
+        // 现货无杠杆
+        static::assertNull($order->leverage);
+        static::assertFalse($order->reduceOnly);
+    }
+
+    // ------------------------------------------------------------------
+    // T025 getOrderByClientOrderId 订单不存在返 null（US3）
+    // ------------------------------------------------------------------
+
+    public function test_get_order_by_client_order_id_returns_null_on_not_found(): void
+    {
+        // OKX 订单不存在错误响应（参考 contracts/okx-api-contract.md + research.md R-006）
+        Http::fake([
+            '*/api/v5/trade/order*' => Http::response([
+                'code' => '51404',
+                'msg' => 'Order does not exist',
+                'data' => [],
+            ], 200),
+        ]);
+
+        $adapter = new OkxAdapter(new RateLimiter(), new ExchangeHealthChecker(), [
+            'api_key' => 'k',
+            'api_secret' => 's',
+            'passphrase' => 'p',
+        ]);
+
+        $order = $adapter->getOrderByClientOrderId('BTCUSDT', '1_1_1697443200_abcd1234');
+
+        // spec FR-006 + constitution IV：崩溃恢复幂等查询，查无此单返回 null（不抛异常）
+        static::assertNull($order, 'OKX 订单不存在错误码应返回 null 而非抛异常');
     }
 }

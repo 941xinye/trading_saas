@@ -8,6 +8,8 @@ use App\Domain\Exchange\Contracts\ExchangeBalance;
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
+use App\Domain\Exchange\Exceptions\ExchangeApiException;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Swoole\Coroutine;
@@ -25,7 +27,8 @@ use Throwable;
  *
  * US1 MVP 实装：getTicker / getKline / symbolFilters / alignToStep / subscribeLiquidationStream（占位）。
  * US2 WS 实装：subscribeKlineStream / unsubscribeStream / runKlineWsLoop / mapWsKlinePayload。
- * US3 接口方法（getBalance / placeOrder / cancelOrder / getOrder）暂以 LogicException 占位，待对应 phase 落地。
+ * US3 签名实装：getBalance / placeOrder / cancelOrder / getOrder / getOrderByClientOrderId
+ *              + signQuery/doRequest override（OK-ACCESS-* 四件套 + passphrase 守卫 + raw JSON body）。
  */
 class OkxAdapter extends AbstractExchangeAdapter
 {
@@ -190,14 +193,58 @@ class OkxAdapter extends AbstractExchangeAdapter
     }
 
     // ------------------------------------------------------------------
-    // US2/US3 占位（待 spec Phase 4/5 落地）
+    // 账户与交易（US3 签名接口）
     // ------------------------------------------------------------------
 
+    /**
+     * OKX GET /api/v5/account/balance → ExchangeBalance。
+     *
+     * data.{totalEq→totalEquity, margin→totalMargin, upl→unrealizedPnl}；
+     * 遍历 data[] 聚合 assets = {ccy: {total: availBal+frozenBal, available: availBal}}；
+     * available 字段取 USDT 资产 availBal（data-model.md ExchangeBalance 表）。
+     */
     public function getBalance(): ExchangeBalance
     {
-        throw new \LogicException('OKX getBalance not implemented until US3 (spec Phase 5).');
+        $data = $this->httpSigned('GET', '/api/v5/account/balance', [], weight: 1);
+        $row = (array) ($data['data'][0] ?? []);
+
+        $assets = [];
+        foreach ((array) ($row['details'] ?? []) as $asset) {
+            $asset = (array) $asset;
+            $ccy = (string) ($asset['ccy'] ?? '');
+            if ($ccy === '') {
+                continue;
+            }
+            $avail = (string) ($asset['availBal'] ?? '0');
+            $frozen = (string) ($asset['frozenBal'] ?? '0');
+            $total = $this->trimZeros(bcadd($avail, $frozen, 8));
+            if (bccomp($total, '0', 8) !== 1) {
+                continue;
+            }
+            $assets[$ccy] = [
+                'total' => $total,
+                'available' => $this->trimZeros($avail),
+            ];
+        }
+
+        $usdtTotal = $assets['USDT']['total'] ?? '0';
+        $usdtAvail = $assets['USDT']['available'] ?? '0';
+
+        return new ExchangeBalance(
+            totalEquity: (string) ($row['totalEq'] ?? $usdtTotal),
+            totalMargin: (string) ($row['margin'] ?? '0'),
+            available: $usdtAvail,
+            unrealizedPnl: (string) ($row['upl'] ?? '0'),
+            assets: $assets,
+        );
     }
 
+    /**
+     * OKX POST /api/v5/trade/order → ExchangeOrder。
+     *
+     * body: instId/side/ordType/sz/px?/clOrdId?（raw JSON body，非 form-encoded，见 doRequest）。
+     * clientOrderId 必须传 opts['clientOrderId'] 透传 clOrdId（constitution II 模板）。
+     */
     public function placeOrder(
         string $symbol,
         string $side,
@@ -207,17 +254,124 @@ class OkxAdapter extends AbstractExchangeAdapter
         ?string $stopPrice = null,
         array $opts = [],
     ): ExchangeOrder {
-        throw new \LogicException('OKX placeOrder not implemented until US3 (spec Phase 5).');
+        $body = [
+            'instId' => $this->toOkxInstId($symbol),
+            'side' => strtolower($side),
+            'ordType' => strtolower($type),
+            'sz' => $quantity,
+        ];
+
+        $clientOrderId = $opts['clientOrderId'] ?? null;
+        if (is_string($clientOrderId) && $clientOrderId !== '') {
+            $body['clOrdId'] = $clientOrderId;
+        }
+
+        if ($type === 'limit' && $price !== null) {
+            $body['px'] = (string) $price;
+        }
+
+        $data = $this->httpSigned('POST', '/api/v5/trade/order', $body, weight: 1);
+
+        return $this->mapOrderResponse(
+            (array) ($data['data'][0] ?? []),
+            $symbol,
+            $side,
+            $type,
+            $quantity,
+            $price,
+            $stopPrice,
+            $opts,
+        );
     }
 
+    /**
+     * OKX DELETE /api/v5/trade/order → bool。
+     *
+     * body: instId + (clOrdId | ordId)。
+     * OKX 订单不存在/已成交等错误返 false（镜像 BinanceSpotAdapter::cancelOrder -2011 处理）。
+     */
     public function cancelOrder(string $symbol, string $orderId, ?string $clientOrderId = null): bool
     {
-        throw new \LogicException('OKX cancelOrder not implemented until US3 (spec Phase 5).');
+        $body = ['instId' => $this->toOkxInstId($symbol)];
+        if ($clientOrderId !== null && $clientOrderId !== '') {
+            $body['clOrdId'] = $clientOrderId;
+        } else {
+            $body['ordId'] = $orderId;
+        }
+
+        try {
+            $this->httpSigned('DELETE', '/api/v5/trade/order', $body, weight: 1);
+
+            return true;
+        } catch (ExchangeApiException $e) {
+            // 51404 Order does not exist / Order is finished 等视为撤销失败返 false
+            if (str_contains($e->getMessage(), '51404') || str_contains($e->getMessage(), '51408')) {
+                return false;
+            }
+
+            throw $e;
+        }
     }
 
+    /**
+     * OKX GET /api/v5/trade/order?instId&ordId → ExchangeOrder。
+     */
     public function getOrder(string $symbol, string $orderId): ExchangeOrder
     {
-        throw new \LogicException('OKX getOrder not implemented until US3 (spec Phase 5).');
+        $data = $this->httpSigned('GET', '/api/v5/trade/order', [
+            'instId' => $this->toOkxInstId($symbol),
+            'ordId' => $orderId,
+        ], weight: 1);
+
+        return $this->mapOrderResponse(
+            (array) ($data['data'][0] ?? []),
+            $symbol,
+            strtolower((string) ($data['data'][0]['side'] ?? 'buy')),
+            strtolower((string) ($data['data'][0]['ordType'] ?? 'market')),
+            (string) ($data['data'][0]['sz'] ?? '0'),
+            isset($data['data'][0]['px']) && $data['data'][0]['px'] !== '' ? (string) $data['data'][0]['px'] : null,
+            null,
+            [],
+        );
+    }
+
+    /**
+     * OKX GET /api/v5/trade/order?instId&clOrdId → ?ExchangeOrder。
+     *
+     * spec FR-006 + constitution IV：崩溃恢复幂等查询，查无此单返回 null。
+     */
+    public function getOrderByClientOrderId(string $symbol, string $clientOrderId): ?ExchangeOrder
+    {
+        try {
+            $data = $this->httpSigned('GET', '/api/v5/trade/order', [
+                'instId' => $this->toOkxInstId($symbol),
+                'clOrdId' => $clientOrderId,
+            ], weight: 1);
+        } catch (ExchangeApiException $e) {
+            // 51404 Order does not exist → null（幂等查询）
+            if (str_contains($e->getMessage(), '51404')) {
+                return null;
+            }
+
+            throw $e;
+        }
+
+        $row = (array) ($data['data'][0] ?? []);
+        if ($row === []) {
+            // OKX 错误响应（code!=0 但 HTTP 200）时 data 为空——也算订单不存在
+            return null;
+        }
+
+        return $this->mapOrderResponse(
+            $row,
+            $symbol,
+            strtolower((string) ($row['side'] ?? 'buy')),
+            strtolower((string) ($row['ordType'] ?? 'market')),
+            (string) ($row['sz'] ?? '0'),
+            isset($row['px']) && $row['px'] !== '' ? (string) $row['px'] : null,
+            null,
+            ['clientOrderId' => $clientOrderId],
+        );
     }
 
     public function subscribeKlineStream(
@@ -390,6 +544,225 @@ class OkxAdapter extends AbstractExchangeAdapter
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 签名路径覆写（US3）
+    // ------------------------------------------------------------------
+
+    /**
+     * OKX 签名：base64_encode(HMAC-SHA256(secret, prehash, raw_binary))。
+     *
+     * 与父类 Binance 的 HMAC SHA256 hex 根本不同——OKX prehash 是
+     * timestamp+method+requestPath+body 完整串，签名输出 base64 非 hex。
+     * 参考 contracts/okx-api-contract.md 签名 prehash 构造。
+     */
+    protected function signQuery(string $prehash): string
+    {
+        return base64_encode(hash_hmac('sha256', $prehash, (string) ($this->credentials['api_secret'] ?? ''), true));
+    }
+
+    /**
+     * OKX REST 调用模板：限流 → passphrase 守卫 → 签名 → HTTP → 健康埋点 → 异常分类。
+     *
+     * 与父类 Binance 范式根本不同（参考 contracts/okx-api-contract.md）：
+     *  - requestPath：GET 拼 ?http_build_query，POST/DELETE 同 path（body 单独）
+     *  - body：GET 空字符串，POST/DELETE raw JSON（json_encode，非 form-encoded）
+     *  - timestamp：ISO 8601 UTC（gmdate 'Y-m-d\TH:i:s.v\Z'，非 Binance 毫秒整数）
+     *  - prehash = timestamp.method.requestPath.body（4 段拼接）
+     *  - headers：OK-ACCESS-KEY/SIGN/TIMESTAMP/PASSPHRASE 四件套 + testnet x-simulated-trading
+     *  - passphrase 守卫前置（FR-007：失败不占额度）
+     *  - 错误响应 OKX 是 HTTP 200 + code!=0，需检查 code 字段
+     *
+     * constitution III：REST 走阻塞 curl（CURL hook 关闭），无协程化担忧。
+     */
+    protected function doRequest(string $method, string $path, array $query, bool $signed, int $weight): array
+    {
+        $exchange = $this->exchangeCode();
+        $endpoint = "{$method} {$path}";
+
+        // passphrase 守卫前置（constitution V：前置失败不占额度）
+        if ($signed && empty($this->credentials['passphrase'])) {
+            throw ExchangeApiException::clientError(
+                $exchange,
+                $endpoint,
+                401,
+                'passphrase is required for signed OKX requests',
+            );
+        }
+
+        if (! $this->rateLimiter->tryAcquire($exchange, $endpoint, $weight)) {
+            throw ExchangeApiException::rateLimited($exchange, $endpoint);
+        }
+
+        // 构造 requestPath 与 body
+        $method = strtoupper($method);
+        if ($method === 'GET' && $query !== []) {
+            $requestPath = $path.'?'.http_build_query($query);
+            $body = '';
+        } else {
+            $requestPath = $path;
+            $body = ($method === 'POST' || $method === 'DELETE') && $query !== []
+                ? json_encode($query, JSON_UNESCAPED_SLASHES)
+                : '';
+        }
+
+        $timestamp = gmdate('Y-m-d\TH:i:s.v\Z');
+        $prehash = $timestamp.$method.$requestPath.$body;
+        $sign = $this->signQuery($prehash);
+
+        $headers = ['Content-Type' => 'application/json'];
+        if ($signed) {
+            $headers['OK-ACCESS-KEY'] = (string) ($this->credentials['api_key'] ?? '');
+            $headers['OK-ACCESS-SIGN'] = $sign;
+            $headers['OK-ACCESS-TIMESTAMP'] = $timestamp;
+            $headers['OK-ACCESS-PASSPHRASE'] = (string) $this->credentials['passphrase'];
+        }
+        if ($this->isTestnet()) {
+            $headers['x-simulated-trading'] = '1';
+        }
+
+        $base = $this->restBaseUrl();
+        $startedAt = microtime(true);
+        $status = 'ok';
+        $error = null;
+
+        try {
+            $request = Http::timeout(10)->withHeaders($headers);
+
+            $options = $method !== 'GET' && $body !== '' ? ['body' => $body] : [];
+            $response = $request->send($method, $base.$requestPath, $options);
+
+            $latency = (int) ((microtime(true) - $startedAt) * 1000);
+
+            if ($response->failed()) {
+                $status = $response->serverError() ? 'down' : 'degraded';
+                $error = $response->body();
+                throw $response->serverError()
+                    ? ExchangeApiException::serverError($exchange, $endpoint, $response->body())
+                    : ExchangeApiException::clientError($exchange, $endpoint, $response->status(), $response->body());
+            }
+
+            $json = $response->json() ?? [];
+
+            // OKX 业务错误：HTTP 200 但 code != '0'
+            $code = (string) ($json['code'] ?? '0');
+            if ($code !== '0') {
+                $msg = (string) ($json['msg'] ?? '');
+                $status = 'degraded';
+                $error = "code={$code} msg={$msg}";
+                throw ExchangeApiException::clientError(
+                    $exchange,
+                    $endpoint,
+                    400,
+                    "OKX code={$code} msg={$msg}",
+                );
+            }
+
+            return $json;
+        } catch (ExchangeApiException $e) {
+            throw $e;
+        } catch (Throwable $e) {
+            $status = 'down';
+            $error = $e->getMessage();
+            throw ExchangeApiException::networkError($exchange, $endpoint, $e->getMessage());
+        } finally {
+            try {
+                $this->healthChecker->record($exchange, $endpoint, (int) ((microtime(true) - $startedAt) * 1000), $status, $error);
+            } catch (Throwable $recordError) {
+                Log::warning('Exchange health record failed', [
+                    'exchange' => $exchange,
+                    'endpoint' => $endpoint,
+                    'error' => $recordError->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * testnet 开关（doRequest 注入 x-simulated-trading header 用）。
+     */
+    private function isTestnet(): bool
+    {
+        return (bool) config('exchange.exchanges.okx.testnet', false);
+    }
+
+    // ------------------------------------------------------------------
+    // 订单映射（US3）
+    // ------------------------------------------------------------------
+
+    /**
+     * OKX state → 平台 status 枚举（research.md R-006 + data-model.md State Transitions）。
+     *
+     * 输出必须落在 ExchangeOrder.status 七值之一：
+     * pending|submitted|partial|filled|canceled|rejected|failed。
+     */
+    protected function mapOrderStatus(string $okxState): string
+    {
+        return match ($okxState) {
+            'live' => 'submitted',
+            'partially_filled' => 'partial',
+            'filled' => 'filled',
+            'canceled' => 'canceled',
+            default => 'failed', // mmp_canceled 等其他状态归 failed
+        };
+    }
+
+    /**
+     * OKX 订单响应 → ExchangeOrder DTO（data-model.md ExchangeOrder 表）。
+     *
+     * 字段映射：
+     *  - exchangeOrderId = data.ordId
+     *  - clientOrderId = data.clOrdId ?? opts.clientOrderId
+     *  - symbol = 平台格式（入参已归一化）
+     *  - side = lower(data.side)
+     *  - type = lower(data.ordType)
+     *  - quantity = data.sz
+     *  - price = data.px（市价 null）
+     *  - leverage = null（现货无杠杆）
+     *  - reduceOnly = false（现货）
+     *  - status = mapOrderStatus(data.state)
+     *  - filledQty = data.accFillSz
+     *  - avgFillPrice = data.accFillPx（OKX 直返，无需计算）
+     *  - fee = data.fee
+     *  - placedAt = data.cTime/1000（ms→s）
+     *  - filledAt = state==filled 时 data.uTime/1000
+     */
+    protected function mapOrderResponse(
+        array $data,
+        string $symbol,
+        string $side,
+        string $type,
+        string $quantity,
+        ?string $price,
+        ?string $stopPrice,
+        array $opts,
+    ): ExchangeOrder {
+        $status = $this->mapOrderStatus((string) ($data['state'] ?? ''));
+
+        $cTimeMs = isset($data['cTime']) ? (int) $data['cTime'] : null;
+        $uTimeMs = isset($data['uTime']) ? (int) $data['uTime'] : null;
+
+        return new ExchangeOrder(
+            exchangeOrderId: (string) ($data['ordId'] ?? '0'),
+            clientOrderId: (string) ($data['clOrdId'] ?? ($opts['clientOrderId'] ?? '')),
+            symbol: $symbol,
+            side: strtolower($side),
+            type: strtolower($type),
+            quantity: $quantity,
+            price: $price,
+            stopPrice: $stopPrice,
+            leverage: null, // 现货无杠杆
+            reduceOnly: false,
+            status: $status,
+            filledQty: $this->trimZeros((string) ($data['accFillSz'] ?? '0')),
+            avgFillPrice: isset($data['accFillPx']) && (string) $data['accFillPx'] !== ''
+                ? $this->trimZeros((string) $data['accFillPx'])
+                : null,
+            fee: $this->trimZeros((string) ($data['fee'] ?? '0')),
+            placedAt: $cTimeMs !== null ? (int) ($cTimeMs / 1000) : null,
+            filledAt: $status === 'filled' && $uTimeMs !== null ? (int) ($uTimeMs / 1000) : null,
+        );
     }
 
     // ------------------------------------------------------------------
