@@ -50,6 +50,9 @@ interface ArchiveStore
      * @param array<string, string|int|null> $filters    等值过滤（null → IS NULL）；标识符经契约列白名单调用方保证
      * @param string                         $timeColumn 时间轴列（R-005）
      * @param array<string, string>          $orderBy    列 => 'ASC'|'DESC'
+     * @param ?array{time: string, id: string} $keysetAfter keyset 游标下推（US2 分页）：
+     *                                                     仅返回 (时间列, id) 严格大于该值的行
+     *                                                     （time > t OR (time = t AND id > i)）
      * @return list<array<string, string|null>>
      */
     public function fetchRows(
@@ -61,6 +64,7 @@ interface ArchiveStore
         array $orderBy,
         int $limit,
         int $offset = 0,
+        ?array $keysetAfter = null,
     ): array;
 
     /**

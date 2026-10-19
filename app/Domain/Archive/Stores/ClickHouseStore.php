@@ -116,6 +116,7 @@ final class ClickHouseStore implements ArchiveStore
         array $orderBy,
         int $limit,
         int $offset = 0,
+        ?array $keysetAfter = null,
     ): array {
         $where = [];
         foreach ($filters as $column => $value) {
@@ -131,6 +132,17 @@ final class ClickHouseStore implements ArchiveStore
         }
         if ($timeToUtc !== null) {
             $where[] = sprintf('%s < %s', $this->escapeIdent($timeColumn), $this->escapeValue($timeToUtc));
+        }
+        if ($keysetAfter !== null) {
+            // keyset 游标（US2 分页）：(时间列, id) 严格大于
+            $where[] = sprintf(
+                '(%s > %s OR (%s = %s AND id > %d))',
+                $this->escapeIdent($timeColumn),
+                $this->escapeValue($keysetAfter['time']),
+                $this->escapeIdent($timeColumn),
+                $this->escapeValue($keysetAfter['time']),
+                (int) $keysetAfter['id'],
+            );
         }
 
         $orderParts = [];

@@ -30,6 +30,9 @@ final class FakeArchiveStore implements ArchiveStore
     /** @var list<array{0: string, 1: int}> deleteByBatch 调用日志（幂等守卫断言用） */
     public array $deleteByBatchCalls = [];
 
+    /** @var list<array{chTable: string, from: ?string, to: ?string, limit: int, keysetAfter: ?array}> fetchRows 调用日志（路由断言用） */
+    public array $fetchRowsCalls = [];
+
     public function ping(): bool
     {
         return true;
@@ -76,10 +79,13 @@ final class FakeArchiveStore implements ArchiveStore
         array $orderBy,
         int $limit,
         int $offset = 0,
+        ?array $keysetAfter = null,
     ): array {
+        $this->fetchRowsCalls[] = ['chTable' => $chTable, 'from' => $timeFromUtc, 'to' => $timeToUtc, 'limit' => $limit, 'keysetAfter' => $keysetAfter];
+
         $rows = array_values(array_filter(
             $this->tables[$chTable] ?? [],
-            function (array $row) use ($filters, $timeColumn, $timeFromUtc, $timeToUtc): bool {
+            function (array $row) use ($filters, $timeColumn, $timeFromUtc, $timeToUtc, $keysetAfter): bool {
                 foreach ($filters as $column => $value) {
                     if (($row[$column] ?? null) !== $value) {
                         return false;
@@ -92,16 +98,30 @@ final class FakeArchiveStore implements ArchiveStore
                 if ($timeToUtc !== null && ($time === null || $time >= $timeToUtc)) {
                     return false;
                 }
+                // keyset 游标：(时间列, id) 严格大于才保留
+                if ($keysetAfter !== null) {
+                    $id = (int) ($row['id'] ?? 0);
+                    $afterId = (int) $keysetAfter['id'];
+                    if ($time === null || $time < $keysetAfter['time'] || ($time === $keysetAfter['time'] && $id <= $afterId)) {
+                        return false;
+                    }
+                }
 
                 return true;
             },
         ));
 
-        foreach ($orderBy as $column => $direction) {
-            usort($rows, fn (array $a, array $b): int => $direction === 'DESC'
-                ? strnatcmp((string) ($b[$column] ?? ''), (string) ($a[$column] ?? ''))
-                : strnatcmp((string) ($a[$column] ?? ''), (string) ($b[$column] ?? '')));
-        }
+        // 多列稳定排序（单 comparator 按 orderBy 列序依次比较，与 CH ORDER BY 同语义）
+        usort($rows, static function (array $a, array $b) use ($orderBy): int {
+            foreach ($orderBy as $column => $direction) {
+                $cmp = strnatcmp((string) ($a[$column] ?? ''), (string) ($b[$column] ?? ''));
+                if ($cmp !== 0) {
+                    return $direction === 'DESC' ? -$cmp : $cmp;
+                }
+            }
+
+            return 0;
+        });
 
         return array_slice($rows, $offset, $limit);
     }

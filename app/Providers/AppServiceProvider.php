@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Domain\Archive\Contracts\ArchiveStore;
+use App\Domain\Archive\Contracts\HistoricalQuery;
+use App\Domain\Archive\Services\HistoricalQueryService;
 use App\Domain\Archive\Stores\ClickHouseStore;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
@@ -28,6 +30,9 @@ class AppServiceProvider extends ServiceProvider
 
         // P8 历史归档存储（bind 非 singleton：Octane 长驻禁 static 缓存，spec 004 / T007）
         $this->app->bind(ArchiveStore::class, fn () => ClickHouseStore::fromConfig());
+
+        // P8 统一历史查询（bind 非 singleton，同上；US2 / T020）
+        $this->app->bind(HistoricalQuery::class, fn ($app) => new HistoricalQueryService($app->make(ArchiveStore::class)));
     }
 
     /**

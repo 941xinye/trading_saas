@@ -87,13 +87,13 @@ description: "Task list for ClickHouse 历史数据归档实现"
 
 ### Tests for User Story 2
 
-- [ ] T017 [P] [US2] 新建 `tests/Domain/Archive/HistoricalQueryServiceTest.php`（fake ArchiveStore + 真实 Eloquent 热侧数据集），写路由与归并断言：`to <= applied_watermark` 纯冷（store 被调、热侧零查询）、`from >= applied_watermark` 纯热（**store 零调用**，R-007 纯热短路）、跨界两侧查 + (时间列, id) 归并升序 + 自然键 id 去重（in-flight 批次两侧同现保留一条）；servedFrom 返回 HOT/COLD/MERGED 正确
-- [ ] T018 [P] [US2] 在 `tests/Domain/Archive/HistoricalQueryServiceTest.php` 写分页与上限断言：游标翻页全量拉取不重不漏（页界边界行校验）、nextPageCursor=null 终止；pageSize 默认 1000、超 query_max_rows 抛 `ArchiveQueryLimitException` 不静默截断（FR-011）；非法游标（篡改/过期格式）抛同异常；参数校验（from >= to、kline_bar 以外类型传 exchangeCode/interval、KlineBar 以外传 interval）抛 `InvalidArgumentException`（contracts/historical-query-contract.md §3 过滤开放表）
-- [ ] T019 [P] [US2] 新建 `app/Domain/Archive/Dto/HistoricalQueryRequest.php` 与 `HistoricalQueryResult.php`（不可变 DTO，字段与规则按 [data-model.md §4](file:///e:/Work/数字货币交易Saas平台/specs/004-clickhouse-historical-archive/data-model.md)：dataType/from/to/symbol/exchangeCode/interval/pageSize/cursor；**无 tenantId 字段**（R-008 物理隔离）；Result：rows（列名=>字符串/null 字典，全结果 (时间列,id) 有序）+ nextPageCursor + servedFrom 枚举）
+- [X] T017 [P] [US2] 新建 `tests/Domain/Archive/HistoricalQueryServiceTest.php`（fake ArchiveStore + 真实 Eloquent 热侧数据集），写路由与归并断言：`to <= applied_watermark` 纯冷（store 被调、热侧零查询）、`from >= applied_watermark` 纯热（**store 零调用**，R-007 纯热短路）、跨界两侧查 + (时间列, id) 归并升序 + 自然键 id 去重（in-flight 批次两侧同现保留一条）；servedFrom 返回 HOT/COLD/MERGED 正确
+- [X] T018 [P] [US2] 在 `tests/Domain/Archive/HistoricalQueryServiceTest.php` 写分页与上限断言：游标翻页全量拉取不重不漏（页界边界行校验）、nextPageCursor=null 终止；pageSize 默认 1000、超 query_max_rows 抛 `ArchiveQueryLimitException` 不静默截断（FR-011）；非法游标（篡改/过期格式）抛同异常；参数校验（from >= to、kline_bar 以外类型传 exchangeCode/interval、KlineBar 以外传 interval）抛 `InvalidArgumentException`（contracts/historical-query-contract.md §3 过滤开放表）
+- [X] T019 [P] [US2] 新建 `app/Domain/Archive/Dto/HistoricalQueryRequest.php` 与 `HistoricalQueryResult.php`（不可变 DTO，字段与规则按 [data-model.md §4](file:///e:/Work/数字货币交易Saas平台/specs/004-clickhouse-historical-archive/data-model.md)：dataType/from/to/symbol/exchangeCode/interval/pageSize/cursor；**无 tenantId 字段**（R-008 物理隔离）；Result：rows（列名=>字符串/null 字典，全结果 (时间列,id) 有序）+ nextPageCursor + servedFrom 枚举）
 
 ### Implementation for User Story 2
 
-- [ ] T020 [US2] 新建 `app/Domain/Archive/Services/HistoricalQueryService.php` 实现 HistoricalQuery 契约（依赖 T004-T007、T017-T019）：路由基准 `archive_watermarks.applied_watermark`（R-007 三段）；热侧经 `ArchiveType::hotQuery()` 复用既有模型（TenantScope 自动注入继续生效）、冷侧 `fetchRows`；归并 (时间列 ASC, id ASC) + id 去重；游标 = `(最后行时间列值, 最后行 id)` base64 不透明串编解码；每类型时间轴取自 ArchiveType::timeColumn()；新建 `app/Domain/Archive/Exceptions/ArchiveQueryLimitException.php`；在 `app/Providers/AppServiceProvider.php` 注册绑定 `HistoricalQuery::class => HistoricalQueryService`（**bind 非 singleton**，Octane 长驻禁 static 缓存）
+- [X] T020 [US2] 新建 `app/Domain/Archive/Services/HistoricalQueryService.php` 实现 HistoricalQuery 契约（依赖 T004-T007、T017-T019）：路由基准 `archive_watermarks.applied_watermark`（R-007 三段）；热侧经 `ArchiveType::hotQuery()` 复用既有模型（TenantScope 自动注入继续生效）、冷侧 `fetchRows`；归并 (时间列 ASC, id ASC) + id 去重；游标 = `(最后行时间列值, 最后行 id)` base64 不透明串编解码；每类型时间轴取自 ArchiveType::timeColumn()；新建 `app/Domain/Archive/Exceptions/ArchiveQueryLimitException.php`；在 `app/Providers/AppServiceProvider.php` 注册绑定 `HistoricalQuery::class => HistoricalQueryService`（**bind 非 singleton**，Octane 长驻禁 static 缓存）
 
 **Checkpoint**: US2 完整可测——冷热合并查询与纯主库基线一致（SC-003），分页/上限/错误语义完备，调用方零感知数据所在层。
 
