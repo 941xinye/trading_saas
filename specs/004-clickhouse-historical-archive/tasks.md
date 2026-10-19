@@ -107,11 +107,11 @@ description: "Task list for ClickHouse 历史数据归档实现"
 
 ### Tests for User Story 3
 
-- [ ] T021 [P] [US3] 新建 `tests/Domain/Archive/TenantIsolationTest.php`：造双租户历史 signals（各自 tenant_id）→ 管线归档（T013 显式绕过 TenantScope 搬迁）→ 以租户 A 上下文 `HistoricalQuery::query` 断言仅返回 A 行（纯冷/跨界/纯热三段都要，SC-004 零泄露）；B 同理；无租户上下文（TenantContext::clear 后）调 tenant 类型抛 TenantContext 既有 RuntimeException；**结构性断言**：`HistoricalQueryRequest` 反射不存在 tenantId 公开属性/方法（R-008 越权通道不存在）；public 类型（kline_bar）在无租户上下文可正常查询
+- [X] T021 [P] [US3] 新建 `tests/Domain/Archive/TenantIsolationTest.php`：造双租户历史 signals（各自 tenant_id）→ 管线归档（T013 显式绕过 TenantScope 搬迁）→ 以租户 A 上下文 `HistoricalQuery::query` 断言仅返回 A 行（纯冷/跨界/纯热三段都要，SC-004 零泄露）；B 同理；无租户上下文（TenantContext::clear 后）调 tenant 类型抛 TenantContext 既有 RuntimeException；**结构性断言**：`HistoricalQueryRequest` 反射不存在 tenantId 公开属性/方法（R-008 越权通道不存在）；public 类型（kline_bar）在无租户上下文可正常查询
 
 ### Implementation for User Story 3
 
-- [ ] T022 [US3] 隔离强制落地核对与收尾（依赖 T020/T021）：`HistoricalQueryService` 对 tenant 类型构造查询前强制 `TenantContext::requireTenantId()` 注入 `tenant_id = ?`（热侧 TenantScope 自动注入 + 冷侧 `fetchRows` filters 同谓词，两层等价，R-008）；若 T020 已覆盖则补断言缺口——尤其纯热短路段同样带租户谓词（隔离与路由正交）；public 类型不附加租户条件
+- [X] T022 [US3] 隔离强制落地核对与收尾（依赖 T020/T021）：`HistoricalQueryService` 对 tenant 类型构造查询前强制 `TenantContext::requireTenantId()` 注入 `tenant_id = ?`（热侧 TenantScope 自动注入 + 冷侧 `fetchRows` filters 同谓词，两层等价，R-008）；若 T020 已覆盖则补断言缺口——尤其纯热短路段同样带租户谓词（隔离与路由正交）；public 类型不附加租户条件
 
 **Checkpoint**: US3 完整可测——双租户零泄露、无上下文拒绝、DTO 无越权字段，隔离与冷热路由正交成立。
 

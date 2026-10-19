@@ -81,7 +81,7 @@ final class FakeArchiveStore implements ArchiveStore
         int $offset = 0,
         ?array $keysetAfter = null,
     ): array {
-        $this->fetchRowsCalls[] = ['chTable' => $chTable, 'from' => $timeFromUtc, 'to' => $timeToUtc, 'limit' => $limit, 'keysetAfter' => $keysetAfter];
+        $this->fetchRowsCalls[] = ['chTable' => $chTable, 'filters' => $filters, 'from' => $timeFromUtc, 'to' => $timeToUtc, 'limit' => $limit, 'keysetAfter' => $keysetAfter];
 
         $rows = array_values(array_filter(
             $this->tables[$chTable] ?? [],
