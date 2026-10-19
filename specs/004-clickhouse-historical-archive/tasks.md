@@ -125,8 +125,8 @@ description: "Task list for ClickHouse 历史数据归档实现"
 
 ### Tests for User Story 4
 
-- [ ] T023 [P] [US4] 新建 `tests/Domain/Archive/Stores/DegradationTest.php`（或并入 ClickHouseStoreIntegrationTest 离线部分）：`Http::fake` 连接拒绝/超时/500 三形态 → ClickHouseStore 各方法统一抛 `ArchiveStorageUnavailableException` 且 message 携带原因（R-009）；`HistoricalQueryService` 原样上抛不改写不吞（fake store 抛 → 断言同实例异常冒泡）；纯热查询断言 store 零调用（US4 场景 2 机制性保证）
-- [ ] T024 [US4] 失败记账路径收尾（依赖 T013/T023）：在 `tests/Domain/Archive/ArchivePipelineTest.php` 补 CH 断连场景断言——copy 中途 store 抛 `ArchiveStorageUnavailableException` → 当前批次 failed + failed_reason、主库账目无半途修改（无 applied_at、无水位推进）、命令退出码 1（US4 场景 1）；恢复（fake 恢复正常）重跑 → 先 deleteByBatch 清半途行再续跑、账目对平（SC-006）
+- [X] T023 [P] [US4] 新建 `tests/Domain/Archive/Stores/DegradationTest.php`（或并入 ClickHouseStoreIntegrationTest 离线部分）：`Http::fake` 连接拒绝/超时/500 三形态 → ClickHouseStore 各方法统一抛 `ArchiveStorageUnavailableException` 且 message 携带原因（R-009）；`HistoricalQueryService` 原样上抛不改写不吞（fake store 抛 → 断言同实例异常冒泡）；纯热查询断言 store 零调用（US4 场景 2 机制性保证）
+- [X] T024 [US4] 失败记账路径收尾（依赖 T013/T023）：在 `tests/Domain/Archive/ArchivePipelineTest.php` 补 CH 断连场景断言——copy 中途 store 抛 `ArchiveStorageUnavailableException` → 当前批次 failed + failed_reason、主库账目无半途修改（无 applied_at、无水位推进）、命令退出码 1（US4 场景 1）；恢复（fake 恢复正常）重跑 → 先 deleteByBatch 清半途行再续跑、账目对平（SC-006）
 
 **Checkpoint**: US4 完整可测——降级语义类型化、失败不污染、续跑幂等；热链路零依赖由 T028 import 闭包 gate 终检。
 

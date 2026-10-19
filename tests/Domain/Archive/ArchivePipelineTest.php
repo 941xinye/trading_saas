@@ -6,6 +6,7 @@ namespace Tests\Domain\Archive;
 
 use App\Domain\Archive\Contracts\ArchiveStore;
 use App\Domain\Archive\Dto\ArchiveRunOptions;
+use App\Domain\Archive\Exceptions\ArchiveStorageUnavailableException;
 use App\Domain\Archive\Services\ArchivePipeline;
 use App\Domain\Archive\Types\KlineBarArchiveType;
 use App\Domain\Archive\Types\SignalArchiveType;
@@ -335,6 +336,64 @@ final class ArchivePipelineTest extends TestCase
         $this->artisan('archive:run', ['type' => 'kline_bar'])->assertExitCode(1);
         static::assertSame('failed', DB::table('archive_batches')->value('verify_status'));
         static::assertNotNull(DB::table('archive_batches')->value('failed_reason'));
+    }
+
+    // ------------------------------------------------------------------
+    // T024 US4 故障降级：copy 中途 CH 断连 → 失败记账零污染 + 恢复续跑对平
+    // ------------------------------------------------------------------
+
+    public function test_ch_outage_marks_batch_failed_without_pollution_and_recovers(): void
+    {
+        // 3 行落同一窗口 [10-10, 10-11)，chunkSize=1 → 3 块，第 2 块注入 CH 断连（半途失败）
+        $this->seedKline('2026-10-10 00:00:00', '2026-10-10 00:01:00');
+        $this->seedKline('2026-10-10 00:01:00', '2026-10-10 00:02:00');
+        $this->seedKline('2026-10-10 00:02:00', '2026-10-10 00:03:00');
+        $failAtCall = 2;
+        $this->store->onInsert = function () use (&$failAtCall): void {
+            if (--$failAtCall === 0) {
+                throw new ArchiveStorageUnavailableException('CH 演练断开');
+            }
+        };
+
+        try {
+            $this->pipeline()->run(new KlineBarArchiveType, new ArchiveRunOptions(chunkSize: 1, nowUtc: $this->now));
+            static::fail('copy 中途 store 抛异常应向上冒泡');
+        } catch (ArchiveStorageUnavailableException) {
+            // 预期：R-009 类型化故障
+        }
+
+        // 失败记账零污染：批次 failed + failed_reason，水位/应用标记不动，主库 3 行完好
+        static::assertSame('failed', DB::table('archive_batches')->value('verify_status'));
+        static::assertStringContainsString('CH 演练断开', (string) DB::table('archive_batches')->value('failed_reason'));
+        static::assertNull(DB::table('archive_batches')->value('applied_at'));
+        static::assertSame('1970-01-01 00:00:00', DB::table('archive_watermarks')->where('data_type', 'kline_bar')->value('copied_watermark'));
+        static::assertSame(3, DB::table('kline_bars')->count(), '主库零污染');
+        static::assertSame(1, $this->store->countByBatch('ch_kline_bars', (int) DB::table('archive_batches')->value('id')), '半途残留 1 行');
+
+        // 恢复后续跑：failed 批次复位 → 先 deleteByBatch 清半途行 → 重拷 → 账目对平（SC-006）
+        $this->store->onInsert = null;
+        $report = $this->pipeline()->run(new KlineBarArchiveType, new ArchiveRunOptions(chunkSize: 1, nowUtc: $this->now));
+
+        static::assertSame(1, $report->passedCount());
+        static::assertCount(2, $this->store->deleteByBatchCalls, '两次运行各清一次（幂等锚）');
+        $batchId = (int) DB::table('archive_batches')->value('id');
+        static::assertSame(3, $this->store->countByBatch('ch_kline_bars', $batchId), '清理后重拷无重复');
+        static::assertSame('passed', DB::table('archive_batches')->value('verify_status'));
+        static::assertSame(3, (int) DB::table('archive_batches')->value('source_rows'));
+        static::assertSame(3, (int) DB::table('archive_batches')->value('archived_rows'), '账目对平');
+        static::assertSame('2026-10-11 00:00:00', DB::table('archive_watermarks')->where('data_type', 'kline_bar')->value('copied_watermark'));
+    }
+
+    public function test_command_exit_1_on_ch_outage(): void
+    {
+        $this->seedKline('2026-10-10 00:00:00', '2026-10-10 00:01:00');
+        $this->store->onInsert = static function (): void {
+            throw new ArchiveStorageUnavailableException('CH 演练断开');
+        };
+
+        $this->artisan('archive:run', ['type' => 'kline_bar'])->assertExitCode(1);
+        static::assertSame('failed', DB::table('archive_batches')->value('verify_status'));
+        static::assertSame(1, DB::table('kline_bars')->count(), '命令失败但主库零污染');
     }
 
     // ------------------------------------------------------------------
