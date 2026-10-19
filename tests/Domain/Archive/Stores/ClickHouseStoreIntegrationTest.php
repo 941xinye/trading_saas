@@ -146,8 +146,34 @@ final class ClickHouseStoreIntegrationTest extends TestCase
             'exchange_dek' => 'dummy', 'status' => 'active', 'plan_code' => 'free',
             'created_at' => $now, 'updated_at' => $now,
         ]);
+        // RefreshDatabase 事务内 SQLite PRAGMA foreign_keys 不可关（withoutForeignKeyConstraints
+        // 无效，T031 实测 23000），补全 strategy_instances 父链（tenants→exchanges→strategies→
+        // exchange_accounts→strategy_instances，沿用 PendingOrderRecoveryTest 造数模式）。
+        $exchangeId = (int) DB::table('exchanges')->insertGetId([
+            'code' => 'binance-it', 'name' => 'Binance',
+            'base_url' => 'https://example.invalid', 'ws_url' => 'wss://example.invalid',
+            'markets' => '["spot"]', 'status' => 'active',
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $strategyId = (int) DB::table('strategies')->insertGetId([
+            'code' => 'spot_grid_it', 'name' => '现货网格', 'category' => 'spot',
+            'risk_profile' => 'conservative', 'default_params' => '[]',
+            'enabled' => 1, 'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $accountId = (int) DB::table('exchange_accounts')->insertGetId([
+            'tenant_id' => self::TENANT_ID, 'exchange_id' => $exchangeId, 'label' => 'it',
+            'market' => 'spot', 'encrypted_api_key' => 'k', 'encrypted_api_secret' => 's',
+            'dek_version' => 1, 'permissions' => '[]', 'status' => 'active',
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $instanceId = (int) DB::table('strategy_instances')->insertGetId([
+            'tenant_id' => self::TENANT_ID, 'strategy_id' => $strategyId,
+            'exchange_account_id' => $accountId, 'symbol' => 'BTCUSDT', 'interval' => '1m',
+            'params' => '{}', 'allocated_capital' => '1000',
+            'status' => 'running', 'created_at' => $now, 'updated_at' => $now,
+        ]);
         $id = (int) DB::table('strategy_orders')->insertGetId([
-            'tenant_id' => self::TENANT_ID, 'strategy_instance_id' => 1,
+            'tenant_id' => self::TENANT_ID, 'strategy_instance_id' => $instanceId,
             'exchange_order_id' => null, 'client_order_id' => 'it-cid-0001',
             'symbol' => 'BTCUSDT', 'side' => 'buy', 'type' => 'market',
             'quantity' => '0.00100000', 'price' => null, 'stop_price' => null,

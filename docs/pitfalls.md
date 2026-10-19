@@ -228,14 +228,15 @@
 ## 31. 行哈希选型：MD5 前 16 hex 同构方案胜出，cityHash64 因 PHP 侧不可复算被否（P8 归档，2026-10-19）
 
 - **背景**：归档三级 verify 的 L2 需要「主库侧逐行哈希累加」与「CH 侧 SQL 聚合」结果严格一致（bcmath 字符串精度，constitution II）。
-- **候选与结论**：①CH `cityHash64`——需 PHP 扩展或 FFI 才能同构复算，部署面破坏零依赖原则（R-002），**否决**；②MD5 全 128bit 转十进制——bcmath 可算但 CH 侧 `sum` 会溢出 UInt128 语义差异大；③**采用**：MD5 hex 前 16 位（64bit）→ CH `toUInt64OrZero(substr(MD5(concat(...)),1,16),16)` 与 PHP `RowNormalizer`（hexdec 大数 → bcadd 累加 → bcmod 2^64）严格同构。
+- **候选与结论**：①CH `cityHash64`——需 PHP 扩展或 FFI 才能同构复算，部署面破坏零依赖原则（R-002），**否决**；②MD5 全 128bit 转十进制——bcmath 可算但 CH 侧 `sum` 会溢出 UInt128 语义差异大；③**采用**：MD5 hex 前 16 位（64bit）→ PHP `RowNormalizer`（hexdec 大数 → bcadd 累加 → bcmod 2^64）与 CH 侧 SQL 聚合严格同构。
+- **T031 真机修订（CH 26.11.1.155）**：设计期公式 `toUInt64OrZero(substr(MD5(...),1,16),16)` 真机四连炸——①`toUInt64OrZero` 无 base 参数（Code:42）；②CH 26 `MD5()` 返回 16 字节二进制 FixedString 而非 hex 串；③`sum()` 整数溢出**饱和**为 2^64-1（须用回绕语义的 `sumWithOverflow`）；④`toString(Decimal)` 裁尾零（Decimal 列须 `toDecimalString(col, 列标度)`，读回同理——`fetchRows` 显式列清单保标度）。落地式：`sumWithOverflow(reinterpretAsUInt64(reverse(substring(MD5(concat(...)),1,8))))`，黄金向量双端逐位一致。
 - **落点**：`app/Domain/Archive/Stores/RowNormalizer.php`（黄金向量测试锁定两侧同构）+ `ClickHouseStore::hashSum`。
 - **教训**：跨系统一致性校验的哈希函数，选型第一约束是「两侧可同构复算」，其次才是性能；MD5 在这里只做一致性指纹不做安全用途，强度足够。
 
-## 32. ClickHouse lightweight delete 即时可见性：断言就绪，待节点机回填终验（P8 归档，2026-10-19）
+## 32. ClickHouse lightweight delete 即时可见性：真机终验 PASS（P8 归档，2026-10-19 回填）
 
 - **背景**：copy 幂等锚是「`DELETE FROM ... WHERE batch_id = ?`（lightweight delete，CH 22.8+）清半途行 → 立即重插」。若删除对后续 SELECT 非即时可见，重跑后 `countByBatch` 会翻倍导致 verify 行数失配（语义安全——拒删，但会造成重跑抖动）。
-- **结论**：官方语义为即时标记、SELECT 立即可见（mutation 异步只是物理清理）。本机 CH 不可达，`ClickHouseStoreIntegrationTest` 已就即时可见性断言（deleteByBatch 后同进程 countByBatch=0，5 个 skip 用例之一），**待节点机 CH 环境回填确认**；若实测不符，备选是 deleteByBatch 后轮询 `system.mutations`/插入前 `SELECT count` 自愈。
+- **终验结论（CH 26.11.1.155 单节点，T031）**：`ClickHouseStoreIntegrationTest::test_kline_roundtrip_and_lightweight_delete_visibility` 真机 PASS——deleteByBatch 后**同进程** `countByBatch` 立即返回 0，即时可见性成立，备选轮询方案弃用。
 - **教训**：跨存储的「先删后插」幂等模式，删除可见性是核心假设——必须把该假设写成显式测试断言，而不是埋在设计文档里。
 
 ## 29. 骨架缺 config/broadcasting.php 时 broadcast() 静默失败，被 Listener try/catch 吞掉（B7 前端订阅接入，2026-10-18）
@@ -251,3 +252,10 @@
 - **根因**：Blade 指令的正则只支持有限层级的嵌套括号匹配，`@json([... config('...', '') ...])` 中 `config()` 的闭合 `)` 被当成 `@json` 自身的结尾，数组从中间截断。view:cache 的批量编译与运行时编译路径不同（运行时经 Livewire ExtendBlade 处理），因此「编译通过」不等于「运行时可用」。
 - **处理**：复杂数组一律在 `@php` 块预计算成变量，再用 `{{ \Illuminate\Support\Js::from($var) }}` 输出（Js::from 产出 `JSON.parse('{...}')` 且实现 Htmlable 不被二次转义）。断言其输出时注意引号被转成 `\u0022`。
 - **教训**：Blade 指令参数里只放「变量/字面量」级表达式；凡含函数调用的复合结构都先 @php 落地为变量。
+
+## 33. passed 批次被复检降级 failed 后自动窗口够不到，须 `--from` 定点重跑（P8 归档 T031 真机，2026-10-19）
+
+- **现象**：`archive:verify` 复检把某 passed 批次降级为 failed（演练中人为删 CH 一行 → `hash_sum=MISMATCH`）后，直接 `archive:run kline_bar` 报 0 批处理——该 failed 批次时间片位于 copied_watermark **之前**，自动窗口从水位起向前扫，永远够不到它，`--apply` 也因 verify_status=failed 拒删，批次卡死。
+- **根因**：设计内行为而非缺陷——failed 不推进水位是防数据丢失的正确语义，窗口只向前扫是增量归档的前提；定点恢复通道就是 `--from`。
+- **处理**：`php artisan archive:run kline_bar --from="<批次 time_from>"` 复位重跑该批（failed→pending→重 copy→重 verify），passed 后再 `--apply`。
+- **附带确认（verify 语义分层）**：三级校验里 rows 级只是「账目对平」（批次表 source_rows==archived_rows 字段比对，不触 CH 内容）；内容级真校验在 hash_sum（删 CH 一行时 rows=OK、hash_sum=MISMATCH，报双侧哈希值）与抽样逐位。排查复检失败先看挂在哪一级再定方向：rows 级=两侧行数账目，hash_sum=内容指纹，sample=逐位精度。

@@ -97,17 +97,25 @@ composer test
 
 ## 9. 验收对账表
 
-| 验证步骤 | 对应验收 |
-|---|---|
-| §1 schema | FR-002 存储就绪 |
-| §2 dry-run + 零失败 | US1 / FR-003 / FR-012 / FR-005(dry-run 默认) |
-| §3 verify + apply | FR-005 / US5 / SC-007（主库行数下降可量化） |
-| §4 合并查询 | US2 / FR-006 / FR-011 / SC-003 / SC-001（耗时记录） |
-| §5 隔离 | US3 / FR-007 / SC-004 |
-| §6 幂等续跑 | FR-004 / SC-005 |
-| §7 故障演练 | US4 / FR-008 / FR-010 / SC-006 |
-| §8 测试基线 | constitution VI / 纯增量 |
+| 验证步骤 | 对应验收 | 2026-10-19 真机结论 |
+|---|---|---|
+| §1 schema | FR-002 存储就绪 | PASS：4 表创建确认，重复执行幂等不报错 |
+| §2 dry-run + 零失败 | US1 / FR-003 / FR-012 / FR-005(dry-run 默认) | PASS：2 批×1440 PASSED，主库行数不变，热链路正常 |
+| §3 verify + apply | FR-005 / US5 / SC-007（主库行数下降可量化） | PASS：篡改降级 failed 拒删 → --from 复位 → 二次 apply 主库 3074→194 对平 |
+| §4 合并查询 | US2 / FR-006 / FR-011 / SC-003 / SC-001（耗时记录） | PASS：主探针 18/18 + in-flight 6/6；SC-001 跨界 2940 行/3 页=786.8ms |
+| §5 隔离 | US3 / FR-007 / SC-004 | PASS：11/11（A=89/B=33/零交集/无上下文抛错/public 不受影响） |
+| §6 幂等续跑 | FR-004 / SC-005 | PASS：kill@100/1440 → 续跑 count==uniqExact==1440 无重，重复 apply 0 批 |
+| §7 故障演练 | US4 / FR-008 / FR-010 / SC-006 | PASS：退出码 1 报因清晰、批次 failed、主库零污染、热链路正常、跨界抛 ArchiveStorageUnavailableException、恢复续跑对平 |
+| §8 测试基线 | constitution VI / 纯增量 | PASS：383 tests = 326 passed/56 skipped/1 incomplete，CH 集成 5 用例真跑全绿，零回归 |
 
 ## 10. 执行记录
 
 - **2026-10-19 开发机（T015 替代执行）**：CH 不可达（127.0.0.1:8123 拒绝连接，本机无 Docker）。按 tasks.md T015 降级条款以集成测试替代——`tests/Domain/Archive` 28 tests：23 绿（管线状态机/红线/热链路/租户/命令层全过）+ 5 CH 集成 skip（ping 守卫生效）；`archive:schema` 在 CH 不可达时按预期报因清晰、退出码 1、零副作用。§1→§2→§3 真 CH 冒烟待节点机环境回填。
+- **2026-10-19 开发机（T031 端到端验收，真 CH 26.11.1.155 WSL 单节点 127.0.0.1:8123 + ServBay MySQL）**：§1→§8 全节真机执行，全节 PASS（逐行结论见 §9 对账表）。本机 WSL 直跑 CH 二进制替代节点机 Docker Compose，覆盖 T015 待回填冒烟。
+  - §3 关键路径：人为删 CH 一行 → 复检 `rows=OK hash_sum=MISMATCH` → 批次降级 failed、`--apply` 拒删 → `archive:run kline_bar --from=...` 定点重跑复位 passed → 二次 apply 删除，主库 kline_bars 3074→194（SC-007 量化）。
+  - §4 SC-001 数据点：跨界 2940 行（冷 2880+热 60）/3 页=786.8ms——数据规模远小于全年 52.6 万行，仅作参考点，不作 p95 结论。
+  - §6（T016）：`--chunk-size=100 --throttle-ms=400` 下 copy 至 100/1440 行时 SIGKILL → 批次 pending/source_rows=0、CH 留半途 100 行、水位不推进 → 重跑同命令复用批次、先清半途行再重插 → `count()==uniqExact(id)==1440` 零重复、三级校验 PASSED → apply 4 批删 5760 行；重复 `--apply` 报 0 批（幂等）。
+  - §7（US4/T024 真机）：CH 断连下 `archive:run` 退出码 1、报因清晰（cURL error 7），批次记 failed 且 failed_reason 记账；主库零污染（07-15/07-17 两段各 1440 行完整）；纯热查询 60 行 HOT 正常返回、跨界/纯冷查询抛 `ArchiveStorageUnavailableException`（明确降级）；热链路主库直读正常。恢复 CH 后重跑，failed 批次复位续跑 PASSED，verify+apply 删 2880 行账目对平（SC-006）。
+  - §8：`php artisan test` 383 tests = 326 passed / 56 skipped / 1 incomplete（1296 assertions，435.9s）；`ClickHouseStoreIntegrationTest` 5 用例真 CH 全绿（schema 幂等/记账一致/lightweight delete 即时可见/四表 round-trip 逐位）。对照 T015 记录基线 321/61/1：+5 passed −5 skipped（skip→真跑迁移），总盘不变零回归。
+  - 终态：CH `ch_kline_bars`=12960（`count==uniqExact(id)` 零重复）/`ch_signals`=60；MySQL kline_bars=194/signals=62；kline 双水位 2026-07-18、signal 双水位 2026-07-02；archive_batches 10 批全 applied。
+  - 真机发现（已落 [docs/pitfalls.md](../../../docs/pitfalls.md) #33）：①passed 批次被复检降级 failed 后位于 copied_watermark 之前，自动窗口从水位起扫够不到（run 报 0 批），须 `--from` 定点重跑——设计内恢复路径；②verify 的 rows 级=账目对平（批次 source_rows==archived_rows 字段比对，不触 CH 内容），内容级校验在 hash_sum/抽样——删 CH 一行时 rows=OK 但 hash_sum=MISMATCH，语义分层符合设计。

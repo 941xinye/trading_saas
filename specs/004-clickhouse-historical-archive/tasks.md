@@ -72,8 +72,8 @@ description: "Task list for ClickHouse 历史数据归档实现"
 
 - [X] T013 [US1] 实现 `app/Domain/Archive/Services/ArchivePipeline.php`（建批→copy→verify→apply 状态机，依赖 T004-T009）：建批（复用未完成批次/uniq 防重/安全上界）；copy（先 deleteByBatch 清半途 → tenant 类型主库读取显式 `Model::query()->withoutGlobalScope(TenantScope::class)`（系统级搬迁专用，不借道超管上下文语义）→ 按 id 升序 chunk 流式读 + `insertRows` 逐块写 + `usleep(throttle_ms)` → 记账 copied）；verify 三级（行数 `countByBatch` vs 主库 COUNT / 哈希和：主库侧 RowNormalizer 流式求和（bcmath）vs `hashSum` / 抽样 `verify_sample_rows` 行全字段规范化串逐位比对）；apply（仅 passed 批次：`DB::transaction { COUNT 再核对 → 分块限速 DELETE 切片行 → 推进 archive_watermarks.applied_watermark（只增）→ 批次 applied_at }`）；dry-run 语义（跳过 apply，报告可删范围）；异常 → 批次 failed + failed_reason，主库零改动（R-009）
 - [X] T014 [US1] 新建 `app/Console/Commands/ArchiveRunCommand.php`（signature `archive:run {type?} {--apply} {--batch-window-hours=} {--chunk-size=} {--throttle-ms=} {--max-batches=} {--from=} {--to=}`，依赖 T013）：{type} 省略 = 四类型按 enabled 顺序执行、未启用类型报错退出码 2；参数覆盖 config（越下限拒绝，红线 4）；`--from/--to` UTC 解析（Y-m-d 或 Y-m-d H:i:s）、越界截断警告；`--max-batches` 首跑限速（FR-012）；退出码 0 成功 / 1 运行期失败 / 2 用法错误；批次报告输出格式按 contracts/archive-pipeline-contract.md §4（单批次行 + 汇总：N 批处理/M passed/K failed/可删范围）
-- [X] T015 [US1] 冒烟验证（CH 可达环境）：按 quickstart.md §1→§2→§3 顺序执行——`archive:schema` 幂等两跑、dry-run 主库行数不变且 CH 行数=source_rows、`--apply` 后主库超期行 100% 移出（SC-007 可量化记录）、账目对平；CH 不可达时以集成测试替代并记录 skip（2026-10-19 开发机已按降级条款执行并记录于 quickstart §10，真 CH 冒烟待节点机回填）
-- [ ] T016 [US1] 幂等续跑演练（quickstart.md §6）：copy 阶段中途 SIGKILL 进程（constitution IV 端到端验证范式）→ 重跑同命令 → 断言行数与一次跑完一致、CH 无重复行（countByBatch == source_rows）、账目对平；记录结果入 quickstart 验收对账
+- [X] T015 [US1] 冒烟验证（CH 可达环境）：按 quickstart.md §1→§2→§3 顺序执行——`archive:schema` 幂等两跑、dry-run 主库行数不变且 CH 行数=source_rows、`--apply` 后主库超期行 100% 移出（SC-007 可量化记录）、账目对平；CH 不可达时以集成测试替代并记录 skip（2026-10-19 开发机已按降级条款执行并记录于 quickstart §10；**真 CH 冒烟已由 T031 于 2026-10-19 在本机 WSL CH 26.11.1.155 回填**，见 quickstart §9/§10）
+- [X] T016 [US1] 幂等续跑演练（quickstart.md §6）：copy 阶段中途 SIGKILL 进程（constitution IV 端到端验证范式）→ 重跑同命令 → 断言行数与一次跑完一致、CH 无重复行（countByBatch == source_rows）、账目对平；记录结果入 quickstart 验收对账（**2026-10-19 真机 PASS**：kill@100/1440 → 批次 pending/水位不动 → 续跑 `count()==uniqExact(id)==1440` 零重复、三级校验 PASSED、apply 删 5760 行、重复 apply 0 批，见 quickstart §9/§10）
 
 **Checkpoint**: US1 完整可测——归档管线 dry-run/apply/幂等/限速全通，主库瘦身可量化，热链路零回归。
 
@@ -160,7 +160,7 @@ description: "Task list for ClickHouse 历史数据归档实现"
 - [X] T029 [P] 文档同步：`README.md` 技术栈表 ClickHouse 行改为「已引入（P8 历史归档）」并补目录结构 `app/Domain/Archive/`；`docs/architecture.md` 新增 P8 归档节（双进程模型不变、归档为独立 artisan 旁路）；新建 `docs/adr/0006-clickhouse-cold-tier.md` 记录四项选型决策（R-001 自托管单节点 / R-003 MergeTree+batch_id / R-002 零依赖 HTTP / R-008 隔离下沉）与拒绝方案
 - [X] T030 全量测试基线核对：`composer test` ——新增 `tests/Domain/Archive/` 全绿（CH 可达）或集成部分 skip（可用性标志，与既有 56 skipped 同模式）；既有基线 271 passed 起步只增不减、P1-P5 既有测试零改动全绿（纯增量验证点）；两候选待核项结论落档（lightweight delete 即时可见性断言结果、cityHash64 vs MD5 决策）入 `docs/pitfalls.md`
   - 结果（2026-10-19 执行）：**PASS**。`composer test` 包装的 `php artisan test`：321 passed / 0 failed / 61 skipped（既有 56 + 新增 CH 集成 5 可用性守卫）/ 1 incomplete（既有），465s。271 基线只增不减，Archive 域 55 测试全绿（5 CH 集成 skip 同模式）；P1-P5 零改动。两候选待核项落档 pitfalls #31（MD5 同构胜出/cityHash64 否决）、#32（lightweight delete 即时可见性断言就绪待节点机回填）。注：Windows 本机套件 465s 超 Composer 默认 300s 进程超时，需 `php artisan test` 直跑（CI Ubuntu 上远小于该值）。
-- [ ] T031 端到端验收：按 quickstart.md §1~§8 全程演练（节点机 CH 环境），对照验收对账表逐项记录 SC-001~SC-007 结果；SC-001 实测耗时校准（CH 侧单页 p95 与全年分钟级游标全量拉取），超标时在汇总中列明优化候选（列裁剪/预聚合）留 converge 处理
+- [X] T031 端到端验收：按 quickstart.md §1~§8 全程演练（节点机 CH 环境），对照验收对账表逐项记录 SC-001~SC-007 结果；SC-001 实测耗时校准（CH 侧单页 p95 与全年分钟级游标全量拉取），超标时在汇总中列明优化候选（列裁剪/预聚合）留 converge 处理（**2026-10-19 真机全节 PASS**——本机 WSL CH 26.11.1.155 替代节点机：§9 对账表逐行回填、§10 执行记录、pitfalls #33；SC-001 数据点跨界 2940 行/3 页=786.8ms，规模远小于全年量仅作参考不超标；测试基线 326 passed/56 skipped/1 incomplete 零回归，CH 集成 5 用例真跑全绿）
 
 ---
 
@@ -208,6 +208,6 @@ description: "Task list for ClickHouse 历史数据归档实现"
 
 ### Notes
 
-- CH 不可达环境（本机）：集成测试自动 skip 不阻塞离线断言全绿；冒烟/演练任务（T015/T016/T024 演练部分/T031）在节点机 CH 环境执行并回填记录
+- CH 不可达环境（本机）：集成测试自动 skip 不阻塞离线断言全绿；冒烟/演练任务（T015/T016/T024 演练部分/T031）已于 2026-10-19 在本机 WSL CH 26.11.1.155 环境执行完毕并回填 quickstart §9/§10
 - 两候选待核项的验证步骤已内嵌：T009（lightweight delete GA）、T006+T008（cityHash64 vs MD5 降级决策点）
 - 每任务或逻辑组完成后 commit（用户惯例：不主动 push）

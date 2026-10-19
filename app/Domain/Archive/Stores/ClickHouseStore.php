@@ -24,6 +24,9 @@ final class ClickHouseStore implements ArchiveStore
 {
     private const READ_SETTINGS = 'output_format_json_quote_decimals=1&output_format_json_quote_64bit_integers=1';
 
+    /** @var array<string, list<array{name: string, scale: int|null}>> 表名 => 列元数据（position 序），进程内缓存 */
+    private array $columnMetaCache = [];
+
     public function __construct(private readonly array $config)
     {
     }
@@ -150,8 +153,18 @@ final class ClickHouseStore implements ArchiveStore
             $orderParts[] = sprintf('%s %s', $this->escapeIdent($column), strtoupper($direction) === 'DESC' ? 'DESC' : 'ASC');
         }
 
+        // 坑④延伸：CH 26 JSON 输出同样裁 Decimal 尾零（"100.1"），读回必须 toDecimalString
+        // 保标度，否则冷热合并查询（SC-001）与热侧 MySQL 字符串（'100.10000000'）不同形。
+        $selectParts = [];
+        foreach ($this->columnMeta($chTable) as $meta) {
+            $selectParts[] = $meta['scale'] !== null
+                ? sprintf('toDecimalString(%s, %d) AS %s', $this->escapeIdent($meta['name']), $meta['scale'], $this->escapeIdent($meta['name']))
+                : $this->escapeIdent($meta['name']);
+        }
+
         $sql = sprintf(
-            'SELECT * FROM %s.%s%s ORDER BY %s LIMIT %d OFFSET %d',
+            'SELECT %s FROM %s.%s%s ORDER BY %s LIMIT %d OFFSET %d',
+            implode(', ', $selectParts),
             $this->escapeIdent($this->config['database']),
             $this->escapeIdent($chTable),
             $where === [] ? '' : ' WHERE ' . implode(' AND ', $where),
@@ -166,16 +179,30 @@ final class ClickHouseStore implements ArchiveStore
     public function hashSum(string $chTable, int $batchId, array $columns): string
     {
         // 与 RowNormalizer::canonicalRow 同构：列序一致、'|' 分隔、null → ''（ifNull）
+        $scales = [];
+        foreach ($this->columnMeta($chTable) as $meta) {
+            if ($meta['scale'] !== null) {
+                $scales[$meta['name']] = $meta['scale'];
+            }
+        }
         $parts = [];
         foreach ($columns as $column) {
-            $parts[] = sprintf("ifNull(toString(%s), '')", $this->escapeIdent($column));
+            $parts[] = isset($scales[$column])
+                ? sprintf("ifNull(toDecimalString(%s, %d), '')", $this->escapeIdent($column), $scales[$column])
+                : sprintf("ifNull(toString(%s), '')", $this->escapeIdent($column));
         }
         $canonical = implode(", '|', ", $parts);
 
-        // 候选待核：toUInt64OrZero(str, 16) 的 base 参数在部署版本可用性；
-        // 若不可用等价替换 reinterpretAsUInt64(reverse(unhex(substr(...))))（字节序对齐），集成测试断言兜底
+        // hex→UInt64 最终式（T031 四踩坑实测锁定）：
+        // ① toUInt64OrZero 无 base 参数（Code:42）；② CH 26.x MD5() 返回 16 字节二进制
+        //    FixedString 而非 hex 字符串，substr 直接按字节取；③ sum() 整数溢出**饱和**为
+        //    2^64-1，必须用回绕语义的 sumWithOverflow 才与 PHP bcadd+bcmod 2^64 同构；
+        // ④ toString(Decimal) 裁尾零（'100.00000000' → '100'），与 PHP 侧 MySQL 字符串原值
+        //    （保标度）不同构，Decimal 列必须 toDecimalString(col, 列自身标度)。
+        // substring(MD5(...),1,8) 取前 8 字节（= hex 前 16 位），reverse 转小端后 reinterpret，
+        // 与 RowNormalizer 黄金向量逐位一致。
         $rows = $this->selectRows(sprintf(
-            "SELECT sum(toUInt64OrZero(substr(MD5(concat(%s)), 1, 16), 16)) AS h
+            "SELECT sumWithOverflow(reinterpretAsUInt64(reverse(substring(MD5(concat(%s)), 1, 8)))) AS h
              FROM %s.%s WHERE batch_id = %d",
             $canonical,
             $this->escapeIdent($this->config['database']),
@@ -184,6 +211,34 @@ final class ClickHouseStore implements ArchiveStore
         ));
 
         return (string) ($rows[0]['h'] ?? '0');
+    }
+
+    /**
+     * 列元数据（position 序）。两处消费：hashSum 的 toDecimalString 需显式 S；
+     * fetchRows 需全列名 + Decimal 标度做保标度读回。
+     *
+     * @return list<array{name: string, scale: int|null}> scale 仅 Decimal 列非 null
+     */
+    private function columnMeta(string $chTable): array
+    {
+        return $this->columnMetaCache[$chTable] ??= $this->fetchColumnMeta($chTable);
+    }
+
+    /**
+     * @return list<array{name: string, scale: int|null}>
+     */
+    private function fetchColumnMeta(string $chTable): array
+    {
+        $rows = $this->selectRows(sprintf(
+            'SELECT name, type FROM system.columns WHERE database = %s AND table = %s ORDER BY position',
+            $this->escapeValue((string) $this->config['database']),
+            $this->escapeValue($chTable),
+        ));
+
+        return array_map(static fn (array $row): array => [
+            'name' => (string) $row['name'],
+            'scale' => preg_match('/Decimal\(\d+,\s*(\d+)\)/', (string) $row['type'], $m) === 1 ? (int) $m[1] : null,
+        ], $rows);
     }
 
     /**
@@ -201,7 +256,17 @@ final class ClickHouseStore implements ArchiveStore
             throw new \RuntimeException('ClickHouse 响应 JSON 解析失败：' . $e->getMessage(), 0, $e);
         }
 
-        return array_values($decoded['data'] ?? []);
+        // 契约口径：值一律 string|null。quote_64bit 只罩 UInt64/Decimal，
+        // UInt8/16/32（trades_count、reduce_only 等）仍以 JSON number 回来 → 归一成字符串。
+        return array_map(static function (array $row): array {
+            foreach ($row as $key => $value) {
+                if (is_int($value) || is_float($value)) {
+                    $row[$key] = (string) $value;
+                }
+            }
+
+            return $row;
+        }, array_values($decoded['data'] ?? []));
     }
 
     private function client(): \Illuminate\Http\Client\PendingRequest
@@ -217,9 +282,12 @@ final class ClickHouseStore implements ArchiveStore
     private function send(string $url, ?string $body): string
     {
         try {
-            $request = $body === null
-                ? $this->client()->post($url)
-                : $this->client()->withBody($body, 'text/plain; charset=UTF-8')->post($url);
+            // 坑：Laravel Http post($url) 不带 withBody 会把默认空数组编码成 "[]" JSON body，
+            // CH 会把 body 拼接到 query 参数后解析（DDL 变 "CREATE ...\n[]" 语法错误，T031 实测 HTTP 400）。
+            // 无 body 请求必须显式 withBody('')。
+            $request = $this->client()
+                ->withBody($body ?? '', 'text/plain; charset=UTF-8')
+                ->post($url);
         } catch (ConnectionException $e) {
             throw new ArchiveStorageUnavailableException('ClickHouse 连接失败：' . $e->getMessage(), 0, $e);
         }
