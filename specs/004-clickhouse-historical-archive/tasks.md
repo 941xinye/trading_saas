@@ -140,12 +140,12 @@ description: "Task list for ClickHouse 历史数据归档实现"
 
 ### Tests for User Story 5
 
-- [ ] T025 [P] [US5] 新建 `tests/Domain/Archive/CommandsTest.php`（Laravel 命令测试，fake ArchiveStore + 已记账批次数据集）：`archive:verify`——passed 批次复检保持 passed、制造不一致（篡改 store 哈希和/行数）定位到具体批次降级 failed + failed_reason、failed 批次不可进入 apply 候选（US5 场景 2）；`archive:status`——输出 retention/enabled/copied_watermark/applied_watermark/待归档量估算（COUNT 谓词 `time >= copied_watermark AND time < now-retention`）/最近 N 批次清单含 applied_at（FR-009）
+- [X] T025 [P] [US5] 新建 `tests/Domain/Archive/CommandsTest.php`（Laravel 命令测试，fake ArchiveStore + 已记账批次数据集）：`archive:verify`——passed 批次复检保持 passed、制造不一致（篡改 store 哈希和/行数）定位到具体批次降级 failed + failed_reason、failed 批次不可进入 apply 候选（US5 场景 2）；`archive:status`——输出 retention/enabled/copied_watermark/applied_watermark/待归档量估算（COUNT 谓词 `time >= copied_watermark AND time < now-retention`）/最近 N 批次清单含 applied_at（FR-009）
 
 ### Implementation for User Story 5
 
-- [ ] T026 [US5] 新建 `app/Console/Commands/ArchiveVerifyCommand.php`（signature `archive:verify {type?} {--batch=}`，依赖 T013 verify 能力）：{batch} 指定批次 id、省略 = 该类型全部 copied/passed 未 applied 批次；复检三级校验、failed 立即降级记账；输出批次清单表（时间范围/行数/校验状态/明细）按 contracts/archive-pipeline-contract.md §4；退出码 0/1/2 同 archive:run
-- [ ] T027 [US5] 新建 `app/Console/Commands/ArchiveStatusCommand.php`（signature `archive:status {type?}`）：{type} 省略 = 四类型逐行输出；每行 retention_days/enabled/双水位/待归档量估算/最近 5 批次（id、时间范围、source_rows、verify_status、applied_at）；未启用类型标注 disabled
+- [X] T026 [US5] 新建 `app/Console/Commands/ArchiveVerifyCommand.php`（signature `archive:verify {type?} {--batch=}`，依赖 T013 verify 能力）：{batch} 指定批次 id、省略 = 该类型全部 copied/passed 未 applied 批次；复检三级校验、failed 立即降级记账；输出批次清单表（时间范围/行数/校验状态/明细）按 contracts/archive-pipeline-contract.md §4；退出码 0/1/2 同 archive:run
+- [X] T027 [US5] 新建 `app/Console/Commands/ArchiveStatusCommand.php`（signature `archive:status {type?}`）：{type} 省略 = 四类型逐行输出；每行 retention_days/enabled/双水位/待归档量估算/最近 5 批次（id、时间范围、source_rows、verify_status、applied_at）；未启用类型标注 disabled
 
 **Checkpoint**: US5 完整可测——复检定位不一致并阻断删除、进度水位随时可查，US1 账目体系闭环。
 

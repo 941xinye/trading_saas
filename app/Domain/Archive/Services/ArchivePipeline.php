@@ -316,6 +316,31 @@ final class ArchivePipeline
     }
 
     /**
+     * US5 独立复检（T026）：对既有批次（copied/passed 未 applied）重跑三级校验，**不写账**。
+     * 调用方（archive:verify）负责 failed 降级记账。
+     *
+     * @return array{0: bool, 1: string, 2: ?string} [passed, detail, reason]
+     */
+    public function reverifyBatch(ArchiveType $type, object $batch, \DateTimeImmutable $nowUtc): array
+    {
+        $dataType = $type->dataType()->value;
+
+        return $this->verify(
+            $type,
+            (string) $batch->time_from,
+            (string) $batch->time_to,
+            $nowUtc,
+            (int) $batch->id,
+            // 账目表不存 archived_at；canonicalColumns 已排除审计列，复检比对与其取值无关
+            (string) ($batch->created_at ?? '1970-01-01 00:00:00'),
+            (int) $batch->source_rows,
+            (int) $batch->archived_rows,
+            max(1, (int) config("archive.types.{$dataType}.chunk_size", 5000)),
+            max(1, (int) config('archive.verify_sample_rows', 5)),
+        );
+    }
+
+    /**
      * apply（仅 passed 批次）：事务内 { 切片行数再核对 → 分块限速删除 → applied_watermark 推进 → applied_at }
      * （R-010：删除与水位同事务；abort 整体回滚无半删）。
      */
