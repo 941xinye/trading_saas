@@ -19,7 +19,7 @@
 | 多租户 | 行级 tenant_id + BelongsToTenant Trait + TenantScope |
 | 鉴权 | Sanctum API Token |
 | WebSocket | Laravel Reverb（用户推送）+ 独立 Swoole 协程（交易所行情） |
-| 数据库 | MySQL 8.4（业务主库） + Redis（行情/状态/队列/限流） + ClickHouse（P8 历史归档，当前未引入） |
+| 数据库 | MySQL 8.4（业务主库） + Redis（行情/状态/队列/限流） + ClickHouse（已引入——P8 历史归档冷层） |
 | AI 分析 | 抽象 AIPrompter + OpenAI/DeepSeek/Qwen/Ollama 适配器 + RuleEngineFallback 兜底 |
 | 交易所 | ExchangeAdapter 抽象 + RequestSigner 签名域（Binance/OKX/Bybit/Bitget 四家）+ Binance 现货（完整实跑）/Binance 合约（仅强平流）+ OKX 现货（spec 001 完成，真实链路待 demo key）+ Bybit 现货（spec 002 完成，真实链路待 testnet key）+ Bitget 现货（spec 003 完成，无公开模拟盘，主网小额单待 key） |
 | 后台 | Filament 5.x 双面板（Platform 超管 / Admin 租户） |
@@ -56,7 +56,8 @@ app/
 │   ├── Risk/                    # 熔断风控（CircuitBreaker 状态机 + 4 维度 Rule）
 │   ├── Billing/                 # 订阅计费（两阶段计量）
 │   ├── Notification/            # 通知（NotificationPayload 契约 + Log/Telegram/企微/邮件渠道信号/风控双链共用 + 冷却去重；企微/邮件待实测）
-│   └── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
+│   ├── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
+│   └── Archive/                 # 历史归档（P8：ArchivePipeline 状态机 / HistoricalQueryService 冷热路由 / ClickHouseStore HTTP 直连 / 四类型策略 + RowNormalizer 行哈希）
 ├── Http/                        # 中间件 + Controllers + Resources
 ├── Filament/{Admin,Platform}/   # Filament 两套面板
 ├── Jobs/                        # Queue Job（orders/ai/notifications/aggregation）

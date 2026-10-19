@@ -225,6 +225,19 @@
 - Windows/WSL 双 clone 同步：Windows 提交后 push 失败时，用 tar 打包 `app/ config/ database/` 解到 WSL clone（脚本模式避免 wsl 嵌套引号）；脚本文件先 `tr -d '\r'` 去掉 CRLF。
 - `wsl -- bash -c "..."` 嵌套两层坑（P2 实测）：① `$(...)` 与内层双引号会被 PowerShell 吞/改写，`php -r '...'` 直接语法错误——临时 PHP 一律用 Write 工具写 Windows 文件再 `cp` 进 WSL 执行（坑 6 同源）；② `pkill -f 'market:feed'` 会匹配到**承载这条命令的 bash -c 自身命令行**（里面就含字面 `market:feed`）而自杀，退出码 15；排查进程用 `pgrep -af '[m]arket:f[e]ed'`（正则不匹配自身字面量），杀进程拆成独立命令、且命令行中不出现未加括号的目标串。
 
+## 31. 行哈希选型：MD5 前 16 hex 同构方案胜出，cityHash64 因 PHP 侧不可复算被否（P8 归档，2026-10-19）
+
+- **背景**：归档三级 verify 的 L2 需要「主库侧逐行哈希累加」与「CH 侧 SQL 聚合」结果严格一致（bcmath 字符串精度，constitution II）。
+- **候选与结论**：①CH `cityHash64`——需 PHP 扩展或 FFI 才能同构复算，部署面破坏零依赖原则（R-002），**否决**；②MD5 全 128bit 转十进制——bcmath 可算但 CH 侧 `sum` 会溢出 UInt128 语义差异大；③**采用**：MD5 hex 前 16 位（64bit）→ CH `toUInt64OrZero(substr(MD5(concat(...)),1,16),16)` 与 PHP `RowNormalizer`（hexdec 大数 → bcadd 累加 → bcmod 2^64）严格同构。
+- **落点**：`app/Domain/Archive/Stores/RowNormalizer.php`（黄金向量测试锁定两侧同构）+ `ClickHouseStore::hashSum`。
+- **教训**：跨系统一致性校验的哈希函数，选型第一约束是「两侧可同构复算」，其次才是性能；MD5 在这里只做一致性指纹不做安全用途，强度足够。
+
+## 32. ClickHouse lightweight delete 即时可见性：断言就绪，待节点机回填终验（P8 归档，2026-10-19）
+
+- **背景**：copy 幂等锚是「`DELETE FROM ... WHERE batch_id = ?`（lightweight delete，CH 22.8+）清半途行 → 立即重插」。若删除对后续 SELECT 非即时可见，重跑后 `countByBatch` 会翻倍导致 verify 行数失配（语义安全——拒删，但会造成重跑抖动）。
+- **结论**：官方语义为即时标记、SELECT 立即可见（mutation 异步只是物理清理）。本机 CH 不可达，`ClickHouseStoreIntegrationTest` 已就即时可见性断言（deleteByBatch 后同进程 countByBatch=0，5 个 skip 用例之一），**待节点机 CH 环境回填确认**；若实测不符，备选是 deleteByBatch 后轮询 `system.mutations`/插入前 `SELECT count` 自愈。
+- **教训**：跨存储的「先删后插」幂等模式，删除可见性是核心假设——必须把该假设写成显式测试断言，而不是埋在设计文档里。
+
 ## 29. 骨架缺 config/broadcasting.php 时 broadcast() 静默失败，被 Listener try/catch 吞掉（B7 前端订阅接入，2026-10-18）
 
 - **现象**：`BroadcastBreakerAlert` 早就 `broadcast(new BreakerAlert(...))`，事件/频道授权齐备，但前端从未收到任何推送。
