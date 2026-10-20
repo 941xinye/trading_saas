@@ -1,6 +1,6 @@
-# 踩坑记录（P1–spec 005 实测，共 38 条）
+# 踩坑记录（P1–spec 006 实测，共 43 条）
 
-> 2026-10-13 起在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀，随各阶段持续追加（#1–9 P1 / #10–12 P2 / #13–16 P3 / #17–19 P4 / #20–23 P5 / #24–28 P5.5 测试与 CI / #29–33 P8/B7 回填 / #34–38 spec 005 合约网格 + 仓位风控）。
+> 2026-10-13 起在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀，随各阶段持续追加（#1–9 P1 / #10–12 P2 / #13–16 P3 / #17–19 P4 / #20–23 P5 / #24–28 P5.5 测试与 CI / #29–33 P8/B7 回填 / #34–38 spec 005 合约网格 + 仓位风控 / #39–42 spec 006 DSL / #43 spec 005 单飞锁修复）。
 > 每条记录：现象 → 根因 → 处理 → 代码位置。后续阶段踩坑继续追加到本文件。
 
 ## 1. Swoole curl hook 与 Guzzle 7.9 不兼容
@@ -326,3 +326,11 @@
 - **根因**：PHP 8.1+ 反射访问私有/保护属性不再需要 `setAccessible(true)`，该调用在 8.5 标记为 deprecated。
 - **处理**：删除所有 `$prop->setAccessible(true)`，直接 `$prop->getValue($instance)`。
 - **教训**：8.1+ 反射 API 已简化，写反射代码时不要再加 setAccessible。
+
+## 43. Laravel Redis `set()` 的 NX/EX 有固定参数位，写反导致单飞锁与去重静默失效（spec 005 修复，2026-10-20）
+
+- **现象**：`PositionRiskMonitorTest` 长期 4 红——单飞锁竞争用例期望 `skipped/lock_contended` 实得 `reduce`/`emergency_close`；15min 去重用例期望 `PositionRiskAlert` 派发 1 次实得 2 次；减仓 `orderQty` 期望 `'1'` 实得 `'1.00000000'`。
+- **根因**：Laravel 的 `PhpRedisConnection::set($key, $value, $expireResolution = null, $expireTTL = null, $flag = null)` 把扩展选项重排成**具名参数**，内部拼装 `options = [$flag, $expireResolution => $expireTTL]`。原实现写成 `set($key, '1', 'NX', 'EX', $ttl)`，`'NX'` 落在 `expireResolution` 位、`$ttl` 落在 `flag` 位 → options 变成 `[$ttl, 'NX' => 'EX']`，phpredis 解析不到 NX 标志 → `SET` 退化为**无条件覆盖**、恒返回成功。于是单飞锁（并发减仓/全平不再互斥）与 15min 去重（同 instance warning 每 bar 重复通知+写审计）**双双静默失效**，且不抛任何异常。
+- **处理**：改为 `set($key, $value, 'EX', $ttl, 'NX')`（`flag` 永远放最后），与仓库既有 [TenantKeyResolver](../app/Domain/Tenancy/TenantKeyResolver.php#L97) / [DedupCooldown](../app/Domain/Notification/DedupCooldown.php#L30) 写法对齐。`orderQty` 那条是测试期望过严：实现走 `bcmul($size, $reduceRatio, 8)` 产出 scale-8 字符串，符合 constitution II 的 bcmath 字符串约定（下游 `StrategyRunner` 直接透传给 `OrderExecutor`），故修正测试期望为 `'1.00000000'`。
+- **位置**：[PositionRiskMonitor.php](../app/Domain/Risk/Position/PositionRiskMonitor.php#L122)（单飞锁）、[同文件 L188](../app/Domain/Risk/Position/PositionRiskMonitor.php#L188)（去重）
+- **教训**：①Laravel 的 `SET` 选项不能像原生 Redis 命令那样自由叠加，`SET NX EX` 一律写 `set($k, $v, 'EX', $ttl, 'NX')`；②"标志位被吞掉"类 bug 不报错、不抛异常，只表现为"锁/去重不生效"，**只有负向并发测试**（先抢占、再断言被拒）能发现，正向单次调用测试永远发现不了；③断言 bcmath 产物时不要用 trimmed 期望值，统一按 scale-8 字符串比对。

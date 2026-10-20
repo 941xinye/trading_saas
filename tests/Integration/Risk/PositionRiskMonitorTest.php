@@ -158,8 +158,8 @@ class PositionRiskMonitorTest extends TestCase
         static::assertSame('reduce', $decision->actionType);
         static::assertSame('margin_ratio_action', $decision->reason);
         static::assertTrue($decision->reduceOnly);
-        // reduce_ratio=0.50，size=2 → orderQty=1
-        static::assertSame('1', $decision->orderQty);
+        // reduce_ratio=0.50，size=2 → orderQty = bcmul('2','0.50',8) = '1.00000000'（bcmath scale 8，constitution II）
+        static::assertSame('1.00000000', $decision->orderQty);
 
         Event::assertDispatched(PositionRiskAlert::class);
 

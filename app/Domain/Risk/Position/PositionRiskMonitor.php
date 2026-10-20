@@ -119,7 +119,7 @@ class PositionRiskMonitor implements PositionRiskMonitorContract
 
         $locked = false;
         try {
-            $locked = (bool) Redis::connection('default')->set($lockKey, '1', 'NX', 'EX', $lockTtl);
+            $locked = (bool) Redis::connection('default')->set($lockKey, '1', 'EX', $lockTtl, 'NX');
         } catch (Throwable) {
             // Redis 不可用：保守不放行减仓（避免重复），但记日志
             Log::warning('Position risk lock unavailable, skipping action', [
@@ -185,7 +185,7 @@ class PositionRiskMonitor implements PositionRiskMonitorContract
         $dedupTtl = (int) config('risk.position.dedup_cooldown', 900);
 
         try {
-            $isFirst = (bool) Redis::connection('default')->set($dedupKey, '1', 'NX', 'EX', $dedupTtl);
+            $isFirst = (bool) Redis::connection('default')->set($dedupKey, '1', 'EX', $dedupTtl, 'NX');
         } catch (Throwable) {
             $isFirst = true; // Redis 不可用：不阻塞预警
         }
