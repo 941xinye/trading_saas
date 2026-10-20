@@ -200,36 +200,56 @@ final class WhitelistInterpreter implements DslInterpreter
             return null;
         }
 
-        switch ($operand->indicator) {
-            case 'ma':
-                $block = $now['ma'][$operand->period] ?? null;
-                if (! is_array($block)) {
-                    return null;
-                }
+        return match ($operand->indicator) {
+            'ma' => $this->indMa($now, $operand, $prev),
+            'macd' => $this->indMacd($now, $operand, $prev, $snapshot),
+            'rsi', 'atr' => $this->indRsiAtr($operand, $prev, $snapshot),
+            'bollinger' => $this->indBoll($operand, $prev, $snapshot),
+            default => null,
+        };
+    }
 
-                return $this->num($block[$prev ? 'prev' : 'v'] ?? null);
-
-            case 'macd':
-                $source = $operand->source ?? 'dif';
-                if ($prev && $source === 'hist') {
-                    return $this->num($now['macd']['hist_prev'] ?? null);
-                }
-
-                return $this->num($this->fromSnapshot($snapshot, $prev, 'macd')[$source] ?? null);
-
-            case 'rsi':
-            case 'atr':
-                return $this->num($this->fromSnapshot($snapshot, $prev, $operand->indicator)[$operand->period] ?? null);
-
-            case 'bollinger':
-                $key = $this->bollKey($operand->period, $operand->stdDev ?? '2');
-                $bands = $this->fromSnapshot($snapshot, $prev, 'boll')[$key] ?? null;
-
-                return is_array($bands) ? $this->num($bands[$operand->band ?? ''] ?? null) : null;
-
-            default:
-                return null;
+    private function indMa(array $now, OperandNode $operand, bool $prev): ?float
+    {
+        $block = $now['ma'][$operand->period] ?? null;
+        if (! is_array($block)) {
+            return null;
         }
+
+        return $this->num($block[$prev ? 'prev' : 'v'] ?? null);
+    }
+
+    /**
+     * @param array<string,mixed> $now
+     * @param array<string,mixed> $snapshot
+     */
+    private function indMacd(array $now, OperandNode $operand, bool $prev, array $snapshot): ?float
+    {
+        $source = $operand->source ?? 'dif';
+        if ($prev && $source === 'hist') {
+            return $this->num($now['macd']['hist_prev'] ?? null);
+        }
+
+        return $this->num($this->fromSnapshot($snapshot, $prev, 'macd')[$source] ?? null);
+    }
+
+    /**
+     * @param array<string,mixed> $snapshot
+     */
+    private function indRsiAtr(OperandNode $operand, bool $prev, array $snapshot): ?float
+    {
+        return $this->num($this->fromSnapshot($snapshot, $prev, $operand->indicator)[$operand->period] ?? null);
+    }
+
+    /**
+     * @param array<string,mixed> $snapshot
+     */
+    private function indBoll(OperandNode $operand, bool $prev, array $snapshot): ?float
+    {
+        $key = $this->bollKey($operand->period, $operand->stdDev ?? '2');
+        $bands = $this->fromSnapshot($snapshot, $prev, 'boll')[$key] ?? null;
+
+        return is_array($bands) ? $this->num($bands[$operand->band ?? ''] ?? null) : null;
     }
 
     /**

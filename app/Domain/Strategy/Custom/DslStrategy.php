@@ -358,6 +358,16 @@ class DslStrategy extends AbstractStrategy implements RecoverablePendingOrders
         $this->flushSnapshot();
     }
 
+    /**
+     * 暴露待执行/在途信号（供 HistoricalPreviewService 等领域内预览服务读取）。
+     *
+     * @return array<string,mixed>|null
+     */
+    public function pendingSignal(): ?array
+    {
+        return $this->pendingSignal;
+    }
+
     // ------------------------------------------------------------------
     // 内部：求值与信号
     // ------------------------------------------------------------------

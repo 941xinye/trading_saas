@@ -15,7 +15,6 @@ use App\Domain\Strategy\Custom\Dsl\DslPreviewService;
 use App\Domain\Strategy\Custom\Dsl\DslValidationException;
 use App\Domain\Strategy\Custom\DslParser;
 use App\Domain\Strategy\Custom\DslStrategy;
-use ReflectionClass;
 
 /**
  * 历史 K 线 DSL 预览实现（spec 006 WS6 T028 / FR-012 / SC-006）。
@@ -156,13 +155,7 @@ final class HistoricalPreviewService implements DslPreviewService
      */
     private function readPendingSignal(DslStrategy $strategy): ?array
     {
-        $reflection = new ReflectionClass($strategy);
-        $prop = $reflection->getProperty('pendingSignal');
-
-        /** @var array<string,mixed>|null $value */
-        $value = $prop->getValue($strategy);
-
-        return $value;
+        return $strategy->pendingSignal();
     }
 
     /**
