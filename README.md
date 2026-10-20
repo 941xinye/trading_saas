@@ -21,7 +21,7 @@
 | WebSocket | Laravel Reverb（用户推送）+ 独立 Swoole 协程（交易所行情） |
 | 数据库 | MySQL 8.4（业务主库） + Redis（行情/状态/队列/限流） + ClickHouse（已引入——P8 历史归档冷层） |
 | AI 分析 | 抽象 AIPrompter + OpenAI/DeepSeek/Qwen/Ollama 适配器 + RuleEngineFallback 兜底 |
-| 交易所 | ExchangeAdapter 抽象 + RequestSigner 签名域（Binance/OKX/Bybit/Bitget 四家）+ Binance 现货（完整实跑）/Binance 合约（仅强平流）+ OKX 现货（spec 001 完成，真实链路待 demo key）+ Bybit 现货（spec 002 完成，真实链路待 testnet key）+ Bitget 现货（spec 003 完成，无公开模拟盘，主网小额单待 key） |
+| 交易所 | ExchangeAdapter 抽象 + RequestSigner 签名域（Binance/OKX/Bybit/Bitget 四家）+ Binance 现货（完整实跑）/Binance 合约（强平流 + 9 个交易接口，spec 005）+ OKX 现货（spec 001 完成，真实链路待 demo key）+ Bybit 现货（spec 002 完成，真实链路待 testnet key）+ Bitget 现货（spec 003 完成，无公开模拟盘，主网小额单待 key） |
 | 后台 | Filament 5.x 双面板（Platform 超管 / Admin 租户） |
 | 加密 | AES-256-GCM（libsodium）三段密钥层级 KEK → DEK → API Key |
 | 风控 | Circuit Breaker 四维度状态机（单笔/日内/回撤/连亏）+ 仓位级风控（warning/reduce/emergency_close 三档） |
@@ -261,6 +261,23 @@ Bitget V2 现货适配器全量落地，40/40 任务；验证「第四家接入�
 
 **已知边界**：Bitget 主网小额下单与 WS 实跑待 key 与海外网络到位后按 quickstart 补测（连同 OKX demo / Bybit testnet 一并打包，见 [海外节点 Runbook](docs/overseas-node-runbook.md) 验收总清单）。
 
+### ✅ 已完成：spec 004 ClickHouse 历史归档（2026-10-19，核心落地）
+
+kline_bars / signals / strategy_orders / liquidation_events 四类时序数据归档冷层落地（31/31 任务）；**纯旁路管线**——P1–P5 代码零 import 指向 `App\Domain\Archive`（FR-008 导入闭包 gate 终检 PASS），禁止进入 market:feed 行情协程进程。节点机 CH 冒烟与端到端验收待回填。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 归档管线 | ArchivePipeline 状态机：建批 → copy（batch_id 幂等锚先删半途行）→ 三级 verify（行数/行哈希和/抽样逐行）→ apply（事务内再核对 + 分块限速删除 + 水位推进） | [spec](specs/004-clickhouse-historical-archive/spec.md) |
+| 冷层存储 | ClickHouseStore：MergeTree + batch_id/archived_at 审计列，HTTP 直连零依赖（无 PHP 客户端库），异常统一 `ArchiveStorageUnavailableException` | [contracts](specs/004-clickhouse-historical-archive/contracts/clickhouse-schema-contract.md) |
+| 统一查询 | HistoricalQueryService：applied_watermark 三段路由（纯冷/纯热/跨界归并 id 去重）+ keyset 游标分页 + 上限显式报错 | [contracts](specs/004-clickhouse-historical-archive/contracts/historical-query-contract.md) |
+| 租户隔离 | tenant 类型 copy 显式绕 Scope（系统级搬迁）；查询侧强制 TenantContext 注入，热侧 TenantScope + 冷侧 filters 两层等价（R-008） | [plan](specs/004-clickhouse-historical-archive/plan.md) |
+| 安全红线 | 非 passed 拒删（verify gate）；`--apply` 才删除；分块/节流参数下限校验（exit 2）；空切片不建批不推进水位 | [research](specs/004-clickhouse-historical-archive/research.md) |
+| 可观测/运维 | `archive:schema`（建表 DDL）/ `archive:run`（dry-run 默认）/ `archive:verify`（独立复检+降级）/ `archive:status`（水位/待归档估算/批次清单） | [quickstart](specs/004-clickhouse-historical-archive/quickstart.md) |
+
+**实测结果**：383 tests 全绿（RowNormalizer + ArchivePipeline + CH 集成/降级/租户隔离/命令族），全量回归零失败零回归。
+
+**已知边界**：部署形态=自托管单节点 ClickHouse（Docker 起节点机，env 化连接；云托管留后续）；节点机 CH 冒烟与端到端验收（含 SIGKILL 幂等演练）待执行。选型见 [ADR-0006](docs/adr/0006-clickhouse-cold-tier.md)。
+
 ### ✅ 已完成：spec 005 合约网格策略 + 仓位级风控（2026-10-19）
 
 合约网格策略（FuturesGridStrategy）+ 仓位级风控（PositionRiskMonitor）全量落地，6 工作流 48 任务；离线断言 + 单元/集成测试全绿，testnet 真实链路待海外节点 + key 补测。
@@ -287,14 +304,14 @@ Bitget V2 现货适配器全量落地，40/40 任务；验证「第四家接入�
 
 ### 🚧 待实现：剩余路线图
 
-> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget 已完成，实测结果见上方对应区块。
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 已完成（spec 004 为核心落地、节点验收待回填），实测结果见上方对应区块。
 > **P5.5 上线前工程化加固代码侧已完成（2026-10-15）**——步骤 1–4 产物、三环境实测证据与待节点侧实跑清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md#执行结果与实测证据2026-10-15步骤-14-代码侧全部完成)。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 | 依赖 |
 |---|---|---|---|---|
 | **P5.5 上线前工程化加固 ✅ 代码侧完成** | ①账实对账（内存持仓 vs 交易所）②SpotDca 落地（free 套餐已售卖）③poc:verify-\* 断言迁入 PHPUnit（157 项三环境全绿）+ CI ④supervisor 样板 / billing+reconcile 调度 / 海外节点 runbook | 代码侧验收全过；testnet 真实成交/转出对账/强平 120 秒/supervisor kill -9/Actions 绿灯待节点与首次推送，清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md) | 资金安全基线、断言迁移回归面 | P1–P5 |
 | **P6 多交易所 Adapter 扩展 ✅ 代码侧完成** | ~~OKX / Bybit / Bitget~~ 三家现货 Adapter 全部落地（spec 001/002/003），复用 P1 BinanceSpotAdapter 范式；Signing 签名域统一四家；统一错误码 → `ExchangeApiException` 翻译表四家一致性。**「第四家接入纯增量」验证通过**：spec 003 落地期 `AbstractExchangeAdapter` 零改动、前三家测试零回归 | Binance 已实跑；OKX demo / Bybit testnet / Bitget 主网小额单待 key + 海外网络（quickstart 齐备，验收总清单见 [海外节点 Runbook](docs/overseas-node-runbook.md)）；P1 `market:feed` 切换所代码 ≤10 行（StrategyExchangeCompatibilityTest 四家断言） | 各所 WS 协议差异（confirm 标志 vs bar 切换检测、心跳形态）、签名算法差异、testnet 配额/可用性 | P1 |
-| **P8 ClickHouse 历史数据归档**（执行顺序先于 P7，理由见下） | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
+| **P8 ClickHouse 历史数据归档 ✅ 核心落地（2026-10-19，spec 004；节点机 CH 冒烟与端到端验收待回填）**（执行顺序先于 P7，理由见下） | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
 | **P7 Custom DSL 策略引擎** | YAML/TOML 声明式策略定义（entry/exit/filter/risk 四段）；DSL 解释器 + 沙箱执行；Filament 在线编辑器 + 回测预览 | 一条 DSL 装载后能跑通 onBar→信号→下单；与 PHP 内置策略语义等价 | DSL 表达力 vs 安全（禁 eval/exec/fs）、性能（每 bar 解释开销）、与 RiskGuard 接线 | P1, P2 |
 | **P9 支付网关 + 计费 UI** | 支付集成（**通道选型前置合规调研，见下行注记**）；Filament 计费页（套餐升级/Invoice/用量看板）；订阅状态机自动续费触发；webhook 幂等 | 完整一笔从下单→支付→订阅激活→配额刷新；续费失败走 P3 past_due→suspended 流程 | 支付回调幂等（同 ref 不双激活）、汇率/税额、**通道合规（数字货币 SaaS 品类受限）** | P3 |
 | **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；策略绩效（Sharpe/最大回撤/胜率/盈亏比）；Filament 绩效页；与 P4 风控参数自动调优建议 | 一条 DSL 策略回测 1 年数据 < 30s；与 P1 实跑同策略净值曲线误差 < 1% | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
@@ -594,9 +611,10 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
+| [ADR-0006 ClickHouse 冷层](docs/adr/0006-clickhouse-cold-tier.md) | 自托管单节点 + MergeTree batch_id + 零依赖 HTTP + 隔离下沉 |
 | [踩坑记录](docs/pitfalls.md) | P1–P5.5 实测踩坑 30 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号等）持续追加 |
 | [spec-kit constitution](.specify/memory/constitution.md) | v1.0.0 七条原则（SDD 优先/金融精度/协程隔离/崩溃恢复幂等/计费语义/测试隔离/PSR-4 与基类对齐），约束所有 plan/analyze 阶段 |
-| [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
+| [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器 / 004 ClickHouse 历史归档 / 005 合约网格+仓位风控（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
 
 ## 安全说明
 
