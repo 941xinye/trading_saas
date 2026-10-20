@@ -12,6 +12,8 @@ use App\Domain\Risk\Contracts\LiquidationPriceCalculator;
 use App\Domain\Risk\Contracts\PositionRiskMonitor as PositionRiskMonitorContract;
 use App\Domain\Risk\Breaker\IsolatedLiquidationPriceCalculator;
 use App\Domain\Risk\Position\PositionRiskMonitor;
+use App\Domain\Strategy\Custom\Dsl\DslScriptValidator;
+use App\Domain\Strategy\Custom\Dsl\DslValidator;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
 use App\Support\AesGcmCrypt;
@@ -41,6 +43,9 @@ class AppServiceProvider extends ServiceProvider
         // spec 005 仓位级风控（bind 非 singleton：Octane 长驻禁 static 缓存）
         $this->app->bind(LiquidationPriceCalculator::class, IsolatedLiquidationPriceCalculator::class);
         $this->app->bind(PositionRiskMonitorContract::class, PositionRiskMonitor::class);
+
+        // spec 006 DSL 编辑器校验（bind 非 singleton：Octane 长驻禁 static 缓存）
+        $this->app->bind(DslValidator::class, DslScriptValidator::class);
     }
 
     /**
