@@ -57,19 +57,19 @@ risk:
 
 ```bash
 # 子集解析 + 预扫描拒绝 + 定位诊断
-php artisan test tests/Unit/Strategy/Custom/DslYamlParserTest
+php artisan test tests/Unit/Strategy/Dsl/DslYamlParserTest
 
 # 结构校验（顶层键白名单/四段/枚举/范围/超限）
-php artisan test tests/Unit/Strategy/Custom/DslCompilerTest
+php artisan test tests/Unit/Strategy/Dsl/DslCompilerTest
 
 # 沙箱求值（比较/交叉/逻辑/恒真 + NaN→null + step budget）
-php artisan test tests/Unit/Strategy/Custom/DslInterpreterTest
+php artisan test tests/Unit/Strategy/Dsl/DslInterpreterTest
 
 # DslStrategy 生命周期 + state(v2) 往返 + v1→v2 迁移
-php artisan test tests/Unit/Strategy/Custom/DslStrategyLifecycleTest tests/Unit/Strategy/Custom/DslStateMigrationTest
+php artisan test tests/Unit/Strategy/Dsl/DslStrategyLifecycleTest tests/Unit/Strategy/Dsl/DslStateMigrationTest
 
 # 精度边界（qty_pct 极小/极大/尾数）
-php artisan test tests/Unit/Strategy/Custom/DslPrecisionTest
+php artisan test tests/Unit/Strategy/Dsl/DslPrecisionTest
 ```
 
 预期：全部 PASS，无 skipped。
@@ -105,7 +105,7 @@ php artisan test --group=redis tests/Integration/Strategy/DslBillingBreakerTest
 php artisan test tests/Feature/StrategyWhitelistIntegrityTest
 
 # pro/enterprise 可创建 DSL、free 被拒
-php artisan test tests/Feature/Billing/DslPlanGateTest
+php artisan test tests/Integration/Billing/DslPlanGateTest
 
 # 编辑器即时校验（含错误 DSL 返回 行/字段 定位）
 php artisan test tests/Feature/DslEditorValidationTest
@@ -148,16 +148,16 @@ php artisan market:feed
 
 | SC | 验证方式 | 状态 |
 |---|---|---|
-| SC-001 全周期闭环 | `DslOrderExecutorTest` | ⬜ |
-| SC-002 语义等价 | `DslEquivalenceTest`（SpotDca/SpotGrid） | ⬜ |
-| SC-003 沙箱红线 | `DslSandboxRedlineCorpusTest` | ⬜ |
-| SC-004 非法 DSL 拒绝 | `DslYamlParserTest`/`DslCompilerTest` | ⬜ |
-| SC-005 幂等与恢复 | `DslCrashRecoveryTest` | ⬜ |
-| SC-006 预览一致性 | `DslPreviewConsistencyTest` | ⬜ |
-| SC-007 计费/风控 | `DslBillingBreakerTest` | ⬜ |
-| SC-008 门控回归 | `StrategyWhitelistIntegrityTest` | ⬜ |
-| SC-009 性能上界 | `DslInterpreterTest` step budget 用例 | ⬜ |
-| SC-010 精度回归 | `DslPrecisionTest` 边界用例 | ⬜ |
+| SC-001 全周期闭环 | `DslOrderExecutorTest` | ✅ |
+| SC-002 语义等价 | `DslEquivalenceTest`（SpotDca/SpotGrid） | ✅ |
+| SC-003 沙箱红线 | `DslSandboxRedlineCorpusTest` | ✅ |
+| SC-004 非法 DSL 拒绝 | `DslYamlParserTest`/`DslCompilerTest` | ✅ |
+| SC-005 幂等与恢复 | `DslCrashRecoveryTest` | ✅ |
+| SC-006 预览一致性 | `DslPreviewConsistencyTest` | ✅ |
+| SC-007 计费/风控 | `DslBillingBreakerTest` | ✅ |
+| SC-008 门控回归 | `StrategyWhitelistIntegrityTest` | ✅ |
+| SC-009 性能上界 | `DslInterpreterTest` step budget 用例 | ✅ |
+| SC-010 精度回归 | `DslPrecisionTest` 边界用例 | ✅ |
 
 ## 9. 已知边界
 

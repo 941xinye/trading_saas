@@ -324,6 +324,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 - 预览一致性：DslPreviewConsistencyTest — 预览信号序列 == 实跑信号序列。
 - 编辑器：DslEditorValidationTest — 校验定位 / 阻断保存 / 试装载不启动实例 / 租户隔离。
 - 门控/计费/熔断：DslPlanGateTest + DslBillingBreakerTest（@redis）— free 拒/pro+enterprise 放行；配额耗尽交易所零调用；熔断 OPEN 开仓拦截/平仓放行。
+- 沙箱红线：DslSandboxRedlineCorpusTest（21 条恶意语料解析期+运行期双处拒绝）+ DslNoDynamicEvalTest（DSL 核心目录静态扫描零红线关键词、判别式 match 无 switch）；DSL 全量 147 tests / 561 assertions 全绿。
 
 **已知边界**：DSL 预览未模拟滑点/手续费（结果中已注明）；FuturesDca / SmartMartingale / TrendRolling 仍为骨架未入白名单（B1）。
 
