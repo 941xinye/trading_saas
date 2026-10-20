@@ -107,16 +107,16 @@
 
 ### Implementation for User Story 2（在 T028 端点之上的加固）
 
-- [ ] T037 [US2] 在 `app/Http/Controllers/Api/V1/BillingWebhookController.php` 接入 Redis 单飞锁：键 `tenant:{tid}:payment:webhook:{ref}`，`Redis::connection('default')->set($k,$v,'EX',15,'NX')`（**phpredis 参数位顺序**，先例 `app/Domain/Tenancy/TenantKeyResolver.php#L97`）；拿不到锁 → 200 + `idempotent_skipped`；锁**非正确性依赖**（仅削峰），Redis 不可用时降级为直接处理；锁键名固化为类常量以便测试按已知逻辑名精确清理（FR-005 / constitution VI）
-- [ ] T038 [US2] 硬化 `BillingWebhookController` 安全红线（webhook-contract.md §7）：`ref` 长度与字符集白名单校验（界值：长度 ≤64 且匹配 `^pi_[0-9a-z]{26}$`，防注入/超长）、`raw_payload` **原样**落库（含签名字头，即使验签失败）、请求体不参与 SQL 拼接、未知 `channel_code` 抛异常而非回落默认通道（FR-004 / constitution V）
+- [x] T037 [US2] 在 `app/Http/Controllers/Api/V1/BillingWebhookController.php` 接入 Redis 单飞锁：键 `tenant:{tid}:payment:webhook:{ref}`，`Redis::connection('default')->set($k,$v,'EX',15,'NX')`（**phpredis 参数位顺序**，先例 `app/Domain/Tenancy/TenantKeyResolver.php#L97`）；拿不到锁 → 200 + `idempotent_skipped`；锁**非正确性依赖**（仅削峰），Redis 不可用时降级为直接处理；锁键名固化为类常量以便测试按已知逻辑名精确清理（FR-005 / constitution VI）
+- [x] T038 [US2] 硬化 `BillingWebhookController` 安全红线（webhook-contract.md §7）：`ref` 长度与字符集白名单校验（界值：长度 ≤64 且匹配 `^pi_[0-9a-z]{26}$`，防注入/超长）、`raw_payload` **原样**落库（含签名字头，即使验签失败）、请求体不参与 SQL 拼接、未知 `channel_code` 抛异常而非回落默认通道（FR-004 / constitution V）
 
 ### Tests for User Story 2
 
-- [ ] T039 [P] [US2] 新建 Unit 测试 `tests/Unit/Payment/PaymentStatusMachineTest.php`：以 `#[DataProvider]` 遍历 data-model.md §5 迁移表逐行（含 `pending/processing/partial → confirmed`、`expired → manual`），断言**终态拒绝更新**（`confirmed → *` 禁止）、乱序 `processing` 丢弃、过期后到账 → `manual` 不自动激活（FR-003 / FR-012 / FR-013）
-- [ ] T040 [P] [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookSignatureRejectionTest.php`：错误签名重放 → HTTP **401**、支付单状态零变更、`signature_valid=false` 审计行 100% 留存且 `raw_payload` 完整（SC-003）
-- [ ] T041 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookIdempotencyTest.php`：同 ref 重放 3 次 → `subscriptions` 该租户仅新增 1 条 active 行、`payment_webhook_events WHERE processed_key='{ref}:{event_type}'` 计数 = 1、`payment_invoices.confirmed_at` 仅一次迁移、当日 Redis 计数与 `meter_events` **零增量**（SC-002 / FR-005）；setUp 与 tearDown 均按已知键名 `tenant:{tid}:payment:webhook:{ref}` 精确清单飞锁键，`try/catch` 包住且先于 `parent::tearDown()`（constitution VI）
-- [ ] T042 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookOrderingAndUnknownRefTest.php`：先 `confirmed` 后到 `processing` → 状态不回退且落 `idempotent_skipped`；`ref` 不存在 / `metadata.ref` 缺失 → 200 + `rejected` 且不影响其他支付单（PoC B3 语义，FR-003）
-- [ ] T043 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookConcurrencyTest.php`（`@group redis`，带 `tests/Concerns/ChecksRedisAvailability` 守卫）：同 ref 并发投递 → `confirmed_at` 仅一次迁移，锁冲突方返回 `idempotent_skipped`；setUp 与 tearDown 双清单飞锁键 `tenant:{tid}:payment:webhook:{ref}`（FR-005 / constitution VI）
+- [x] T039 [P] [US2] 新建 Unit 测试 `tests/Unit/Payment/PaymentStatusMachineTest.php`：以 `#[DataProvider]` 遍历 data-model.md §5 迁移表逐行（含 `pending/processing/partial → confirmed`、`expired → manual`），断言**终态拒绝更新**（`confirmed → *` 禁止）、乱序 `processing` 丢弃、过期后到账 → `manual` 不自动激活（FR-003 / FR-012 / FR-013）
+- [x] T040 [P] [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookSignatureRejectionTest.php`：错误签名重放 → HTTP **401**、支付单状态零变更、`signature_valid=false` 审计行 100% 留存且 `raw_payload` 完整（SC-003）
+- [x] T041 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookIdempotencyTest.php`：同 ref 重放 3 次 → `subscriptions` 该租户仅新增 1 条 active 行、`payment_webhook_events WHERE processed_key='{ref}:{event_type}'` 计数 = 1、`payment_invoices.confirmed_at` 仅一次迁移、当日 Redis 计数与 `meter_events` **零增量**（SC-002 / FR-005）；setUp 与 tearDown 均按已知键名 `tenant:{tid}:payment:webhook:{ref}` 精确清单飞锁键，`try/catch` 包住且先于 `parent::tearDown()`（constitution VI）
+- [x] T042 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookOrderingAndUnknownRefTest.php`：先 `confirmed` 后到 `processing` → 状态不回退且落 `idempotent_skipped`；`ref` 不存在 / `metadata.ref` 缺失 → 200 + `rejected` 且不影响其他支付单（PoC B3 语义，FR-003）
+- [x] T043 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookConcurrencyTest.php`（`@group redis`，带 `tests/Concerns/ChecksRedisAvailability` 守卫）：同 ref 并发投递 → `confirmed_at` 仅一次迁移，锁冲突方返回 `idempotent_skipped`；setUp 与 tearDown 双清单飞锁键 `tenant:{tid}:payment:webhook:{ref}`（FR-005 / constitution VI）
 
 **Checkpoint**: US2 独立可验证 —— 资金安全红线与幂等证据链闭合，可脱离 UI 单独交付（对应 `docs/p9-btcpay-poc-plan.md` 阶段 B）。
 

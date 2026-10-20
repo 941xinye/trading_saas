@@ -43,6 +43,8 @@ final class PaymentStateMachine
 
     /**
      * 决策目标迁移；null = 丢弃（不落任何状态变更）。
+     *
+     * 当前状态不在迁移源白名单内（乱序/重复投递）同样返回 null。
      */
     public function decide(
         PaymentStatus $current,
@@ -63,46 +65,44 @@ final class PaymentStateMachine
             return null;
         }
 
+        $transition = null;
+
         if (in_array($eventType, $this->expiredEvents, true)) {
-            return new PaymentTransition(
+            $transition = new PaymentTransition(
                 PaymentStatus::Expired,
                 [PaymentStatus::Pending, PaymentStatus::Processing, PaymentStatus::Partial],
                 false,
             );
-        }
-
-        if (in_array($eventType, $this->settledEvents, true)) {
+        } elseif (in_array($eventType, $this->settledEvents, true)) {
             // 防御：settle 事件但实付不足额 → 按部分支付处理，不接线（FR-013）
-            if ($this->isPartialPayment($paidAmount, $amount)) {
-                return new PaymentTransition(
+            $transition = $this->isPartialPayment($paidAmount, $amount)
+                ? new PaymentTransition(
                     PaymentStatus::Partial,
                     [PaymentStatus::Pending, PaymentStatus::Processing],
                     false,
+                )
+                // 足额 / 超额 → confirmed + 接线（超额不退款不记账，FR-006）
+                : new PaymentTransition(
+                    PaymentStatus::Confirmed,
+                    [PaymentStatus::Pending, PaymentStatus::Processing, PaymentStatus::Partial],
+                    true,
                 );
-            }
-
-            // 足额 / 超额 → confirmed + 接线（超额不退款不记账，FR-006）
-            return new PaymentTransition(
-                PaymentStatus::Confirmed,
-                [PaymentStatus::Pending, PaymentStatus::Processing, PaymentStatus::Partial],
-                true,
-            );
-        }
-
-        if (in_array($eventType, $this->processingEvents, true)) {
-            if ($this->isPartialPayment($paidAmount, $amount)) {
-                return new PaymentTransition(
+        } elseif (in_array($eventType, $this->processingEvents, true)) {
+            $transition = $this->isPartialPayment($paidAmount, $amount)
+                ? new PaymentTransition(
                     PaymentStatus::Partial,
                     [PaymentStatus::Pending, PaymentStatus::Processing],
                     false,
-                );
-            }
-
-            return new PaymentTransition(PaymentStatus::Processing, [PaymentStatus::Pending], false);
+                )
+                : new PaymentTransition(PaymentStatus::Processing, [PaymentStatus::Pending], false);
         }
 
-        // 未知事件类型：确认收到、无需处理（如 InvoiceCreated 等噪声事件）
-        return null;
+        // 未知事件类型，或当前状态不在迁移源白名单（乱序/重复）→ 丢弃
+        if ($transition === null || ! in_array($current, $transition->fromStates, true)) {
+            return null;
+        }
+
+        return $transition;
     }
 
     /**
