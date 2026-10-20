@@ -1,0 +1,31 @@
+{
+  "source": "synthetic_research_r009_fallback",
+  "note": "无真实 testnet 样本可用，按 research R-009 降级路径以确定性合成数据替代；spot_grid 决策纯函数化，合成 bar 与实盘等价性可证明",
+  "strategy": "spot_grid",
+  "symbol": "BTCUSDT",
+  "interval": "1m",
+  "params": {
+    "lower_price": "90",
+    "upper_price": "110",
+    "grid_count": 5,
+    "investment_amount": "1000"
+  },
+  "bars": [
+    {"open_time": "2023-11-14 22:00:00", "close_time": "2023-11-14 22:00:59", "open": "100", "high": "100.5", "low": "99.5", "close": "100", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:01:00", "close_time": "2023-11-14 22:01:59", "open": "100", "high": "98.5", "low": "97.5", "close": "98", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:02:00", "close_time": "2023-11-14 22:02:59", "open": "98", "high": "99", "low": "95.5", "close": "96", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:03:00", "close_time": "2023-11-14 22:03:59", "open": "96", "high": "97", "low": "93.5", "close": "94", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:04:00", "close_time": "2023-11-14 22:04:59", "open": "94", "high": "95", "low": "91.5", "close": "92", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:05:00", "close_time": "2023-11-14 22:05:59", "open": "92", "high": "93", "low": "91", "close": "92", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:06:00", "close_time": "2023-11-14 22:06:59", "open": "92", "high": "96", "low": "91.5", "close": "95", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:07:00", "close_time": "2023-11-14 22:07:59", "open": "95", "high": "99", "low": "94.5", "close": "98", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:08:00", "close_time": "2023-11-14 22:08:59", "open": "98", "high": "101", "low": "97.5", "close": "100", "volume": "1", "quote_volume": "1", "trades_count": "1"},
+    {"open_time": "2023-11-14 22:09:00", "close_time": "2023-11-14 22:09:59", "open": "100", "high": "103", "low": "99.5", "close": "102", "volume": "1", "quote_volume": "1", "trades_count": "1"}
+  ],
+  "expected_trades": [
+    {"seq": 1, "bar_open_time": "2023-11-14 22:02:00", "side": "buy", "qty": "2.08333333", "price": "96.04800000", "note": "close=96 跌破格1触发买入"},
+    {"seq": 2, "bar_open_time": "2023-11-14 22:04:00", "side": "buy", "qty": "2.17391304", "price": "92.04600000", "note": "close=92 跌破格2触发买入"},
+    {"seq": 3, "bar_open_time": "2023-11-14 22:06:00", "side": "sell", "qty": "2.17391304", "price": "94.95250000", "note": "close=95 回升卖出格2持仓"},
+    {"seq": 4, "bar_open_time": "2023-11-14 22:07:00", "side": "sell", "qty": "2.08333333", "price": "97.95100000", "note": "close=98 回升卖出格1持仓"}
+  ]
+}
