@@ -56,7 +56,9 @@ final readonly class PaymentInvoiceRequest
         public int $ttlMinutes,           // 支付有效期
     ) {}
 }
+```
 
+```php
 final readonly class PaymentInvoiceData
 {
     public function __construct(
@@ -68,7 +70,9 @@ final readonly class PaymentInvoiceData
         public array $raw = [],           // 建单原始响应摘要（落 payment_invoices.meta）
     ) {}
 }
+```
 
+```php
 final readonly class WebhookEvent
 {
     public function __construct(
@@ -80,7 +84,9 @@ final readonly class WebhookEvent
         public array $raw,                // 原始载荷（落审计）
     ) {}
 }
+```
 
+```php
 enum PaymentStatus: string
 {
     case Pending = 'pending';
@@ -90,7 +96,10 @@ enum PaymentStatus: string
     case Expired = 'expired';
     case Manual = 'manual';
 
-    public function isTerminal(): bool; // confirmed|expired|manual
+    public function isTerminal(): bool
+    {
+        return in_array($this, [self::Confirmed, self::Expired, self::Manual], true);
+    }
 }
 ```
 

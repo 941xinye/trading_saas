@@ -29,7 +29,7 @@ BTCPay-Sig: sha256=<hex>        # btcpay 通道；fake 通道用 X-Fake-Sig
 ④ 定位支付单：ref 优先；缺失/不存在 → 200 + status=rejected + error 留痕（PoC B3，不重试）
       命中 → 回填 tenant_id / payment_invoice_id
 ⑤ 单飞锁（拿不到 → 200 + status=idempotent_skipped，不阻塞）
-⑥ 事务内：PaymentActivationService::apply(invoice, event)   （见 §3）
+⑥ 事务内：PaymentActivationService::activate(invoice, paidAmount, eventType)   （见 §4）
       已处理/乱序丢弃 → 200 + status=idempotent_skipped
       成功 → 200 + status=processed + processed_key 写入 + tenant_id/foreign key 回填
       异常 → 事务回滚 → 500（让通道按 BTCPay 重试策略重投，FR-006 可重试性依赖此）
@@ -62,7 +62,7 @@ UPDATE payment_invoices
 
 ## 4. 支付确认 → 订阅接线（FR-006）
 
-`App\Domain\Payment\PaymentActivationService::activate(PaymentInvoice $invoice): bool`
+`App\Domain\Payment\PaymentActivationService::activate(PaymentInvoice $invoice, string $paidAmount, string $eventType): bool`
 
 ```
 DB::transaction:

@@ -47,7 +47,7 @@
 
 ## R-003 支付确认 → 订阅接线：单事务 + 条件更新守卫，通道 IO 拒于事务外
 
-**Decision**：`PaymentActivationService::confirm()` 的执行序固定为
+**Decision**：`PaymentActivationService::activate(PaymentInvoice $invoice, string $paidAmount, string $eventType): bool` 的执行序固定为
 
 ```
 [事务外] 验签 → parseWebhook → 按 ref/channelInvoiceId 定位支付单（显式 tenant_id，不依赖 TenantContext）
@@ -113,7 +113,7 @@
 
 **Decision**：MySQL 8.4 无 partial unique index，采用**可空唯一列**方案：
 
-- `payment_webhook_events.processed_key`（`string(80)`, nullable, **unique**）：仅在实际处理成功时写入 `"{ref}:{event_type}"`；未处理/拒绝/跳过时保持 NULL。MySQL 唯一索引对多个 NULL 视为互不相同 → **多个未处理事件行合法，同一 (ref,event_type) 的 processed 行至多 1 条**。
+- `payment_webhook_events.processed_key`（`string(120)`, nullable, **unique**；上界 = ref ≤29 + `:` + event_type ≤60，留余量）：仅在实际处理成功时写入 `"{ref}:{event_type}"`；未处理/拒绝/跳过时保持 NULL。MySQL 唯一索引对多个 NULL 视为互不相同 → **多个未处理事件行合法，同一 (ref,event_type) 的 processed 行至多 1 条**。
 - 支付单侧守卫仍为 R-003 的条件更新（不依赖该列，二者互补：条件更新防重入接线，`processed_key` 提供「事件表只有 1 条 processed」的 PoC B2 可断言证据）。
 
 **Alternatives**：`INSERT ... ON DUPLICATE KEY` 去重 → 拒绝：会把「审计留痕」误伤成「只留第一条」，与 FR-004 的逐次留痕冲突。

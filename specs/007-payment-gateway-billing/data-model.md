@@ -54,7 +54,7 @@
 | `event_type` | string(60) | | 通道事件名（`InvoiceSettled` / `InvoiceProcessing` / `InvoiceExpired` / fake 事件名） |
 | `signature_valid` | boolean | | 验签结果（FR-004） |
 | `status` | enum | `received,processed,idempotent_skipped,rejected,error`，default `received` | 处理结果 |
-| `processed_key` | string(80) | nullable, **unique** | 仅 `processed` 时写 `"{ref}:{event_type}"`；NULL 可重复（MySQL 唯一索引对 NULL 互不相同）——使「同 (ref,event_type) 的 processed 行至多 1 条」可断言（research R-006） |
+| `processed_key` | string(120) | nullable, **unique** | 仅 `processed` 时写 `"{ref}:{event_type}"`；NULL 可重复（MySQL 唯一索引对 NULL 互不相同）——使「同 (ref,event_type) 的 processed 行至多 1 条」可断言（research R-006） |
 | `raw_payload` | json | | 原始载荷全文（含签名字头，FR-004 审计要求） |
 | `error` | text | nullable | 失败原因（B3 的 metadata 伪造推断留痕） |
 | `received_at` | timestamp | | |
@@ -80,7 +80,7 @@
 | `sent_at` | timestamp | nullable | |
 | `created_at` / `updated_at` | timestamps | | |
 
-**唯一索引**：`unique(subscription_id, subscription_ends_at, days_before, channel, 'idx_prr_cycle_reminder')` —— **每周期每档每渠道至多一行**，续费顺延（`ends_at` 变化）即新周期自然产生新行（research R-007，constitution IV：不复用会被正常流程改写的业务字段做守卫）。
+**唯一索引**：`$table->unique(['subscription_id','subscription_ends_at','days_before','channel'], 'idx_prr_cycle_reminder')`（列用数组、名单独传参；**禁止** 5 个位置参数写法，Laravel 签名为 `unique(array|string $columns, ?string $name = null)`）—— **每周期每档每渠道至多一行**，续费顺延（`ends_at` 变化）即新周期自然产生新行（research R-007，constitution IV：不复用会被正常流程改写的业务字段做守卫）。
 
 ## 5. 状态机（FR-003 / FR-012 / FR-013）
 

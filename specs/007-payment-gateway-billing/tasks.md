@@ -26,7 +26,7 @@
 
 **Purpose**: 前置校验与目录骨架（本项目为既有 Laravel 单仓，无工程初始化动作）
 
-- [ ] T001 校验前置并确认零新增依赖：运行 `php -v` / `composer -V`，确认 `composer.json` 不新增任何依赖（BTCPay 走 `Http` facade，见 plan.md Technical Context）
+- [ ] T001 校验前置并确认零新增依赖：运行 `php -v` / `composer -V`；按 AGENTS.md 工作区规则安装 Laravel Boost（`composer require laravel/boost --dev` + `php artisan boost:install`，**--dev 开发工具依赖**，不违反 plan「功能代码零新增 Composer 依赖」口径），安装后重读定制版 AGENTS.md 再继续；确认功能代码不新增任何依赖（BTCPay 走 `Http` facade，见 plan.md Technical Context）
 - [ ] T002 [P] 创建域包目录骨架 `app/Domain/Payment/{Contracts,Dto,Channels,Exceptions}/`
 - [ ] T003 [P] 创建测试目录骨架 `tests/Unit/Payment/`、`tests/Integration/Payment/`、`tests/Feature/Payment/`
 
@@ -41,8 +41,8 @@
 ### 数据层 + 配置（WS1）
 
 - [ ] T004 新建 migration `database/migrations/*_create_payment_invoices_table.php`：`tenant_id`（FK `tenants.id` cascadeOnDelete）、`ref` string(64) **unique**、`channel_code` string(30)、`channel_invoice_id` string(120) nullable、`plan_code` string(30)、`currency` string(10) default `USDT`、`chain` string(10) default `TRC20`、`amount_usdt` **decimal(20,8) NOT NULL**、`paid_amount_usdt` decimal(20,8) nullable、`pay_address` string(120) nullable、`pay_uri` string(255) nullable、`status` enum `pending,processing,partial,confirmed,expired,manual` default `pending`、`expires_at` timestamp NOT NULL、`confirmed_at` timestamp nullable、`meta` json nullable；索引 `index(tenant_id,status)` / `index(tenant_id,plan_code,status)` / `index(channel_invoice_id)` / `index(status,expires_at)`
-- [ ] T005 [P] 新建 migration `database/migrations/*_create_payment_webhook_events_table.php`：`tenant_id` nullable、`payment_invoice_id` nullable（FK nullOnDelete）、`channel_code` string(30)、`ref` string(64) nullable、`event_type` string(60)、`signature_valid` boolean、`status` enum `received,processed,idempotent_skipped,rejected,error` default `received`、`processed_key` string(80) **nullable unique**、`raw_payload` json、`error` text nullable、`received_at` timestamp、`processed_at` timestamp nullable；索引 `index(ref,created_at)` / `index(channel_code,status,created_at)`
-- [ ] T006 [P] 新建 migration `database/migrations/*_create_payment_renewal_reminders_table.php`：`tenant_id`（FK cascadeOnDelete）、`subscription_id`（FK `subscriptions.id` cascadeOnDelete）、`subscription_ends_at` timestamp、`days_before` smallint、`plan_code` string(30)、`channel` string(20)、`status` enum `queued,sent,failed` default `queued`、`provider_message_id` string(100) nullable、`error` text nullable、`sent_at` timestamp nullable；**唯一索引** `unique(subscription_id, subscription_ends_at, days_before, channel, 'idx_prr_cycle_reminder')`
+- [ ] T005 [P] 新建 migration `database/migrations/*_create_payment_webhook_events_table.php`：`tenant_id` nullable、`payment_invoice_id` nullable（FK nullOnDelete）、`channel_code` string(30)、`ref` string(64) nullable、`event_type` string(60)、`signature_valid` boolean、`status` enum `received,processed,idempotent_skipped,rejected,error` default `received`、`processed_key` string(120) **nullable unique**（上界 = ref ≤29 + `:` + event_type ≤60，留余量）、`raw_payload` json、`error` text nullable、`received_at` timestamp、`processed_at` timestamp nullable；索引 `index(ref,created_at)` / `index(channel_code,status,created_at)`
+- [ ] T006 [P] 新建 migration `database/migrations/*_create_payment_renewal_reminders_table.php`：`tenant_id`（FK cascadeOnDelete）、`subscription_id`（FK `subscriptions.id` cascadeOnDelete）、`subscription_ends_at` timestamp、`days_before` smallint、`plan_code` string(30)、`channel` string(20)、`status` enum `queued,sent,failed` default `queued`、`provider_message_id` string(100) nullable、`error` text nullable、`sent_at` timestamp nullable；**唯一索引**写法 `$table->unique(['subscription_id','subscription_ends_at','days_before','channel'], 'idx_prr_cycle_reminder')`（列用数组、名单独传参，**禁止** 5 个位置参数的写法）
 - [ ] T007 [P] 新建模型 `app/Models/PaymentInvoice.php`：挂 `BelongsToTenant`；`$casts = ['amount_usdt' => 'decimal:8', 'paid_amount_usdt' => 'decimal:8', 'meta' => 'array', 'expires_at' => 'datetime', 'confirmed_at' => 'datetime']`；**禁止** float cast
 - [ ] T008 [P] 新建模型 `app/Models/PaymentWebhookEvent.php`：**不挂** `BelongsToTenant`（webhook 无租户上下文，显式写 `tenant_id`，与 `TwoPhaseMeter` 同思路）
 - [ ] T009 [P] 新建模型 `app/Models/PaymentRenewalReminder.php`：挂 `BelongsToTenant`
@@ -107,16 +107,16 @@
 
 ### Implementation for User Story 2（在 T028 端点之上的加固）
 
-- [ ] T037 [US2] 在 `app/Http/Controllers/Api/V1/BillingWebhookController.php` 接入 Redis 单飞锁：键 `tenant:{tid}:payment:webhook:{ref}`，`Redis::connection('default')->set($k,$v,'EX',15,'NX')`（**phpredis 参数位顺序**，先例 `app/Domain/Tenancy/TenantKeyResolver.php#L97`）；拿不到锁 → 200 + `idempotent_skipped`；锁**非正确性依赖**（仅削峰），Redis 不可用时降级为直接处理（FR-005）
-- [ ] T038 [US2] 硬化 `BillingWebhookController` 安全红线（webhook-contract.md §7）：`ref` 长度与字符集白名单校验（防注入/超长）、`raw_payload` **原样**落库（含签名字头，即使验签失败）、请求体不参与 SQL 拼接、未知 `channel_code` 抛异常而非回落默认通道（FR-004 / constitution V）
+- [ ] T037 [US2] 在 `app/Http/Controllers/Api/V1/BillingWebhookController.php` 接入 Redis 单飞锁：键 `tenant:{tid}:payment:webhook:{ref}`，`Redis::connection('default')->set($k,$v,'EX',15,'NX')`（**phpredis 参数位顺序**，先例 `app/Domain/Tenancy/TenantKeyResolver.php#L97`）；拿不到锁 → 200 + `idempotent_skipped`；锁**非正确性依赖**（仅削峰），Redis 不可用时降级为直接处理；锁键名固化为类常量以便测试按已知逻辑名精确清理（FR-005 / constitution VI）
+- [ ] T038 [US2] 硬化 `BillingWebhookController` 安全红线（webhook-contract.md §7）：`ref` 长度与字符集白名单校验（界值：长度 ≤64 且匹配 `^pi_[0-9a-z]{26}$`，防注入/超长）、`raw_payload` **原样**落库（含签名字头，即使验签失败）、请求体不参与 SQL 拼接、未知 `channel_code` 抛异常而非回落默认通道（FR-004 / constitution V）
 
 ### Tests for User Story 2
 
 - [ ] T039 [P] [US2] 新建 Unit 测试 `tests/Unit/Payment/PaymentStatusMachineTest.php`：以 `#[DataProvider]` 遍历 data-model.md §5 迁移表逐行（含 `pending/processing/partial → confirmed`、`expired → manual`），断言**终态拒绝更新**（`confirmed → *` 禁止）、乱序 `processing` 丢弃、过期后到账 → `manual` 不自动激活（FR-003 / FR-012 / FR-013）
 - [ ] T040 [P] [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookSignatureRejectionTest.php`：错误签名重放 → HTTP **401**、支付单状态零变更、`signature_valid=false` 审计行 100% 留存且 `raw_payload` 完整（SC-003）
-- [ ] T041 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookIdempotencyTest.php`：同 ref 重放 3 次 → `subscriptions` 该租户仅新增 1 条 active 行、`payment_webhook_events WHERE processed_key='{ref}:{event_type}'` 计数 = 1、`payment_invoices.confirmed_at` 仅一次迁移、当日 Redis 计数与 `meter_events` **零增量**（SC-002 / FR-005）
+- [ ] T041 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookIdempotencyTest.php`：同 ref 重放 3 次 → `subscriptions` 该租户仅新增 1 条 active 行、`payment_webhook_events WHERE processed_key='{ref}:{event_type}'` 计数 = 1、`payment_invoices.confirmed_at` 仅一次迁移、当日 Redis 计数与 `meter_events` **零增量**（SC-002 / FR-005）；setUp 与 tearDown 均按已知键名 `tenant:{tid}:payment:webhook:{ref}` 精确清单飞锁键，`try/catch` 包住且先于 `parent::tearDown()`（constitution VI）
 - [ ] T042 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookOrderingAndUnknownRefTest.php`：先 `confirmed` 后到 `processing` → 状态不回退且落 `idempotent_skipped`；`ref` 不存在 / `metadata.ref` 缺失 → 200 + `rejected` 且不影响其他支付单（PoC B3 语义，FR-003）
-- [ ] T043 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookConcurrencyTest.php`（`@group redis`，带 `tests/Concerns/ChecksRedisAvailability` 守卫）：同 ref 并发投递 → `confirmed_at` 仅一次迁移，锁冲突方返回 `idempotent_skipped`（FR-005）
+- [ ] T043 [US2] 新建 Integration 测试 `tests/Integration/Payment/WebhookConcurrencyTest.php`（`@group redis`，带 `tests/Concerns/ChecksRedisAvailability` 守卫）：同 ref 并发投递 → `confirmed_at` 仅一次迁移，锁冲突方返回 `idempotent_skipped`；setUp 与 tearDown 双清单飞锁键 `tenant:{tid}:payment:webhook:{ref}`（FR-005 / constitution VI）
 
 **Checkpoint**: US2 独立可验证 —— 资金安全红线与幂等证据链闭合，可脱离 UI 单独交付（对应 `docs/p9-btcpay-poc-plan.md` 阶段 B）。
 
@@ -134,13 +134,13 @@
 - [ ] T045 [P] [US3] 新建 `app/Jobs/RenewalReminderJob.php`（镜像 `app/Jobs/RiskNotificationJob.php` 三段式：读 `queued` 行 → `NotifierChannel::send()` → 置 `sent`/`failed`；队列 `notifications`，`tries=3`，backoff `[10,30,90]`）
 - [ ] T046 [US3] 实现 `app/Domain/Payment/RenewalReminderService.php::dispatch(?int $tenantId=null, ?CarbonImmutable $nowUtc=null): int`：取最新订阅行（`status ∈ ('active','trialing')` 且 `ends_at` 未来）→ `days_left = ends_at->diffInDays(now)` 命中 `config('payment.renewal_reminder_days')` → 按 `config('payment.reminder_channels')` 在套餐 `channels` 白名单内（`PlanService::allowsChannel()`，`log` 系统渠道恒放行）落 `queued` 行（唯一索引幂等，续费顺延即新周期）→ 触发 `RenewalReminderJob`（FR-007 / FR-008）
 - [ ] T047 [US3] 新建命令 `app/Console/Commands/BillingRenewalRemindersCommand.php`（签名 `billing:renewal-reminders`，薄命令范式对齐 `BillingRefreshStatusCommand.php`）
-- [ ] T048 [US3] 在 `routes/console.php` 追加调度 `Schedule::command('billing:renewal-reminders')->dailyAt('00:10')->timezone('UTC')->withoutOverlapping(10)`（紧邻既有两条调度，同范式）；**不改** `billing:refresh-status` 既有调度与 P3 状态机（FR-008）
+- [ ] T048 [US3] 在 `routes/console.php` 追加调度 `Schedule::command('billing:renewal-reminders')->dailyAt('00:10')->timezone('UTC')->withoutOverlapping(10)`（紧邻既有两条调度，同范式），并追加 `Schedule::command('billing:expire-invoices')->everyFiveMinutes()->withoutOverlapping(5)`（FR-012 过期单自动失效，契约 §7）；**不改** `billing:refresh-status` 既有调度与 P3 状态机（FR-008）
 
 ### Tests for User Story 3
 
 - [ ] T049 [P] [US3] 新建 Unit 测试 `tests/Unit/Payment/RenewalReminderServiceTest.php`：档位命中/不命中边界（7/3/1 与非档位日）、同周期重复调用零新增行、续费顺延后新周期可再发、套餐渠道白名单过滤（FR-007）
 - [ ] T050 [US3] 新建 Integration 测试 `tests/Integration/Payment/RenewalRecoveryTimelineTest.php`：完整时间线 提醒 → `past_due` → 宽限 → `suspended` → 补缴恢复 + 周期顺延，各转换时点与 `config('plans.past_due_grace_days')` 一致、误差 ≤ 1 个调度周期，且不产生双重计费（SC-004 / FR-008）
-- [ ] T051 [US3] 扩展既有 `tests/Integration/Console/ScheduleRegistrationTest.php`：断言 `billing:renewal-reminders` 已注册且为 `dailyAt('00:10')` UTC + `withoutOverlapping(10)`（FR-007）
+- [ ] T051 [US3] 扩展既有 `tests/Integration/Console/ScheduleRegistrationTest.php`：断言 `billing:renewal-reminders` 已注册且为 `dailyAt('00:10')` UTC + `withoutOverlapping(10)`，且 `billing:expire-invoices` 已注册为 `everyFiveMinutes`（FR-007 / FR-012）
 
 **Checkpoint**: US1 + US3 可协同 —— 续费留存闭环成立（提醒 → 手工续付 → 恢复）。
 
@@ -156,7 +156,7 @@
 
 - [ ] T052 [US4] 新建 `app/Filament/Admin/Widgets/QuotaUsageWidget.php`：计量事件 `ai_call` / `order_placed` 当日用量与上限 + 资源数（交易所账户/策略实例/信号订阅）；**复用** `PlanService` + `QuotaGuard` + `TwoPhaseMeter::usedToday()`，不另算口径（FR-009）
 - [ ] T053 [US4] 新建 `app/Filament/Admin/Pages/Billing.php`：导航组「计费」；展示当前套餐/周期起止/用量看板（内嵌 `QuotaUsageWidget`）；页面内查询一律显式 `TenantContext::getTenantId()`（FR-009 / FR-010）
-- [ ] T054 [US4] 新建 `app/Filament/Admin/Resources/PaymentInvoiceResource.php` + `app/Filament/Admin/Resources/PaymentInvoiceResource/Pages/ListPaymentInvoices.php`：时间倒序展示金额/状态/创建时间；**只读**（禁 create/edit/delete，policy 仅 `viewAny`/`view`）；隔离走 `BelongsToTenant` + `TenantScope` 自动过滤（FR-009 / FR-010）
+- [ ] T054 [US4] 新建 `app/Filament/Admin/Resources/PaymentInvoiceResource.php` + `app/Filament/Admin/Resources/PaymentInvoiceResource/Pages/ListPaymentInvoices.php`：时间倒序展示金额/状态/创建时间；**只读**（禁 create/edit/delete，policy 仅 `viewAny`/`view`）且**无任何退款动作/路径**（FR-014 反向断言：退款人工线下，平台侧不提供入口）；隔离走 `BelongsToTenant` + `TenantScope` 自动过滤（FR-009 / FR-010）
 - [ ] T055 [US4] 在 `app/Filament/Admin/Pages/Billing.php` 实现升级 Action：选中套餐 → `PaymentInvoiceService::create()` → 展示 USDT 金额、收款地址、二维码（`payUri`）与倒计时；已有待支付单 → **引导至既有单**（US4-3）；满足「点击升级 → 选套餐 → 见收款信息」≤ 3 步（SC-005）
 - [ ] T056 [P] [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingPageTest.php`：计费页渲染 + 用量数字与 `TwoPhaseMeter` 一致 + 双租户零串扰 + 产物只读（`RefreshDatabase`）（FR-009 / SC-005 / SC-006）
 - [ ] T057 [P] [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingApiTest.php`：`summary`/`invoices`/`show` 返回结构、跨租户 `{ref}` → 404（不泄露存在性）、`POST invoices` 参数校验（FR-009 / FR-010）
@@ -170,11 +170,11 @@
 
 **Purpose**: 收口冒烟、真实通道占位用例与文档同步（plan.md WS7）
 
-- [ ] T059 [P] 新建命令 `app/Console/Commands/PocVerifyPaymentCommand.php`（签名 `poc:verify-payment`，离线全链路断言，输出 `ALL CHECKS PASSED`；风格对齐既有 `PocVerifyDslCommand`）：覆盖建单 → 验签 → 状态推进 → 订阅激活 → 配额生效 → 幂等重放 → 伪造签名拒绝 → 提醒判定（SC-001~006 平台侧）
+- [ ] T059 [P] 新建命令 `app/Console/Commands/PocVerifyPaymentCommand.php`（签名 `poc:verify-payment`，离线全链路断言，输出 `ALL CHECKS PASSED`；风格对齐既有 `PocVerifyDslCommand`）：覆盖建单 → 验签 → 状态推进 → 订阅激活 → 配额生效 → 幂等重放 → 伪造签名拒绝 → 提醒判定（SC-001~006 平台侧），并断言 webhook 单请求处理耗时 < 200ms（离线基准，承接 plan.md Performance Goals 的 p95 设计目标）
 - [ ] T060 [P] 新建 Integration 测试 `tests/Integration/Payment/BtcPayChannelLiveTest.php`：真实 BTCPay 端到端用例，以**可用性标志** skip（节点/BTCPay 不可达即跳过，沿用既有 56 skipped 惯例，**不得让基线变红**，坑 #23）
 - [ ] T061 [P] 更新 `README.md`：P9 行状态改写为「我方实现已交付（离线轨道已验证），真实链路待节点」，并同步技术债索引
 - [ ] T062 [P] 在 `docs/p9-btcpay-poc-plan.md` 追加归档标注：说明阶段 A/B/C 待节点执行、BtcPayChannel 类与验签纯函数已随本期交付
-- [ ] T063 执行 quickstart.md 三层验证：§2 离线断言测试、§3 集成测试（需 ServBay MySQL/Redis 在线；Redis 停机时仅 `@redis` 用例 skip）、§4 手工端到端（含重放 3 次与伪造签名对抗）、§6 续费失败流转时间线
+- [ ] T063 执行 quickstart.md 三层验证：§2 离线断言测试、§3 集成测试（需 ServBay MySQL/Redis 在线；Redis 停机时仅 `@redis` 用例 skip）、§4 手工端到端（含重放 3 次与伪造签名对抗）、§5 计费页手工点检（需 UI 会话）、§6 续费失败流转时间线
 - [ ] T064 全量回归 `php artisan test` 并核对基线无新增 failed；按 plan.md §5 提交节奏收口（每条提交含实现 + 测试 + 文档同步，消息格式 `feat(spec-007): 中文简述`）
 
 ---

@@ -29,7 +29,7 @@
 
 **Project Type**: web-service（Laravel SaaS monolith，多租户；Filament Admin 面板 + REST API 双面）。
 
-**Performance Goals**: 平台侧「确认到账 → 订阅激活 → 配额可用」≤ 30 秒（SC-001，实际为单事务毫秒级 + 1 次通道 webhook 投递）；webhook 单请求 p95 < 200ms（验签为一次 HMAC + 一次条件更新 + 一次 provision 事务）；计费页首屏（复用 P3 服务读配置 + Redis 计数）无额外重计算。
+**Performance Goals**: 平台侧「确认到账 → 订阅激活 → 配额可用」≤ 30 秒（SC-001，实际为单事务毫秒级 + 1 次通道 webhook 投递）；webhook 单请求 p95 < 200ms（验签为一次 HMAC + 一次条件更新 + 一次 provision 事务）；计费页首屏（复用 P3 服务读配置 + Redis 计数）无额外重计算。（p95 为设计目标：离线环境由 `poc:verify-payment` 单请求 <200ms 冒烟断言承接；真实 p95 压测与计费页渲染基准**不设本期门禁**）
 
 **Constraints**:
 - 金融精度（constitution II / FR-011）：金额列 `decimal(20,8)`；bcmath 字符串流转；足额判定 `bccomp(paid, amount, 8) >= 0`；**浮点全程不参与**。

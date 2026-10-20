@@ -23,7 +23,7 @@ final class PaymentInvoiceService
     public function create(int $tenantId, string $planCode, ?string $channelCode = null): PaymentInvoice;
 
     /** 过期清扫：非终态且 expires_at < now → expired（命令 billing:expire-invoices 调用）。 */
-    public function expireStale(int $tenantId = null): int;
+    public function expireStale(?int $tenantId = null): int;
 
     /** 本租户支付单倒序（时间倒序：金额/状态/创建时间，FR-009）。 */
     public function listForTenant(int $tenantId, int $limit = 20): Collection;
@@ -84,7 +84,7 @@ final class RenewalReminderService
      * 扫描订阅，产生到期前 7/3/1 天提醒行（幂等：唯一索引 (subscription_id, ends_at, days_before, channel)）。
      * @return int 本次新建的提醒行数
      */
-    public function dispatch(int $tenantId = null, ?CarbonImmutable $nowUtc = null): int;
+    public function dispatch(?int $tenantId = null, ?CarbonImmutable $nowUtc = null): int;
 }
 ```
 
