@@ -157,11 +157,18 @@ class StrategyRunner
         $symbol = (string) $instance->symbol;
         $interval = (string) $instance->interval;
 
+        // 运行期上下文参数：注入实例级事实（DSL 策略装载校验与数量换算需要），
+        // 不改动持久化 params（params 以 DB 最新为准，避免把实例事实写回快照）。
+        $runtimeParams = $params;
+        $runtimeParams['symbol'] = $symbol;
+        $runtimeParams['tenant_id'] = $tenantId;
+        $runtimeParams['allocated_capital'] = (string) $instance->allocated_capital;
+
         $strategy = $this->registry->make(
             (string) $strategyRow->code,
             $instanceId,
             $params,
-            new StrategyContext($instanceId, $params, null, null, [], null),
+            new StrategyContext($instanceId, $runtimeParams, null, null, [], null),
         );
 
         // 崩溃恢复：Redis String JSON → StrategyState
