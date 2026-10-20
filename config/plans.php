@@ -38,7 +38,7 @@ return [
                 'ai_calls_per_day' => 500,
                 'orders_per_day' => 2000,
                 'channels' => ['websocket', 'telegram', 'mail'],
-                'strategies' => ['spot_grid', 'spot_dca', 'futures_grid'],
+                'strategies' => ['spot_grid', 'spot_dca', 'futures_grid', 'custom_dsl'],
             ],
         ],
         'enterprise' => [
@@ -51,7 +51,7 @@ return [
                 'ai_calls_per_day' => 10000,
                 'orders_per_day' => 50000,
                 'channels' => ['websocket', 'telegram', 'wechat_work', 'mail'],
-                'strategies' => ['spot_grid', 'spot_dca', 'futures_grid'],
+                'strategies' => ['spot_grid', 'spot_dca', 'futures_grid', 'custom_dsl'],
             ],
         ],
     ],

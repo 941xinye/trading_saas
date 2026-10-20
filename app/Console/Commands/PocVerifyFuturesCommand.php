@@ -329,15 +329,18 @@ class PocVerifyFuturesCommand extends Command
         // free 拒绝 futures_grid
         $free = new \App\Models\Tenant(['plan_code' => 'free']);
         $this->check(! $plans->allowsStrategy($free, 'futures_grid'), 'free 套餐拒绝 futures_grid');
+        $this->check(! $plans->allowsStrategy($free, 'custom_dsl'), 'free 套餐拒绝 custom_dsl');
 
         // pro / enterprise 放行
         $pro = new \App\Models\Tenant(['plan_code' => 'pro']);
         $enterprise = new \App\Models\Tenant(['plan_code' => 'enterprise']);
         $this->check($plans->allowsStrategy($pro, 'futures_grid'), 'pro 套餐放行 futures_grid');
         $this->check($plans->allowsStrategy($enterprise, 'futures_grid'), 'enterprise 套餐放行 futures_grid');
+        $this->check($plans->allowsStrategy($pro, 'custom_dsl'), 'pro 套餐放行 custom_dsl');
+        $this->check($plans->allowsStrategy($enterprise, 'custom_dsl'), 'enterprise 套餐放行 custom_dsl');
 
         // 未落地策略全部拒绝
-        foreach (['futures_dca', 'smart_martingale', 'trend_rolling', 'custom_dsl'] as $code) {
+        foreach (['futures_dca', 'smart_martingale', 'trend_rolling'] as $code) {
             $this->check(! $plans->allowsStrategy($pro, $code), "未落地策略 {$code} 即使 pro 也拒绝");
         }
 

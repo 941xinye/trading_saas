@@ -30,7 +30,7 @@ return [
 
     // 已真实落地、可对客售卖的策略代码（P5.5 步骤 2 起作为套餐白名单的硬闸门）。
     // plans.php 的 strategies 必须与此取交集；未落地的策略代码不得运行/售卖。
-    'implemented' => ['spot_grid', 'spot_dca', 'futures_grid'],
+    'implemented' => ['spot_grid', 'spot_dca', 'futures_grid', 'custom_dsl'],
 
     // 策略默认参数 schema
     'strategies' => [

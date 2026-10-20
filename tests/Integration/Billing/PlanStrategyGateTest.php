@@ -44,10 +44,20 @@ class PlanStrategyGateTest extends TestCase
         static::assertTrue($service->allowsStrategy($this->tenant('enterprise'), 'futures_grid'));
     }
 
+    public function test_custom_dsl_allowed_in_pro_and_enterprise_but_not_free(): void
+    {
+        $service = app(PlanService::class);
+
+        // free 不含自定义 DSL（spec 006 US5-1）
+        static::assertFalse($service->allowsStrategy($this->tenant('free'), 'custom_dsl'));
+        static::assertTrue($service->allowsStrategy($this->tenant('pro'), 'custom_dsl'));
+        static::assertTrue($service->allowsStrategy($this->tenant('enterprise'), 'custom_dsl'));
+    }
+
     public function test_unimplemented_strategies_denied_everywhere(): void
     {
         $service = app(PlanService::class);
-        $unimplemented = ['futures_dca', 'smart_martingale', 'trend_rolling', 'custom_dsl'];
+        $unimplemented = ['futures_dca', 'smart_martingale', 'trend_rolling'];
 
         foreach (['free', 'pro', 'enterprise'] as $plan) {
             foreach ($unimplemented as $code) {
