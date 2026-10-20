@@ -302,9 +302,34 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **已知边界**：testnet 真实下单链路 + 仓位风控实跑待海外节点 + Binance futures testnet key（quickstart 齐备）；仓位风控 action/emergency 档依赖 Redis 单飞锁，Redis 不可用时保守返回 skipped（不重复下单）。
 
+### ✅ 已完成：spec 006 自定义 DSL 策略引擎（2026-10-20）
+
+自定义 DSL 策略引擎全量落地（6 工作流 38 任务）：受限 YAML 子集解析器 + 判别式 AST + 白名单沙箱解释器 + DslStrategy 全生命周期 + Filament 编辑器 + 历史回测预览 + 售卖/计费/风控接线。离线断言 + 单元/集成测试全绿。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| DSL 解析 + AST | DslYamlParser（受限块式子集，拒锚点/别名/tag/flow/重复键）+ DslCompiler（白名单 + 枚举/范围/规模上限校验）+ DslParser 门面；DslDiagnostic 带 行/字段 定位 | [spec](specs/006-custom-dsl-strategy/spec.md) |
+| 沙箱解释器 | WhitelistInterpreter：判别式 AST `match` 求值（comparison/logical/cross/always），白名单原生，禁 eval/exec/反射/IO；step/time budget 超限抛 DslExecutionException（不静默） | [contracts](specs/006-custom-dsl-strategy/contracts.md) |
+| 指标快照 | IndicatorSnapshotBuilder：复用 IndicatorCalculator，窗口=max(period)+1 上限 150，NaN→null，prev shifted snapshot | — |
+| DSL 策略 | DslStrategy（schema_version=2）：装载编译→onBar 求值→单飞挂单→shouldOpen/shouldClose bcmath 换算→onFill 入账→position_snapshot 持久化；崩溃恢复 pending 核实幂等（独立 recovered 标志） | — |
+| 编辑器 | StrategyInstanceResource：params.dsl_script 文本域 + 即时校验（DslValidator）+ 试装载 action（仅编译不启动）；按策略联动显隐/必填；跨租户草稿隔离（TenantScope） | — |
+| 回测预览 | HistoricalPreviewService：复用 P8 HistoricalQuery(KlineBar) 分页回放，与实跑共用同一 DslInterpreter + IndicatorCalculator；输出信号序列 + 简易资金曲线 + 统计 | — |
+| 售卖门控 | config/strategy.implemented 加入 custom_dsl；pro/enterprise 套餐白名单加入，free 不含；StrategyWhitelistIntegrityTest 防超卖 | — |
+| 计费/风控 | DSL 下单复用 OrderExecutor（QuotaGuard 两阶段计费）+ RiskGuard（熔断 OPEN 拦截开仓、平仓放行） | — |
+| POC 命令 | `poc:verify-dsl`（28 项离线断言 SC-001~010：编译/红线/生命周期/等价/恢复/预览/门控/预算/精度） | [quickstart](specs/006-custom-dsl-strategy/quickstart.md) |
+
+**实测结果**：
+- 离线断言 PASS：`php artisan poc:verify-dsl` → **28/28 ALL CHECKS PASSED**。
+- 等价性：DslEquivalenceTest — DCA 与 SpotGrid 决策序列（bar/side/qty）与 DSL 100% 一致；DSL ma7 指标与内置 IndicatorCalculator 逐点一致。
+- 预览一致性：DslPreviewConsistencyTest — 预览信号序列 == 实跑信号序列。
+- 编辑器：DslEditorValidationTest — 校验定位 / 阻断保存 / 试装载不启动实例 / 租户隔离。
+- 门控/计费/熔断：DslPlanGateTest + DslBillingBreakerTest（@redis）— free 拒/pro+enterprise 放行；配额耗尽交易所零调用；熔断 OPEN 开仓拦截/平仓放行。
+
+**已知边界**：DSL 预览未模拟滑点/手续费（结果中已注明）；FuturesDca / SmartMartingale / TrendRolling 仍为骨架未入白名单（B1）。
+
 ### 🚧 待实现：剩余路线图
 
-> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 已完成（spec 004 为核心落地、节点验收待回填），实测结果见上方对应区块。
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 / spec 006 自定义 DSL 已完成（spec 004 为核心落地、节点验收待回填），实测结果见上方对应区块。
 > **P5.5 上线前工程化加固代码侧已完成（2026-10-15）**——步骤 1–4 产物、三环境实测证据与待节点侧实跑清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md#执行结果与实测证据2026-10-15步骤-14-代码侧全部完成)。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 | 依赖 |
@@ -312,7 +337,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | **P5.5 上线前工程化加固 ✅ 代码侧完成** | ①账实对账（内存持仓 vs 交易所）②SpotDca 落地（free 套餐已售卖）③poc:verify-\* 断言迁入 PHPUnit（157 项三环境全绿）+ CI ④supervisor 样板 / billing+reconcile 调度 / 海外节点 runbook | 代码侧验收全过；testnet 真实成交/转出对账/强平 120 秒/supervisor kill -9/Actions 绿灯待节点与首次推送，清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md) | 资金安全基线、断言迁移回归面 | P1–P5 |
 | **P6 多交易所 Adapter 扩展 ✅ 代码侧完成** | ~~OKX / Bybit / Bitget~~ 三家现货 Adapter 全部落地（spec 001/002/003），复用 P1 BinanceSpotAdapter 范式；Signing 签名域统一四家；统一错误码 → `ExchangeApiException` 翻译表四家一致性。**「第四家接入纯增量」验证通过**：spec 003 落地期 `AbstractExchangeAdapter` 零改动、前三家测试零回归 | Binance 已实跑；OKX demo / Bybit testnet / Bitget 主网小额单待 key + 海外网络（quickstart 齐备，验收总清单见 [海外节点 Runbook](docs/overseas-node-runbook.md)）；P1 `market:feed` 切换所代码 ≤10 行（StrategyExchangeCompatibilityTest 四家断言） | 各所 WS 协议差异（confirm 标志 vs bar 切换检测、心跳形态）、签名算法差异、testnet 配额/可用性 | P1 |
 | **P8 ClickHouse 历史数据归档 ✅ 核心落地（2026-10-19，spec 004；节点机 CH 冒烟与端到端验收待回填）**（执行顺序先于 P7，理由见下） | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
-| **P7 Custom DSL 策略引擎** | YAML/TOML 声明式策略定义（entry/exit/filter/risk 四段）；DSL 解释器 + 沙箱执行；Filament 在线编辑器 + 回测预览 | 一条 DSL 装载后能跑通 onBar→信号→下单；与 PHP 内置策略语义等价 | DSL 表达力 vs 安全（禁 eval/exec/fs）、性能（每 bar 解释开销）、与 RiskGuard 接线 | P1, P2 |
+| **P7 Custom DSL 策略引擎 ✅ 代码侧完成（2026-10-20，spec 006）** | YAML 受限子集声明式策略（entry/exit/filter/risk 四段）；白名单沙箱解释器（禁 eval/exec/fs/网络/反射）；Filament 在线编辑器（即时校验+试装载）+ 历史 K 线回测预览（复用 P8 HistoricalQuery）；售卖门控回归白名单（pro/enterprise） | 一条 DSL 装载跑通 onBar→信号→下单→成交回报闭环；与 SpotDca/SpotGrid 决策序列 100% 等价；`poc:verify-dsl` 28/28 全绿 | DSL 表达力 vs 安全（白名单原语）、每 bar 解释开销（step budget 500）、与 RiskGuard/QuotaGuard 接线 | P1, P2 |
 | **P9 支付网关 + 计费 UI** | 支付集成（**通道选型前置合规调研，见下行注记**）；Filament 计费页（套餐升级/Invoice/用量看板）；订阅状态机自动续费触发；webhook 幂等 | 完整一笔从下单→支付→订阅激活→配额刷新；续费失败走 P3 past_due→suspended 流程 | 支付回调幂等（同 ref 不双激活）、汇率/税额、**通道合规（数字货币 SaaS 品类受限）** | P3 |
 | **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；策略绩效（Sharpe/最大回撤/胜率/盈亏比）；Filament 绩效页；与 P4 风控参数自动调优建议 | 一条 DSL 策略回测 1 年数据 < 30s；与 P1 实跑同策略净值曲线误差 < 1% | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
 
@@ -341,7 +366,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | # | 占位项 | 当前行为 |
 |---|---|---|
 | B1 | ~~SpotDca 等 5 策略全抛异常~~ **P5.5 步骤 2：SpotDca 已实现并带 16 项测试**；~~FuturesGrid 骨架~~ **spec 005 已实现**（20 项测试）；FuturesDca / SmartMartingale / TrendRolling 仍为骨架，未入套餐白名单 | 方法体全部 `throw new RuntimeException('Not implemented')` |
-| B2 | Custom DSL（DslParser / DslStrategy） | parse/onBar/onTick 等全部抛异常，P7 落地 |
+| B2 | ~~Custom DSL（DslParser / DslStrategy）骨架~~ **spec 006 已还**：受限 YAML 子集解析器 + 判别式 AST + 白名单沙箱解释器（禁 eval/exec/fs/网络/反射）+ DslStrategy 全生命周期（schema_version=2 + 崩溃恢复幂等）+ Filament 编辑器/试装载 + 历史 K 线预览；DslBillingBreakerTest 验证计费/熔断接线 | 无骨架残留 |
 | B3 | ~~OKX / Bybit / Bitget Adapter~~ **已全还**：spec 001/002/003 三家现货落地（REST/WS/签名下单；OKX 模拟盘 header + Bybit testnet 域名开关 + Bitget 无模拟盘边界）；四家横切契约测试齐备（错误码/路由/策略兼容性）；真实链路实跑待 key + 海外网络（验收总清单见 runbook） | 无骨架残留 |
 | B4 | ~~BinanceFuturesAdapter 仅强平流~~ **spec 005 已补全 9 个交易接口**：placeOrder/cancelOrder/getOrder/getPosition/setLeverage/setMarginType/leverageBracket/getBalance/getTicker + 错误码翻译；testnet 真实下单待海外节点 | 无骨架残留 |
 | B5 | ~~企微 / 邮件通知渠道~~ **已实现（2026-10-18）**：WeComChannel（群机器人 markdown webhook）+ MailChannel（DomainNotificationMail 纯文本）注册入 channel_classes，信号/风控/对账三链共用；未配置即抛异常落 failed（与 Telegram 同契约，既有 failed 断言不变）；6 项渠道测试；待 WECHAT_WORK_WEBHOOK / NOTIFY_MAIL_TO 实测（入 runbook 验收矩阵 #10） | 配置缺失=failed 语义 |

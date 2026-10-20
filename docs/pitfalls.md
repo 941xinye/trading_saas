@@ -298,3 +298,31 @@
 - **处理**：use 时加别名 `use ...PositionRiskMonitor as PositionRiskMonitorContract`，类声明 `implements PositionRiskMonitorContract`。
 - **位置**：[PositionRiskMonitor.php](../app/Domain/Risk/Position/PositionRiskMonitor.php)
 - **教训**：实现类与接口同名时，use 必须加别名；PSR-4 不同命名空间允许同名类，但同文件内 use 引入后会冲突。
+
+## 39. DSL 等价测试中 DCA 的 filledAt 必须沿 fixture 时间线，不能用真实 time()（spec 006 WS6，2026-10-20）
+
+- **现象**：DslEquivalenceTest 中 DCA 首单成交后，后续所有 bar 不再产出信号（`shouldOpen` 恒 null），与 DSL 序列不匹配。
+- **根因**：SpotDcaStrategy 用 `filledAt ?? intdiv(lastBarTime, 1000)` 推进 `lastOrderAt`，再以 `closeSec - lastOrderAt >= intervalSeconds` 判断是否到下一周期。测试 fixture 的 bar 时间戳是小整数（如 100000ms → closeSec=100），而 `filledAt=time()` 是真实 Unix 秒（~1.7e9），导致 `closeSec - lastOrderAt` 恒为负，interval 条件永远不满足。
+- **处理**：模拟成交时 `filledAt = intdiv($bar->closeTime, 1000)`，与 fixture 时间线一致。
+- **教训**：时间驱动策略的测试，成交回报的时间戳必须与 bar 时间戳同一坐标系，否则"按周期下单"的语义会被真实时钟破坏。
+
+## 40. DSL 四段（filter/entry/exit/risk）全部必需，不用的段也要写永不触发的占位条件（spec 006 WS6，2026-10-20）
+
+- **现象**：为 DCA 等价性写的 DSL 脚本只含 filter/entry/risk（DCA 不需要平仓），`DslParser::parse()` 抛 `缺少 exit 段（四段为必需）`。
+- **根因**：DslCompiler 强制四段齐全（FR-002，禁止静默降级），即使某段语义上不用也必须声明。
+- **处理**：补 exit 段，用永不成立的条件占位（如 `op: gt, left: const 0, right: const 1`），保证编译通过但运行期不产出平仓信号。
+- **教训**：DSL 的"四段必需"是编译期硬约束，写最小可编译脚本时不能省略任何段。
+
+## 41. Filament v5 无 `Filament\Tables\Actions\Action`，表单/表格 action 统一用 `Filament\Actions\Action`（spec 006 WS5，2026-10-20）
+
+- **现象**：StrategyInstanceResource 原 `use Filament\Tables\Actions\Action;` 在 v5 下类不存在（`vendor/filament/tables/src/Actions/` 仅 `HeaderActionsPosition.php`），页面渲染时类找不到。
+- **根因**：Filament v5 将 Action 统一收口到 `Filament\Actions\Action`，`Tables\Actions\Action` 别名已移除。
+- **处理**：表单组件与表格行 action 统一 `use Filament\Actions\Action;`，`Action::make(...)` 同时适用于 `Schema::components([...])` 与 `Table::actions([...])`。
+- **教训**：Filament 大版本升级时，`Tables\Actions\*` / `Forms\Components\Actions\*` 的命名空间变动是高频断点，升级前先核对 vendor 目录实际存在的类。
+
+## 42. PHP 8.5 起 `ReflectionProperty::setAccessible()` 已弃用（no-op），直接 getValue 即可（spec 006 WS6，2026-10-20）
+
+- **现象**：DslEquivalenceTest 用反射读 DslStrategy 私有属性时 PHPUnit 报 3 条 deprecation。
+- **根因**：PHP 8.1+ 反射访问私有/保护属性不再需要 `setAccessible(true)`，该调用在 8.5 标记为 deprecated。
+- **处理**：删除所有 `$prop->setAccessible(true)`，直接 `$prop->getValue($instance)`。
+- **教训**：8.1+ 反射 API 已简化，写反射代码时不要再加 setAccessible。

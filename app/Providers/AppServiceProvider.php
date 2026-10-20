@@ -14,6 +14,8 @@ use App\Domain\Risk\Breaker\IsolatedLiquidationPriceCalculator;
 use App\Domain\Risk\Position\PositionRiskMonitor;
 use App\Domain\Strategy\Custom\Dsl\DslScriptValidator;
 use App\Domain\Strategy\Custom\Dsl\DslValidator;
+use App\Domain\Strategy\Custom\Dsl\DslPreviewService;
+use App\Domain\Strategy\Custom\Dsl\Preview\HistoricalPreviewService;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
 use App\Support\AesGcmCrypt;
@@ -46,6 +48,9 @@ class AppServiceProvider extends ServiceProvider
 
         // spec 006 DSL 编辑器校验（bind 非 singleton：Octane 长驻禁 static 缓存）
         $this->app->bind(DslValidator::class, DslScriptValidator::class);
+
+        // spec 006 DSL 回测预览（bind 非 singleton，同上）
+        $this->app->bind(DslPreviewService::class, HistoricalPreviewService::class);
     }
 
     /**
