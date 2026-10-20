@@ -276,7 +276,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **实测结果**：383 tests 全绿（RowNormalizer + ArchivePipeline + CH 集成/降级/租户隔离/命令族），全量回归零失败零回归。
 
-**已知边界**：部署形态=自托管单节点 ClickHouse（Docker 起节点机，env 化连接；云托管留后续）；节点机 CH 冒烟与端到端验收（含 SIGKILL 幂等演练）待执行。选型见 [ADR-0006](docs/adr/0006-clickhouse-cold-tier.md)。
+**已知边界**：部署形态=自托管单节点 ClickHouse（Docker 起节点机，env 化连接；云托管留后续）；节点机 CH 冒烟与端到端验收（含 SIGKILL 幂等演练）待执行。选型见 [ADR-0005](docs/adr/0005-clickhouse-cold-tier.md)。
 
 ### ✅ 已完成：spec 005 合约网格策略 + 仓位级风控（2026-10-19）
 
@@ -611,8 +611,8 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
-| [ADR-0006 ClickHouse 冷层](docs/adr/0006-clickhouse-cold-tier.md) | 自托管单节点 + MergeTree batch_id + 零依赖 HTTP + 隔离下沉 |
-| [踩坑记录](docs/pitfalls.md) | P1–P5.5 实测踩坑 30 条（Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号等）持续追加 |
+| [ADR-0005 ClickHouse 冷层](docs/adr/0005-clickhouse-cold-tier.md) | 自托管单节点 + MergeTree batch_id + 零依赖 HTTP + 隔离下沉 |
+| [踩坑记录](docs/pitfalls.md) | 实测踩坑 38 条（#1–28 P1–P5.5 / #29–33 B7+P8 归档回填 / #34–38 spec 005 合约；覆盖 Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号、CH 行哈希/lightweight delete、保证金率公式语义等）持续追加 |
 | [spec-kit constitution](.specify/memory/constitution.md) | v1.0.0 七条原则（SDD 优先/金融精度/协程隔离/崩溃恢复幂等/计费语义/测试隔离/PSR-4 与基类对齐），约束所有 plan/analyze 阶段 |
 | [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器 / 004 ClickHouse 历史归档 / 005 合约网格+仓位风控（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
 

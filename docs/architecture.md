@@ -87,7 +87,7 @@ routes/ {api.php, channels.php, web.php}
 | 故障降级 | CH 断连统一 `ArchiveStorageUnavailableException` 携因上抛（R-009）；纯热查询零依赖 CH |
 | 可观测 | `archive:schema`（建表 DDL）/ `archive:run` / `archive:verify`（独立复检+降级）/ `archive:status`（水位/待归档估算/批次清单） |
 
-详细选型见 [ADR-0006](adr/0006-clickhouse-cold-tier.md)；契约与验收对账见 `specs/004-clickhouse-historical-archive/`。
+详细选型见 [ADR-0005](adr/0005-clickhouse-cold-tier.md)；契约与验收对账见 `specs/004-clickhouse-historical-archive/`。
 
 ## 与既有 SaaS 约定对齐
 

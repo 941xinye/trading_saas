@@ -1,4 +1,4 @@
-# ADR-0006: ClickHouse 历史归档冷层 — 自托管单节点 + MergeTree batch_id + 零依赖 HTTP + 隔离下沉
+# ADR-0005: ClickHouse 历史归档冷层 — 自托管单节点 + MergeTree batch_id + 零依赖 HTTP + 隔离下沉
 
 - **Status**: Accepted
 - **Date**: 2026-10-19
