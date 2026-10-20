@@ -30,7 +30,10 @@ return [
             'driver' => FakePaymentChannel::class,
             // 非此环境启用即抛异常（research R-004 红线）
             'allowed_env' => ['local', 'testing'],
-            'settle_event' => 'fake.settled',
+            // fake 通道事件分类（对齐 btcpay 三键，供状态机统一读取）
+            'settled_events' => ['fake.settled'],
+            'processing_events' => ['fake.processing'],
+            'expired_events' => ['fake.expired'],
             // fake webhook 验签密钥（仅 local/testing 使用，无生产语义）
             'secret' => env('PAYMENT_FAKE_WEBHOOK_SECRET', 'fake-webhook-secret'),
         ],

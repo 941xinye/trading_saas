@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\Api\V1\BillingController;
+use App\Http\Controllers\Api\V1\BillingWebhookController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\ExchangeAccountController;
 use App\Http\Controllers\Api\V1\LiquidationController;
@@ -49,4 +51,17 @@ Route::middleware(['auth:sanctum', 'tenant'])
         // P5：大户爆仓密集区（市场级数据，无 tenant_id 隔离）
         Route::get('liquidation/map', [LiquidationController::class, 'map'])->name('liquidation.map');
         Route::get('liquidation/recent', [LiquidationController::class, 'recent'])->name('liquidation.recent');
+
+        // P9：计费（summary / 支付单；契约 billing-integration-contract.md §6）
+        Route::get('billing/summary', [BillingController::class, 'summary'])->name('billing.summary');
+        Route::get('billing/invoices', [BillingController::class, 'invoices'])->name('billing.invoices');
+        Route::post('billing/invoices', [BillingController::class, 'store'])->name('billing.invoices.store');
+        Route::get('billing/invoices/{ref}', [BillingController::class, 'show'])->name('billing.invoices.show');
     });
+
+// ---------------------------------------------------------------------
+// P9：支付通道 webhook（验签即鉴权；MUST 注册在 auth:sanctum + tenant 分组之外）
+// api 组天然豁免 CSRF（ValidateCsrfToken 仅作用于 web 组），无需额外放行（T030 核对结论）。
+// ---------------------------------------------------------------------
+Route::post('v1/billing/webhook/{channel}', BillingWebhookController::class)
+    ->name('api.billing.webhook');
