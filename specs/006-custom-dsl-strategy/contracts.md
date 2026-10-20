@@ -332,6 +332,8 @@ interface DslValidator
 
 ## 10. Worked Example：MA 金叉开多（合法脚本）
 
+> 受限子集为**块式写法**（flow `{...}`/`[...]` 被预扫描拒绝）；示例与 `tests/Unit/Strategy/Dsl/DslParserTest.php` 一致。
+
 ```yaml
 version: 1
 name: "MA 金叉开多"
@@ -345,15 +347,21 @@ filter:
   - action: noop
     when:
       op: gt
-      left: { price: close }
-      right: { const: "0" }
+      left:
+        price: close
+      right:
+        const: "0"
 
 entry:
   - action: open_long
     when:
       op: cross_above
-      left: { indicator: ma, period: 7 }
-      right: { indicator: ma, period: 25 }
+      left:
+        indicator: ma
+        period: 7
+      right:
+        indicator: ma
+        period: 25
     qty_pct: "0.30"
     note: "短均线上穿长均线开多"
 
@@ -361,8 +369,12 @@ exit:
   - action: close_long
     when:
       op: cross_below
-      left: { indicator: ma, period: 7 }
-      right: { indicator: ma, period: 25 }
+      left:
+        indicator: ma
+        period: 7
+      right:
+        indicator: ma
+        period: 25
     qty_pct: "1.0"
     note: "死叉平多"
 

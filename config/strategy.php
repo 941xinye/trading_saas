@@ -122,6 +122,21 @@ return [
         ],
     ],
 
+    // 自定义 DSL 策略（P7）解释器硬闸门与配额上限（见 specs/006-custom-dsl-strategy/data-model.md §6.1）。
+    // 取值 MUST 与 strategies.custom_dsl.dsl_schema 一致（由 DslConfigConsistencyTest 结构性断言保证）。
+    'dsl' => [
+        'max_script_bytes' => 8192,
+        'max_lines' => 200,
+        'max_depth' => 8,
+        'max_rules_per_section' => 20,
+        'max_indicators' => 8,
+        'eval_step_budget' => 500,
+        'indicator_window_max' => 150,
+        'allowed_triggers' => ['on_bar', 'on_tick', 'on_fill'],
+        'allowed_actions' => ['open_long', 'open_short', 'close_long', 'close_short', 'noop'],
+        'allowed_indicators' => ['ma', 'rsi', 'macd', 'bollinger', 'atr'],
+    ],
+
     // 订单幂等性 clientOrderId 模板
     'client_order_id_template' => '{tenant_id}_{instance_id}_{timestamp}_{random}',
 ];

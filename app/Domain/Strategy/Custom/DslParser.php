@@ -4,33 +4,88 @@ declare(strict_types=1);
 
 namespace App\Domain\Strategy\Custom;
 
+use App\Domain\Strategy\Custom\Dsl\DslCompiler;
+use App\Domain\Strategy\Custom\Dsl\DslDiagnostic;
+use App\Domain\Strategy\Custom\Dsl\DslProgram;
+use App\Domain\Strategy\Custom\Dsl\DslValidationException;
+use App\Domain\Strategy\Custom\Dsl\DslYamlParser;
+
 /**
- * DSL 解析器（占位）。
+ * DSL 解析门面（plan WS1 / contracts §2）。
  *
- * 将用户编写的策略脚本解析为可执行 AST，供 DslStrategy 执行。
- *
- * 支持的语法（见 config/strategy.php dsl_schema）：
- *  - 触发器：on_bar / on_tick / on_fill
- *  - 动作：open_long / open_short / close_long / close_short / noop
- *  - 指标：ma / rsi / macd / bollinger / atr
- *
- * 骨架阶段不实现词法/语法分析，P6 扩展阶段落地。
+ * 编排：规模上限预检（字节/行）→ `DslYamlParser`（受限 YAML 子集）→ `DslCompiler`（结构校验 + AST）。
+ * 非法 DSL 抛 `DslValidationException`（携带行/字段定位），MUST NOT 进入运行态（FR-005）。
  */
-class DslParser
+final class DslParser
 {
-    public function __construct()
+    public function __construct(
+        private readonly ?DslYamlParser $yaml = null,
+        private readonly ?DslCompiler $compiler = null,
+    ) {}
+
+    /**
+     * @throws DslValidationException 非法 DSL（FR-002/FR-005），诊断含 行/字段
+     */
+    public function parse(string $script): DslProgram
     {
+        $config = $this->resolveConfig();
+
+        $this->assertWithinLimits($script, $config);
+
+        $yaml = $this->yaml ?? new DslYamlParser();
+        $raw = $yaml->parse($script);
+
+        $compiler = $this->compiler ?? new DslCompiler($config);
+
+        return $compiler->compile($raw, sha1($script), $yaml->lineMap());
     }
 
     /**
-     * 解析 DSL 脚本为可执行 AST。
+     * @param array<string,mixed> $config
      *
-     * @param string $script DSL 脚本源码
-     *
-     * @return array<string,mixed> AST 节点树
+     * @throws DslValidationException
      */
-    public function parse(string $script): array
+    private function assertWithinLimits(string $script, array $config): void
     {
-        throw new \RuntimeException('Not implemented in skeleton. Wait for P6 extension.');
+        $maxBytes = (int) ($config['max_script_bytes'] ?? 8192);
+        $maxLines = (int) ($config['max_lines'] ?? 200);
+
+        $diagnostics = [];
+
+        if (strlen($script) > $maxBytes) {
+            $diagnostics[] = new DslDiagnostic(
+                DslDiagnostic::LEVEL_ERROR,
+                1,
+                '$',
+                sprintf('脚本字节数 %d 超过上限 %d', strlen($script), $maxBytes),
+            );
+        }
+
+        $trimmed = rtrim($script, "\r\n");
+        $lineCount = $trimmed === '' ? 0 : substr_count($trimmed, "\n") + 1;
+        if ($lineCount > $maxLines) {
+            $diagnostics[] = new DslDiagnostic(
+                DslDiagnostic::LEVEL_ERROR,
+                1,
+                '$',
+                sprintf('脚本行数 %d 超过上限 %d', $lineCount, $maxLines),
+            );
+        }
+
+        if ($diagnostics !== []) {
+            throw new DslValidationException($diagnostics);
+        }
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function resolveConfig(): array
+    {
+        try {
+            return (array) config('strategy.dsl', []);
+        } catch (\Throwable) {
+            return [];
+        }
     }
 }
