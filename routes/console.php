@@ -24,3 +24,14 @@ Schedule::command('reconcile:run --period=5m')
     ->everyFiveMinutes()
     ->timezone('UTC')
     ->withoutOverlapping(10);
+
+// 订阅续费提醒每日扫描：到期前 7/3/1 天落 queued 行并投递发送 Job（spec 007 US3 / FR-007）
+Schedule::command('billing:renewal-reminders')
+    ->dailyAt('00:10')
+    ->timezone('UTC')
+    ->withoutOverlapping(10);
+
+// 非终态过期支付单清扫：pending/processing/partial 且 expires_at < now → expired（FR-012，契约 §7）
+Schedule::command('billing:expire-invoices')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(5);

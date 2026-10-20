@@ -130,17 +130,17 @@
 
 ### Implementation for User Story 3（WS5）
 
-- [ ] T044 [P] [US3] 新建 `app/Domain/Notification/Payloads/RenewalReminderPayload.php`（与 `RiskNotificationPayload` 同构，字段：套餐名、到期日 UTC、剩余天数、应付金额 bcmath 字符串、**一键续费链接** = Filament 计费页绝对 URL + `plan_code`）（FR-007）
-- [ ] T045 [P] [US3] 新建 `app/Jobs/RenewalReminderJob.php`（镜像 `app/Jobs/RiskNotificationJob.php` 三段式：读 `queued` 行 → `NotifierChannel::send()` → 置 `sent`/`failed`；队列 `notifications`，`tries=3`，backoff `[10,30,90]`）
-- [ ] T046 [US3] 实现 `app/Domain/Payment/RenewalReminderService.php::dispatch(?int $tenantId=null, ?CarbonImmutable $nowUtc=null): int`：取最新订阅行（`status ∈ ('active','trialing')` 且 `ends_at` 未来）→ `days_left = ends_at->diffInDays(now)` 命中 `config('payment.renewal_reminder_days')` → 按 `config('payment.reminder_channels')` 在套餐 `channels` 白名单内（`PlanService::allowsChannel()`，`log` 系统渠道恒放行）落 `queued` 行（唯一索引幂等，续费顺延即新周期）→ 触发 `RenewalReminderJob`（FR-007 / FR-008）
-- [ ] T047 [US3] 新建命令 `app/Console/Commands/BillingRenewalRemindersCommand.php`（签名 `billing:renewal-reminders`，薄命令范式对齐 `BillingRefreshStatusCommand.php`）
-- [ ] T048 [US3] 在 `routes/console.php` 追加调度 `Schedule::command('billing:renewal-reminders')->dailyAt('00:10')->timezone('UTC')->withoutOverlapping(10)`（紧邻既有两条调度，同范式），并追加 `Schedule::command('billing:expire-invoices')->everyFiveMinutes()->withoutOverlapping(5)`（FR-012 过期单自动失效，契约 §7）；**不改** `billing:refresh-status` 既有调度与 P3 状态机（FR-008）
+- [x] T044 [P] [US3] 新建 `app/Domain/Notification/Payloads/RenewalReminderPayload.php`（与 `RiskNotificationPayload` 同构，字段：套餐名、到期日 UTC、剩余天数、应付金额 bcmath 字符串、**一键续费链接** = Filament 计费页绝对 URL + `plan_code`）（FR-007）
+- [x] T045 [P] [US3] 新建 `app/Jobs/RenewalReminderJob.php`（镜像 `app/Jobs/RiskNotificationJob.php` 三段式：读 `queued` 行 → `NotifierChannel::send()` → 置 `sent`/`failed`；队列 `notifications`，`tries=3`，backoff `[10,30,90]`）
+- [x] T046 [US3] 实现 `app/Domain/Payment/RenewalReminderService.php::dispatch(?int $tenantId=null, ?CarbonImmutable $nowUtc=null): int`：取最新订阅行（`status ∈ ('active','trialing')` 且 `ends_at` 未来）→ `days_left = ends_at->diffInDays(now)` 命中 `config('payment.renewal_reminder_days')` → 按 `config('payment.reminder_channels')` 在套餐 `channels` 白名单内（`PlanService::allowsChannel()`，`log` 系统渠道恒放行）落 `queued` 行（唯一索引幂等，续费顺延即新周期）→ 触发 `RenewalReminderJob`（FR-007 / FR-008）
+- [x] T047 [US3] 新建命令 `app/Console/Commands/BillingRenewalRemindersCommand.php`（签名 `billing:renewal-reminders`，薄命令范式对齐 `BillingRefreshStatusCommand.php`）
+- [x] T048 [US3] 在 `routes/console.php` 追加调度 `Schedule::command('billing:renewal-reminders')->dailyAt('00:10')->timezone('UTC')->withoutOverlapping(10)`（紧邻既有两条调度，同范式），并追加 `Schedule::command('billing:expire-invoices')->everyFiveMinutes()->withoutOverlapping(5)`（FR-012 过期单自动失效，契约 §7）；**不改** `billing:refresh-status` 既有调度与 P3 状态机（FR-008）
 
 ### Tests for User Story 3
 
-- [ ] T049 [P] [US3] 新建 Unit 测试 `tests/Unit/Payment/RenewalReminderServiceTest.php`：档位命中/不命中边界（7/3/1 与非档位日）、同周期重复调用零新增行、续费顺延后新周期可再发、套餐渠道白名单过滤（FR-007）
-- [ ] T050 [US3] 新建 Integration 测试 `tests/Integration/Payment/RenewalRecoveryTimelineTest.php`：完整时间线 提醒 → `past_due` → 宽限 → `suspended` → 补缴恢复 + 周期顺延，各转换时点与 `config('plans.past_due_grace_days')` 一致、误差 ≤ 1 个调度周期，且不产生双重计费（SC-004 / FR-008）
-- [ ] T051 [US3] 扩展既有 `tests/Integration/Console/ScheduleRegistrationTest.php`：断言 `billing:renewal-reminders` 已注册且为 `dailyAt('00:10')` UTC + `withoutOverlapping(10)`，且 `billing:expire-invoices` 已注册为 `everyFiveMinutes`（FR-007 / FR-012）
+- [x] T049 [P] [US3] 新建 Unit 测试 `tests/Unit/Payment/RenewalReminderServiceTest.php`：档位命中/不命中边界（7/3/1 与非档位日）、同周期重复调用零新增行、续费顺延后新周期可再发、套餐渠道白名单过滤（FR-007）
+- [x] T050 [US3] 新建 Integration 测试 `tests/Integration/Payment/RenewalRecoveryTimelineTest.php`：完整时间线 提醒 → `past_due` → 宽限 → `suspended` → 补缴恢复 + 周期顺延，各转换时点与 `config('plans.past_due_grace_days')` 一致、误差 ≤ 1 个调度周期，且不产生双重计费（SC-004 / FR-008）
+- [x] T051 [US3] 扩展既有 `tests/Integration/Console/ScheduleRegistrationTest.php`：断言 `billing:renewal-reminders` 已注册且为 `dailyAt('00:10')` UTC + `withoutOverlapping(10)`，且 `billing:expire-invoices` 已注册为 `everyFiveMinutes`（FR-007 / FR-012）
 
 **Checkpoint**: US1 + US3 可协同 —— 续费留存闭环成立（提醒 → 手工续付 → 恢复）。
 

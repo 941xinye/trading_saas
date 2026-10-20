@@ -23,17 +23,19 @@ use RuntimeException;
  *
  * tenants.plan_code 始终跟随最近一次 provision 的套餐，是生效计划来源；
  * subscriptions.plan_code 保留历次计费事实。
+ *
+ * 付费周期（spec 007 US3）：trialDays=0 的付费订阅 ends_at = now + 1 个日历月
+ * （本期仅月度计费，契约 §1；不新增 plans 配置项，契约 §8），使付费订阅同样
+ * 参与 refreshStatus 到期流转与续费提醒扫描。
  */
 class SubscriptionService
 {
-    public function __construct(private readonly PlanService $plans)
-    {
-    }
+    public function __construct(private readonly PlanService $plans) {}
 
     /**
      * 开通/续费订阅。
      *
-     * @param int|null $trialDays >0 走 trialing；null 取 config tenancy.trial_days；0 直接 active
+     * @param  int|null  $trialDays  >0 走 trialing；null 取 config tenancy.trial_days；0 直接 active（周期 = 1 个日历月）
      */
     public function provision(
         int $tenantId,
@@ -50,9 +52,9 @@ class SubscriptionService
 
         $now = Carbon::now();
         $status = $trialDays > 0 ? 'trialing' : 'active';
-        $endsAt = $trialDays > 0 ? $now->copy()->addDays($trialDays) : null;
+        $endsAt = $trialDays > 0 ? $now->copy()->addDays($trialDays) : $now->copy()->addMonth();
 
-        return DB::transaction(function () use ($tenant, $tenantId, $planCode, $status, $endsAt, $now) {
+        return DB::transaction(function () use ($tenantId, $planCode, $status, $endsAt, $now) {
             // 恢复/续费：tenant 回到 active，plan_code 更新
             DB::table('tenants')->where('id', $tenantId)->update([
                 'plan_code' => $planCode,
@@ -131,6 +133,7 @@ class SubscriptionService
                     'updated_at' => $now,
                 ]);
                 $transitions[] = ['tenant_id' => (int) $sub->tenant_id, 'from' => $sub->status, 'to' => 'past_due'];
+
                 continue;
             }
 
