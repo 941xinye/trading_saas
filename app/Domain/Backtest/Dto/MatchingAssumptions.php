@@ -66,4 +66,19 @@ final readonly class MatchingAssumptions
             'narrative' => $this->narrative,
         ];
     }
+
+    /**
+     * 自数组反序列化（Job 恢复 run 快照用）。
+     *
+     * @param array<string, mixed> $data
+     */
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            feeRate: (string) ($data['fee_rate'] ?? '0.001'),
+            slippageBps: (int) ($data['slippage_bps'] ?? 5),
+            initialCapital: (string) ($data['initial_capital'] ?? '1000'),
+            narrative: (string) ($data['narrative'] ?? ''),
+        );
+    }
 }

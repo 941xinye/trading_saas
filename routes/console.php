@@ -35,3 +35,9 @@ Schedule::command('billing:renewal-reminders')
 Schedule::command('billing:expire-invoices')
     ->everyFiveMinutes()
     ->withoutOverlapping(5);
+
+// 回测崩溃收割：running 且 updated_at 停滞超 stale_after_sec → failed（spec 008 US3 / T037）
+Schedule::command('backtest:reap-stale')
+    ->everyFiveMinutes()
+    ->timezone('UTC')
+    ->withoutOverlapping(5);

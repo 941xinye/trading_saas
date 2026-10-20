@@ -6,6 +6,9 @@ namespace App\Console\Commands;
 
 use App\Domain\Backtest\Dto\BacktestRunRequest;
 use App\Domain\Backtest\Dto\MatchingAssumptions;
+use App\Domain\Backtest\Jobs\RunBacktestJob;
+use App\Domain\Backtest\Models\BacktestRun;
+use App\Domain\Backtest\Services\BacktestRunService;
 use App\Domain\Backtest\Services\BacktestRunner;
 use App\Domain\Backtest\Services\EquityCurveBuilder;
 use App\Domain\Backtest\Services\MatchingEngine;
@@ -17,9 +20,9 @@ use Illuminate\Console\Command;
 use Throwable;
 
 /**
- * backtest:run 回测命令（spec 008 T025~T026 / contracts/backtest-commands-contract.md §3）。
+ * backtest:run 回测命令（spec 008 T025~T026 / T036 / contracts/backtest-commands-contract.md §3）。
  *
- * US1 同步直跑（--sync）：当前版本唯一模式；US3 dispatch 模式在后续 WS 实现。
+ * 默认 dispatch 到 backtest 队列异步执行；--sync 保留同步直跑（调试用）。
  * Runner 纯内存执行，不写 DB/Redis/不调交易所。
  */
 final class BacktestRunCommand extends Command
@@ -35,9 +38,9 @@ final class BacktestRunCommand extends Command
         {--capital= : 初始资金（默认 config backtest.defaults.initial_capital）}
         {--fee-rate= : 手续费率（默认 config backtest.defaults.fee_rate）}
         {--slippage= : 滑点 bps（默认 config backtest.defaults.slippage_bps）}
-        {--sync : 同步执行（当前唯一模式）}';
+        {--sync : 同步执行（默认 dispatch 到队列）}';
 
-    protected $description = '回测指定策略在区间内的表现（US1 同步模式）';
+    protected $description = '回测指定策略在区间内的表现（默认异步队列，--sync 同步）';
 
     public function handle(): int
     {
@@ -86,6 +89,56 @@ final class BacktestRunCommand extends Command
             slippageBps: $this->option('slippage') !== null ? (int) $this->option('slippage') : null,
         );
 
+        if ($this->option('sync')) {
+            return $this->runSync($tenantId, $strategyCode, $params, $symbol, $interval, $fromUtc, $toUtc, $assumptions);
+        }
+
+        return $this->runDispatch($tenantId, $strategyCode, $params, $symbol, $interval, $fromUtc, $toUtc, $assumptions);
+    }
+
+    /**
+     * 异步模式：创建 run → dispatch RunBacktestJob。
+     */
+    private function runDispatch(
+        int $tenantId,
+        string $strategyCode,
+        array $params,
+        string $symbol,
+        string $interval,
+        \DateTimeImmutable $fromUtc,
+        \DateTimeImmutable $toUtc,
+        MatchingAssumptions $assumptions,
+    ): int {
+        $service = app(BacktestRunService::class);
+
+        try {
+            $run = $service->create($tenantId, $strategyCode, $params, $symbol, $interval, $fromUtc, $toUtc, $assumptions);
+            RunBacktestJob::dispatch($run->id);
+        } catch (Throwable $e) {
+            $this->error('回测任务创建失败：'.$e->getMessage());
+
+            return self::FAILURE;
+        }
+
+        $this->info("回测任务已创建并投递到队列：run_id={$run->id}");
+        $this->line('使用 `php artisan queue:work --queue=backtest` 启动 Worker 消费');
+
+        return self::SUCCESS;
+    }
+
+    /**
+     * 同步模式：直接执行 Runner + Calculator（调试用）。
+     */
+    private function runSync(
+        int $tenantId,
+        string $strategyCode,
+        array $params,
+        string $symbol,
+        string $interval,
+        \DateTimeImmutable $fromUtc,
+        \DateTimeImmutable $toUtc,
+        MatchingAssumptions $assumptions,
+    ): int {
         $request = new BacktestRunRequest(
             tenantId: $tenantId,
             strategyCode: $strategyCode,

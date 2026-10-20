@@ -201,3 +201,55 @@ nc -vz api.bitget.com 443 && nc -vz ws.bitget.com 443     # Bitget 主网
 
 证据归档：每项截图/日志/订单号存档；全部通过后 README 技术债表 B6/B8/A1 行销账、
 P6 行「待 key」措辞移除、本清单各行标 ✅ 并注明日期。
+
+## 9. 回测引擎（spec 008）运维要点
+
+### 9.1 Worker 配置
+
+`deploy/supervisor/worker-backtest.conf.example` 已提供：`--queue=backtest --tries=1`、
+`numprocs=1`（CPU 密集，单进程足够）、`--max-time=3600` 防内存累积、
+`stopwaitsecs=120` 等待长任务优雅退出。
+
+安装：
+
+```bash
+sudo cp deploy/supervisor/worker-backtest.conf.example /etc/supervisor/conf.d/worker-backtest.conf
+sudo supervisorctl reread && sudo supervisorctl update
+sudo supervisorctl status worker-backtest   # RUNNING
+```
+
+### 9.2 崩溃收割调度
+
+`routes/console.php` 已注册：`backtest:reap-stale` 每 5 分钟扫描，
+running 且 `updated_at` 停滞超 `backtest.stale_after_sec`（默认 240s）→ 标 failed。
+
+验证：
+
+```bash
+php artisan backtest:reap-stale   # 无匹配时输出 "reaped 0 stale backtest run(s)"
+```
+
+### 9.3 并发上限
+
+`config/backtest.php` concurrency 按套餐差异化：free=1 / pro=2 / enterprise=4。
+超限拒绝（BacktestConcurrencyException），不排队。调整上限后需 `config:clear`。
+
+### 9.4 回测发起
+
+```bash
+# 异步（默认）
+php artisan backtest:run spot_grid BTCUSDT 1h --from="2024-01-01" --to="2024-06-01" \
+  --params='{"lower_price":"40000","upper_price":"50000","grid_count":10,"investment_amount":"10000"}'
+
+# 同步调试（--sync，不依赖队列）
+php artisan backtest:run spot_grid BTCUSDT 1h --from="2024-01-01" --to="2024-06-01" \
+  --params='{"lower_price":"40000","upper_price":"50000","grid_count":10,"investment_amount":"10000"}' --sync
+```
+
+### 9.5 故障排查
+
+| 症状 | 排查 |
+|---|---|
+| 回测 pending 不动 | `supervisorctl status worker-backtest` 是否 RUNNING；`queue:work --queue=backtest` 手动跑一次看报错 |
+| 回测 failed 无 error_message | 看 `storage/logs/laravel.log`；检查 K 线数据覆盖率是否 < `backtest.min_coverage_pct` |
+| 同一策略重复创建失败 | 单飞锁未释放（`redis-cli KEYS "tenant:*:backtest:lock:*"`），等 TTL 120s 或手工 DEL |

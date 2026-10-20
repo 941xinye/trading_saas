@@ -1,0 +1,27 @@
+; ---------------------------------------------------------------------------
+; 队列 worker：backtest。
+;   backtest — RunBacktestJob（历史 K 线回放，CPU 密集，普通 PHP 进程）
+;
+; --tries=1：回测失败即终态（不自动重试），由 RunBacktestJob.handle() catch 标 failed。
+; --max-time=3600：worker 每小时优雅退出由 supervisor 拉起，防止内存累积。
+; numprocs=1：回测为 CPU 密集任务，单进程足够；横向扩展靠增加 worker 节点。
+; 安装步骤与日志轮转同 market-feed.conf.example 顶部说明。
+; ---------------------------------------------------------------------------
+
+[program:worker-backtest]
+process_name=%(program_name)s_%(process_num)02d
+command=/usr/bin/php /var/www/crypto-saas/artisan queue:work --queue=backtest --tries=1 --sleep=3 --max-time=3600
+directory=/var/www/crypto-saas
+user=www-data
+numprocs=1
+autostart=true
+autorestart=true
+startsecs=5
+startretries=3
+stopwaitsecs=120
+stopsignal=TERM
+redirect_stderr=true
+stdout_logfile=/var/log/crypto-saas/worker-backtest.log
+stdout_logfile_maxbytes=100MB
+stdout_logfile_backups=5
+environment=APP_ENV="production",APP_DEBUG="false"

@@ -84,13 +84,13 @@
 
 ### Tests for User Story 2
 
-- [ ] T027 [US2] 准备 fixture `tests/fixtures/backtest/testnet_spot_grid_sample.json`：自 spec 005 testnet 实跑记录提取（bar 序列 + 实际成交序列 + 实例参数）；样本不足以 RecordingAdapter 驱动序列替代（research R-009 降级路径，fixture 内注明来源）
-- [ ] T028 [US2] Integration 测试 `tests/Integration/Backtest/BacktestEquivalenceTest.php`：①同区间同参数回测，断言开平仓方向/bar 时点序列与 fixture 成交序列 100% 一致；②实跑净值（成交序列重算）vs 回测净值（含滑点手续费）误差 <1% 且方向可解释（回测含费 ≤ 实跑毛收益）；③DSL 策略 preview vs backtest 信号序列一致性（spec US2 场景 2，复用 spec 006 fixture）
+- [x] T027 [US2] 准备 fixture `tests/fixtures/backtest/testnet_spot_grid_sample.json`：自 spec 005 testnet 实跑记录提取（bar 序列 + 实际成交序列 + 实例参数）；样本不足以 RecordingAdapter 驱动序列替代（research R-009 降级路径，fixture 内注明来源）
+- [x] T028 [US2] Integration 测试 `tests/Integration/Backtest/BacktestEquivalenceTest.php`：①同区间同参数回测，断言开平仓方向/bar 时点序列与 fixture 成交序列 100% 一致；②实跑净值（成交序列重算）vs 回测净值（含滑点手续费）误差 <1% 且方向可解释（回测含费 ≤ 实跑毛收益）；③DSL 策略 preview vs backtest 信号序列一致性（spec US2 场景 2，复用 spec 006 fixture）
 
 ### Implementation for User Story 2
 
-- [ ] T029 [US2] 等价性差异修复：若 T028 暴露回测与实跑决策分叉，修 BacktestRunner 驱动语义（禁止改策略类本身——分叉修在驱动层；若确为策略 bug 则另起修复 commit 并回跑实跑基线）
-- [ ] T030 [P] [US2] 四策略覆盖扩展 `tests/Integration/Backtest/BacktestRunnerFourStrategiesTest.php`：spot_dca/futures_grid/custom_dsl 各一份 fixture 回测跑通（futures 断言报告标注「未含资金费率影响」）
+- [x] T029 [US2] 等价性差异修复：若 T028 暴露回测与实跑决策分叉，修 BacktestRunner 驱动语义（禁止改策略类本身——分叉修在驱动层；若确为策略 bug 则另起修复 commit 并回跑实跑基线）
+- [x] T030 [P] [US2] 四策略覆盖扩展 `tests/Integration/Backtest/BacktestRunnerFourStrategiesTest.php`：spot_dca/futures_grid/custom_dsl 各一份 fixture 回测跑通（futures 断言报告标注「未含资金费率影响」）
 
 **Checkpoint**: US2 可独立验证——等价性测试守护 FR-003 长期有效
 
@@ -104,17 +104,17 @@
 
 ### Tests for User Story 3
 
-- [ ] T031 [P] [US3] Integration 测试 `tests/Integration/Backtest/BacktestLifecycleTest.php`：pending→running→completed 状态推进；异常路径（覆盖率不足）→failed+error_message；完成单事务断言（report+trades+run 同事务，模拟 trades insert 异常验证回滚无半完成态）
-- [ ] T032 [P] [US3] Integration 测试 `tests/Integration/Backtest/BacktestConcurrencyTest.php`（@group redis）：同实例单飞锁冲突拒绝（BacktestConcurrencyException）；租户并发上限 free=1 第二任务拒绝；锁 TTL 释放后可再发起（setUp/tearDown 精确清锁键 `tenant:*:backtest:lock:*`，坑 25）
-- [ ] T033 [P] [US3] Integration 测试 `tests/Integration/Backtest/ReapStaleBacktestsTest.php`：构造 running 且 updated_at 过期任务→`backtest:reap-stale` 标 failed（error 含 'reaped'）；终态行不触碰；无匹配输出 0 affected
+- [x] T031 [P] [US3] Integration 测试 `tests/Integration/Backtest/BacktestLifecycleTest.php`：pending→running→completed 状态推进；异常路径（覆盖率不足）→failed+error_message；完成单事务断言（report+trades+run 同事务，模拟 trades insert 异常验证回滚无半完成态）
+- [x] T032 [P] [US3] Integration 测试 `tests/Integration/Backtest/BacktestConcurrencyTest.php`（@group redis）：同实例单飞锁冲突拒绝（BacktestConcurrencyException）；租户并发上限 free=1 第二任务拒绝；锁 TTL 释放后可再发起（setUp/tearDown 精确清锁键 `tenant:*:backtest:lock:*`，坑 25）
+- [x] T033 [P] [US3] Integration 测试 `tests/Integration/Backtest/ReapStaleBacktestsTest.php`：构造 running 且 updated_at 过期任务→`backtest:reap-stale` 标 failed（error 含 'reaped'）；终态行不触碰；无匹配输出 0 affected
 
 ### Implementation for User Story 3
 
-- [ ] T034 [US3] 实现 `app/Domain/Backtest/Services/BacktestRunService.php`：任务创建（参数快照含 dsl_script 全文、区间上限校验、策略白名单过 PlanService）+ 单飞锁（Redis SET NX EX120，Lua token 释放对齐 DEK 锁先例）+ 租户并发检查（config concurrency 按 plan 读，超限拒非排队）
-- [ ] T035 [US3] 实现 `app/Domain/Backtest/Jobs/RunBacktestJob.php`：queue=`backtest`、tries=1；handle()=TenantContext::initialize→finally clear（对齐 AiAnalyzeJob）；包装 Runner+Calculator；进度节流写 progress_pct（每 5%）；完成单事务落库；异常→run failed
-- [ ] T036 [US3] `BacktestRunCommand` 接入 dispatch 模式（默认）+ 单飞/并发检查前置；--sync 保留
-- [ ] T037 [P] [US3] 实现 `app/Domain/Backtest/Console/ReapStaleBacktestsCommand.php`（`backtest:reap-stale`）：扫描 running+updated_at<now−stale_after_sec→failed；routes/console.php 注册每 5 分钟+withoutOverlapping
-- [ ] T038 [P] [US3] 创建 `deploy/supervisor/worker-backtest.conf.example`（`--queue=backtest --tries=1`，autorestart，对齐 worker-ai 先例）+ runbook 补一节
+- [x] T034 [US3] 实现 `app/Domain/Backtest/Services/BacktestRunService.php`：任务创建（参数快照含 dsl_script 全文、区间上限校验、策略白名单过 PlanService）+ 单飞锁（Redis SET NX EX120，Lua token 释放对齐 DEK 锁先例）+ 租户并发检查（config concurrency 按 plan 读，超限拒非排队）
+- [x] T035 [US3] 实现 `app/Domain/Backtest/Jobs/RunBacktestJob.php`：queue=`backtest`、tries=1；handle()=TenantContext::initialize→finally clear（对齐 AiAnalyzeJob）；包装 Runner+Calculator；进度节流写 progress_pct（每 5%）；完成单事务落库；异常→run failed
+- [x] T036 [US3] `BacktestRunCommand` 接入 dispatch 模式（默认）+ 单飞/并发检查前置；--sync 保留
+- [x] T037 [P] [US3] 实现 `app/Domain/Backtest/Console/ReapStaleBacktestsCommand.php`（`backtest:reap-stale`）：扫描 running+updated_at<now−stale_after_sec→failed；routes/console.php 注册每 5 分钟+withoutOverlapping
+- [x] T038 [P] [US3] 创建 `deploy/supervisor/worker-backtest.conf.example`（`--queue=backtest --tries=1`，autorestart，对齐 worker-ai 先例）+ runbook 补一节
 
 **Checkpoint**: US3 完整——异步执行可靠、崩溃不悬挂、并发受控
 
