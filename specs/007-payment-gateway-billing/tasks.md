@@ -51,19 +51,19 @@
 
 ### 通道抽象层（WS2）
 
-- [ ] T012 [P] 新建接口 `app/Domain/Payment/Contracts/PaymentChannel.php`：`code()` / `createInvoice(PaymentInvoiceRequest): PaymentInvoiceData` / `verifyWebhook(string $rawBody, array $headers): bool` / `parseWebhook(string $rawBody, array $headers): WebhookEvent`（**不含** `fetchInvoice`，见 research R-001）
-- [ ] T013 [P] 新建接口 `app/Domain/Payment/Contracts/PaymentChannelRegistry.php`：`for(string $code): PaymentChannel` / `codes(): array` / `default(): PaymentChannel`
-- [ ] T014 [P] 新建 enum `app/Domain/Payment/Dto/PaymentStatus.php`：6 case + `isTerminal(): bool`（终态 = `confirmed|expired|manual`）
-- [ ] T015 [P] 新建 DTO `app/Domain/Payment/Dto/PaymentInvoiceRequest.php`：`final readonly`，字段 `tenantId/ref/planCode/symbol/chain/amount/description/ttlMinutes`（amount 为 bcmath 字符串）
-- [ ] T016 [P] 新建 DTO `app/Domain/Payment/Dto/PaymentInvoiceData.php`：`final readonly`，字段 `channelInvoiceId/payAddress/payUri/amount/expiresAt/raw`
-- [ ] T017 [P] 新建 DTO `app/Domain/Payment/Dto/WebhookEvent.php`：`final readonly`，字段 `eventType/ref/channelInvoiceId/paidAmount/currency/raw`
-- [ ] T018 [P] 新建 `app/Domain/Payment/Exceptions/PaymentChannelException.php`
-- [ ] T019 新建 `app/Domain/Payment/PaymentChannelManager.php`：读 `config('payment.channels.{code}.driver')` → `app($driverClass)`；未知 code / driver 未实现 `PaymentChannel` **抛异常绝不降级**（constitution V）
-- [ ] T020 [P] 新建 `app/Domain/Payment/Channels/FakePaymentChannel.php`：`code()='fake'`；确定性 `channelInvoiceId='fake_'.$ref`、假地址 `TFAKE...`；`verifyWebhook` 用 `hash_hmac('sha256',$rawBody,secret)` 常量时间比对（`hash_equals`）；`parseWebhook` 解析 `{event,ref,invoice_id,paid_amount,currency}`；**非 `config('payment.channels.fake.allowed_env')` 环境被解析时抛异常**（R-004 红线）
-- [ ] T021 [P] 新建 `app/Domain/Payment/Channels/BtcPayChannel.php`：`createInvoice` `POST {base_url}/api/v1/stores/{store_id}/invoices`（`Http` facade，超时 10s，body 含 `amount`/`currency`/`metadata:{ref,tenant_id,plan_code}`）；`verifyWebhook` 读 `BTCPay-Sig` 头，`hash_hmac('sha256',$rawBody,$webhook_secret)` + `hash_equals`（对**原始字节**验签）；`parseWebhook` 取 `type` 事件名 + `metadata.ref`（缺失 → null）
-- [ ] T022 在 `app/Providers/AppServiceProvider.php` 绑定 `PaymentChannelRegistry` → `PaymentChannelManager`，**bind 非 singleton**（Octane 长驻禁 static 缓存，附注释，沿用该文件既有 L39-L52 惯例）
-- [ ] T023 [P] 新建 Unit 测试 `tests/Unit/Payment/PaymentChannelConfigTest.php`：未知 `channel_code` 抛异常、`driver` 缺配置抛异常、`fake` 在非 local/testing 环境抛异常（FR-001 / constitution V）
-- [ ] T024 [P] 新建 Unit 测试 `tests/Unit/Payment/WebhookSignatureTest.php`：BTCPay 验签**正例 1 + 负例 4**（篡改 body / 错密钥 / 缺头 / 前缀非法），100% 判定正确且**无需联网**（FR-004）
+- [x] T012 [P] 新建接口 `app/Domain/Payment/Contracts/PaymentChannel.php`：`code()` / `createInvoice(PaymentInvoiceRequest): PaymentInvoiceData` / `verifyWebhook(string $rawBody, array $headers): bool` / `parseWebhook(string $rawBody, array $headers): WebhookEvent`（**不含** `fetchInvoice`，见 research R-001）
+- [x] T013 [P] 新建接口 `app/Domain/Payment/Contracts/PaymentChannelRegistry.php`：`for(string $code): PaymentChannel` / `codes(): array` / `default(): PaymentChannel`
+- [x] T014 [P] 新建 enum `app/Domain/Payment/Dto/PaymentStatus.php`：6 case + `isTerminal(): bool`（终态 = `confirmed|expired|manual`）
+- [x] T015 [P] 新建 DTO `app/Domain/Payment/Dto/PaymentInvoiceRequest.php`：`final readonly`，字段 `tenantId/ref/planCode/symbol/chain/amount/description/ttlMinutes`（amount 为 bcmath 字符串）
+- [x] T016 [P] 新建 DTO `app/Domain/Payment/Dto/PaymentInvoiceData.php`：`final readonly`，字段 `channelInvoiceId/payAddress/payUri/amount/expiresAt/raw`
+- [x] T017 [P] 新建 DTO `app/Domain/Payment/Dto/WebhookEvent.php`：`final readonly`，字段 `eventType/ref/channelInvoiceId/paidAmount/currency/raw`
+- [x] T018 [P] 新建 `app/Domain/Payment/Exceptions/PaymentChannelException.php`
+- [x] T019 新建 `app/Domain/Payment/PaymentChannelManager.php`：读 `config('payment.channels.{code}.driver')` → `app($driverClass)`；未知 code / driver 未实现 `PaymentChannel` **抛异常绝不降级**（constitution V）
+- [x] T020 [P] 新建 `app/Domain/Payment/Channels/FakePaymentChannel.php`：`code()='fake'`；确定性 `channelInvoiceId='fake_'.$ref`、假地址 `TFAKE...`；`verifyWebhook` 用 `hash_hmac('sha256',$rawBody,secret)` 常量时间比对（`hash_equals`）；`parseWebhook` 解析 `{event,ref,invoice_id,paid_amount,currency}`；**非 `config('payment.channels.fake.allowed_env')` 环境被解析时抛异常**（R-004 红线）
+- [x] T021 [P] 新建 `app/Domain/Payment/Channels/BtcPayChannel.php`：`createInvoice` `POST {base_url}/api/v1/stores/{store_id}/invoices`（`Http` facade，超时 10s，body 含 `amount`/`currency`/`metadata:{ref,tenant_id,plan_code}`）；`verifyWebhook` 读 `BTCPay-Sig` 头，`hash_hmac('sha256',$rawBody,$webhook_secret)` + `hash_equals`（对**原始字节**验签）；`parseWebhook` 取 `type` 事件名 + `metadata.ref`（缺失 → null）
+- [x] T022 在 `app/Providers/AppServiceProvider.php` 绑定 `PaymentChannelRegistry` → `PaymentChannelManager`，**bind 非 singleton**（Octane 长驻禁 static 缓存，附注释，沿用该文件既有 L39-L52 惯例）
+- [x] T023 [P] 新建 Unit 测试 `tests/Unit/Payment/PaymentChannelConfigTest.php`：未知 `channel_code` 抛异常、`driver` 缺配置抛异常、`fake` 在非 local/testing 环境抛异常（FR-001 / constitution V）
+- [x] T024 [P] 新建 Unit 测试 `tests/Unit/Payment/WebhookSignatureTest.php`：BTCPay 验签**正例 1 + 负例 4**（篡改 body / 错密钥 / 缺头 / 前缀非法），100% 判定正确且**无需联网**（FR-004）
 
 **Checkpoint**: 数据层与通道抽象层就绪 —— 可执行 `php artisan migrate`；`config('payment.channels')` 可读；金额读出为 string；`processed_key` 允许多 NULL（插入两行 NULL 成功、两行同值失败）。
 

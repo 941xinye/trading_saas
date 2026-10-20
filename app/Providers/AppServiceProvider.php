@@ -8,13 +8,15 @@ use App\Domain\Archive\Contracts\ArchiveStore;
 use App\Domain\Archive\Contracts\HistoricalQuery;
 use App\Domain\Archive\Services\HistoricalQueryService;
 use App\Domain\Archive\Stores\ClickHouseStore;
+use App\Domain\Payment\Contracts\PaymentChannelRegistry;
+use App\Domain\Payment\PaymentChannelManager;
+use App\Domain\Risk\Breaker\IsolatedLiquidationPriceCalculator;
 use App\Domain\Risk\Contracts\LiquidationPriceCalculator;
 use App\Domain\Risk\Contracts\PositionRiskMonitor as PositionRiskMonitorContract;
-use App\Domain\Risk\Breaker\IsolatedLiquidationPriceCalculator;
 use App\Domain\Risk\Position\PositionRiskMonitor;
+use App\Domain\Strategy\Custom\Dsl\DslPreviewService;
 use App\Domain\Strategy\Custom\Dsl\DslScriptValidator;
 use App\Domain\Strategy\Custom\Dsl\DslValidator;
-use App\Domain\Strategy\Custom\Dsl\DslPreviewService;
 use App\Domain\Strategy\Custom\Dsl\Preview\HistoricalPreviewService;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
@@ -51,6 +53,9 @@ class AppServiceProvider extends ServiceProvider
 
         // spec 006 DSL 回测预览（bind 非 singleton，同上）
         $this->app->bind(DslPreviewService::class, HistoricalPreviewService::class);
+
+        // spec 007 支付通道注册表（bind 非 singleton：Octane 长驻禁 static 缓存）
+        $this->app->bind(PaymentChannelRegistry::class, fn ($app) => new PaymentChannelManager($app));
     }
 
     /**
