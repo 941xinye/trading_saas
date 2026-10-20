@@ -4,11 +4,11 @@
 
 **Created**: 2026-10-20
 
-**Status**: Draft
+**Status**: Plan Complete（2026-10-20，plan 阶段 5 文档齐备，待 implement）
 
 **Input**: User description: "P7 自定义 DSL 策略引擎：YAML 声明式策略（entry/exit/filter/risk 四段）+ 沙箱解释器 + Filament 在线编辑器 + 回测预览；销技术债 B2（DslParser/DslStrategy 骨架全部抛异常）"
 
-**Plan 产物**：待 plan 阶段产出（research.md / data-model.md / contracts.md / plan.md / quickstart.md / tasks.md）
+**Plan 产物**：[research.md](research.md) / [data-model.md](data-model.md) / [contracts.md](contracts.md) / [plan.md](plan.md) / [quickstart.md](quickstart.md)（6 工作流 WS1-WS6；tasks.md 由 /speckit-tasks 产出）
 
 **决策基线（specify 阶段确认）**：①语法载体 = 仅 YAML 四段声明式（TOML 留待后续）；②回测预览纳入本期（复用 P8 HistoricalQuery，轻量）；③custom_dsl 本期加入套餐白名单并对客售卖。
 
