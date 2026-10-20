@@ -328,6 +328,28 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **已知边界**：DSL 预览未模拟滑点/手续费（结果中已注明）；FuturesDca / SmartMartingale / TrendRolling 骨架已于 2026-10-20 移除（B1 销账，未来实现须先立项 spec）。
 
+### ✅ 已完成：spec 007 支付网关 + 计费 UI（2026-10-20，离线轨道全验，真实 BTCPay 待节点）
+
+商业化支付闭环全量落地（7 工作流 64 任务）：BTCPay TRC20-USDT 收单基线 + webhook 验签幂等 + 订阅激活单事务 + 续费提醒/失败流转 + Filament 计费页 + Billing REST API。平台侧全部离线可验（Fake 通道），真实收单闭环待海外节点按 [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) 执行。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 支付数据层 | `payment_invoices`（ref unique / amount_usdt decimal(20,8) bcmath / 状态机 pending→processing→partial→confirmed，expired→manual）+ `payment_webhook_events`（processed_key 可空 unique 幂等锚，仅 processed 落值）+ `payment_renewal_reminders`（unique 四元组防重发） | [spec](specs/007-payment-gateway-billing/spec.md) |
+| 通道抽象层 | PaymentChannelRegistry（未配置通道抛异常**不降级**）+ 通道契约 4 方法（code/createInvoice/verifyWebhook/parseWebhook；fetchInvoice 登记为后续扩展点）+ FakePaymentChannel（**仅 local/testing 可用，其它环境启用即抛异常**）+ BtcPayChannel（HMAC-SHA256 验签纯函数单测） | [contracts](specs/007-payment-gateway-billing/contracts/) |
+| 支付闭环（US1） | PaymentInvoiceService（建单/同套餐不堆叠/TTL 过期清扫/足额·不足额·超额判定）+ BillingWebhookController 固定流水线（验签失败 401→解析→ref 定位→条件更新→激活→审计）+ PaymentActivationService（**条件更新 + SubscriptionService::provision(trialDays:0) + processed_key 同事务**；失败回滚→webhook 500→通道重投，无半激活） | [plan](specs/007-payment-gateway-billing/plan.md) |
+| webhook 加固（US2） | Redis 单飞锁削峰（不可用时降级放行）+ processed_key 唯一幂等（重放零副作用）+ 乱序事件不回退状态机 + unknown ref→rejected 审计 + 伪造签名 100% 拒绝 + 原始载荷审计留存 | — |
+| 续费与失败流转（US3） | RenewalReminderService（7/3/1 天三档提醒）+ 既有 P3 状态机接线（active→past_due→宽限→suspended→补缴恢复，ends_at 顺延一个周期）+ `billing:renewal-reminders` / `billing:refresh-status` / `billing:expire-invoices` 调度注册 | — |
+| 计费页 + API（US4） | Filament 计费页（当前套餐/周期起止/当日用量与上限/Invoice 列表/升级 3 步内出 USDT 金额·收款地址·倒计时，再点引导既有待支付单不堆叠）+ Billing REST API（auth:sanctum+tenant 栈双租户隔离） | — |
+| POC 命令 | `poc:verify-payment`（35 项离线断言 SC-001~006 平台侧）+ `billing:fake-webhook`（dev 环境构造带签名 webhook，等价真实 BTCPay 投递） | [quickstart](specs/007-payment-gateway-billing/quickstart.md) |
+
+**实测结果**：
+- 离线断言 PASS：`php artisan poc:verify-payment` → **35/35 ALL CHECKS PASSED**（建单→验签→状态推进→激活→配额生效→幂等重放→伪造签名拒绝→提醒判定；webhook 单请求 <200ms）。
+- 单元测试：PaymentInvoiceServiceTest / PaymentStatusMachineTest / WebhookSignatureTest / PaymentChannelConfigTest / RenewalReminderServiceTest 全 PASS。
+- 集成测试：FakeChannelCheckoutFlowTest（US1 全链路）/ WebhookIdempotencyTest（同 ref 重放 3 次激活 1 条）/ WebhookSignatureRejectionTest / WebhookOrderingAndUnknownRefTest / RenewalRecoveryTimelineTest / BillingPageTest + BillingApiTest（双租户零串扰）全 PASS；`--group=redis` WebhookConcurrencyTest（并发同 ref 单飞锁）Redis 在线全绿。
+- SC-001~006 平台侧全部离线验收（对照表见 [quickstart §8](specs/007-payment-gateway-billing/quickstart.md)）。
+
+**已知边界**：收单链仅 TRC20-USDT；不足额支付有效期内可补齐（不引入账户余额体系）；无自动退款（超额不记账）；过期后到账转 manual 不自动激活；计费周期仅月度；通道主动查单（fetchInvoice）不在本期；`fake` 通道仅 local/testing，生产 MUST 显式 `PAYMENT_CHANNEL=btcpay`；真实 USDT 收单闭环（PoC 阶段 A/B/C）**待海外节点**。
+
 ### 🚧 待实现：剩余路线图
 
 > P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 / spec 006 自定义 DSL / spec 007 支付网关+计费 UI 已完成（spec 004 为核心落地、spec 007 离线轨道已验证真实链路待节点，节点验收待回填），实测结果见上方对应区块。
@@ -523,6 +545,24 @@ php artisan poc:futures-risk-simulate --tenant=1 --instance=1
 `poc:verify-futures` 覆盖 36 项断言：强平价多/空 × 4 杠杆（1x/5x/10x/20x）+ MMR 影响、保证金率入场=1/强平=0/中点=0.5/越界钳制、决策矩阵 6 种（开多/开空/平多/平空/加多/加空）+ 区间外无信号、风控 warning/reduce/emergency 三档 + 无持仓、售卖门控 free 拒/pro+enterprise 放行/未落地策略全拒。
 
 **注意**：仓位风控 action/emergency 档依赖 Redis 单飞锁，Redis 不可用时保守返回 skipped（不重复下单）；warning 档不依赖锁。
+
+### POC 验证（spec 007 支付网关 + 计费 UI）
+
+```bash
+# 1. 一键离线全链路断言（35 项：建单→验签→状态推进→激活→配额生效→幂等重放→伪造签名拒绝→提醒判定）
+#    无需 BTCPay/节点/外网（Fake 通道）；Redis 需在线（webhook <200ms 断言依赖）
+php artisan poc:verify-payment
+
+# 2. 集成测试（Fake 通道；默认 sqlite :memory: 即可跑，@redis 并发用例需 Redis）
+php artisan test tests/Integration/Payment
+
+# 3. 手工端到端（Fake 通道，无 UI）：建单 → 模拟回调 → 断言激活；同 ref 连投 3 次仅一次生效
+php artisan billing:fake-webhook --ref=<ref> --event=fake.settled --paid=<amount_usdt>
+
+# 4. 计费页点检：租户用户登录 /admin →「计费」→ 升级 3 步内出 USDT 金额/收款地址/倒计时
+```
+
+详细分层验证（单元/集成/SC-001~006 对照表/续费时间线复现）见 [quickstart](specs/007-payment-gateway-billing/quickstart.md)；`fake` 通道仅 `local/testing` 可用，生产必须 `PAYMENT_CHANNEL=btcpay`。
 
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 
