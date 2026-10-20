@@ -1,4 +1,4 @@
-# Tasks: P10 回测引擎 + 绩效分析
+﻿# Tasks: P10 回测引擎 + 绩效分析
 
 **Input**: Design documents from `/specs/008-backtest-engine/`
 
@@ -20,9 +20,9 @@
 
 **Purpose**: spec 008 工作区准备
 
-- [ ] T001 确认 `.specify/feature.json` 指向 `specs/008-backtest-engine`，回顾 plan.md/research.md 决策清单（R-001~R-010）
-- [ ] T002 [P] 创建 `app/Domain/Backtest/` 目录骨架（Contracts/ Dto/ Services/ Jobs/ Console/ Models/ Exceptions/ 七个子目录，各放 `.gitkeep`）
-- [ ] T003 [P] 创建 `tests/Unit/Backtest/`、`tests/Integration/Backtest/`、`tests/Feature/Backtest/` 目录与 `.gitkeep`（坑 28：空目录必须有占位否则 PHPUnit 12 exit 2）
+- [x] T001 确认 `.specify/feature.json` 指向 `specs/008-backtest-engine`，回顾 plan.md/research.md 决策清单（R-001~R-010）
+- [x] T002 [P] 创建 `app/Domain/Backtest/` 目录骨架（Contracts/ Dto/ Services/ Jobs/ Console/ Models/ Exceptions/ 七个子目录，各放 `.gitkeep`）
+- [x] T003 [P] 创建 `tests/Unit/Backtest/`、`tests/Integration/Backtest/`、`tests/Feature/Backtest/` 目录与 `.gitkeep`（坑 28：空目录必须有占位否则 PHPUnit 12 exit 2）
 
 ---
 
@@ -32,15 +32,15 @@
 
 **⚠️ CRITICAL**: 本阶段完成前不得开始任何 US
 
-- [ ] T004 [P] 创建 migration `database/migrations/xxxx_xx_xx_xxxxxx_create_backtest_runs_table.php`：按 data-model.md 表 1 全字段（tenant_id FK / strategy_instance_id **nullable** FK / strategy_code varchar(32) / params_snapshot json NOT NULL / assumptions json NOT NULL / symbol index / interval / from_utc/to_utc datetime / status enum('pending','running','completed','failed') default 'pending' index / progress_pct tinyint default 0 / error_message text nullable / started_at/finished_at nullable / timestamps）
-- [ ] T005 [P] 创建 migration `database/migrations/xxxx_xx_xx_xxxxxx_create_backtest_reports_table.php`：按 data-model.md 表 2（backtest_run_id FK **unique** 1:1 / tenant_id FK index / initial_capital decimal(20,8) / final_equity decimal(20,8) / total_return_pct decimal(20,8) / annualized_return_pct decimal(20,8) / sharpe_ratio decimal(20,8) **nullable** / max_drawdown_pct decimal(20,8) default 0 / win_rate_pct decimal(20,8) **nullable** / profit_factor decimal(20,8) **nullable** / trade_count int unsigned default 0 / total_fee decimal(20,8) default 0 / bar_count int unsigned / data_coverage_pct decimal(5,2) / equity_curve json NOT NULL）
-- [ ] T006 [P] 创建 migration `database/migrations/xxxx_xx_xx_xxxxxx_create_backtest_simulated_trades_table.php`：按 data-model.md 表 3（backtest_run_id FK / tenant_id FK / seq int unsigned / index(run_id, seq) / bar_open_time bigint / side varchar(8) / qty decimal(30,12) / price decimal(30,12) / fee decimal(20,8) / realized_pnl decimal(20,8) / **仅 created_at 无 updated_at**）
-- [ ] T007 [P] 创建 `app/Domain/Backtest/Models/BacktestRun.php`：hasOne BacktestReport / hasMany BacktestSimulatedTrade；status cast 为 backed enum `BacktestRunStatus`（同文件创建 enum，**一文件一类**放 `app/Domain/Backtest/Contracts/BacktestRunStatus.php`）；params_snapshot/assumptions cast array；金额字段 cast `decimal:8`（读出 string，对齐 payment_invoices 先例）；挂 TenantScope 全局作用域
-- [ ] T008 [P] 创建 `app/Domain/Backtest/Models/BacktestReport.php`：belongsTo BacktestRun；equity_curve cast array；TenantScope
-- [ ] T009 [P] 创建 `app/Domain/Backtest/Models/BacktestSimulatedTrade.php`：belongsTo BacktestRun；`public $timestamps = false` + 手工 created_at（append-only）；TenantScope
-- [ ] T010 创建 `config/backtest.php`：`max_range_days=365` / `min_coverage_pct=80` / `stale_after_sec=240` / `lock_ttl_sec=120` / `concurrency={free:1,pro:2,enterprise:4}` / `defaults={capital:'1000',fee_rate:'0.001',slippage_bps:5}` / `strategies=['spot_grid','spot_dca','futures_grid','custom_dsl']`
-- [ ] T011 运行 `php artisan migrate` 验证三表落库（sqlite :memory: 测试连接 + 本机 MySQL 双跑），状态机 enum 与 default 正确
-- [ ] T012 [P] Unit 测试 `tests/Unit/Backtest/BacktestModelTest.php`：三 Model 关联/cast/TenantScope/decimal string 读出/simulated_trades 无 updated_at
+- [x] T004 [P] 创建 migration `database/migrations/xxxx_xx_xx_xxxxxx_create_backtest_runs_table.php`：按 data-model.md 表 1 全字段（tenant_id FK / strategy_instance_id **nullable** FK / strategy_code varchar(32) / params_snapshot json NOT NULL / assumptions json NOT NULL / symbol index / interval / from_utc/to_utc datetime / status enum('pending','running','completed','failed') default 'pending' index / progress_pct tinyint default 0 / error_message text nullable / started_at/finished_at nullable / timestamps）
+- [x] T005 [P] 创建 migration `database/migrations/xxxx_xx_xx_xxxxxx_create_backtest_reports_table.php`：按 data-model.md 表 2（backtest_run_id FK **unique** 1:1 / tenant_id FK index / initial_capital decimal(20,8) / final_equity decimal(20,8) / total_return_pct decimal(20,8) / annualized_return_pct decimal(20,8) / sharpe_ratio decimal(20,8) **nullable** / max_drawdown_pct decimal(20,8) default 0 / win_rate_pct decimal(20,8) **nullable** / profit_factor decimal(20,8) **nullable** / trade_count int unsigned default 0 / total_fee decimal(20,8) default 0 / bar_count int unsigned / data_coverage_pct decimal(5,2) / equity_curve json NOT NULL）
+- [x] T006 [P] 创建 migration `database/migrations/xxxx_xx_xx_xxxxxx_create_backtest_simulated_trades_table.php`：按 data-model.md 表 3（backtest_run_id FK / tenant_id FK / seq int unsigned / index(run_id, seq) / bar_open_time bigint / side varchar(8) / qty decimal(30,12) / price decimal(30,12) / fee decimal(20,8) / realized_pnl decimal(20,8) / **仅 created_at 无 updated_at**）
+- [x] T007 [P] 创建 `app/Domain/Backtest/Models/BacktestRun.php`：hasOne BacktestReport / hasMany BacktestSimulatedTrade；status cast 为 backed enum `BacktestRunStatus`（同文件创建 enum，**一文件一类**放 `app/Domain/Backtest/Contracts/BacktestRunStatus.php`）；params_snapshot/assumptions cast array；金额字段 cast `decimal:8`（读出 string，对齐 payment_invoices 先例）；挂 TenantScope 全局作用域
+- [x] T008 [P] 创建 `app/Domain/Backtest/Models/BacktestReport.php`：belongsTo BacktestRun；equity_curve cast array；TenantScope
+- [x] T009 [P] 创建 `app/Domain/Backtest/Models/BacktestSimulatedTrade.php`：belongsTo BacktestRun；`public $timestamps = false` + 手工 created_at（append-only）；TenantScope
+- [x] T010 创建 `config/backtest.php`：`max_range_days=365` / `min_coverage_pct=80` / `stale_after_sec=240` / `lock_ttl_sec=120` / `concurrency={free:1,pro:2,enterprise:4}` / `defaults={capital:'1000',fee_rate:'0.001',slippage_bps:5}` / `strategies=['spot_grid','spot_dca','futures_grid','custom_dsl']`
+- [x] T011 运行 `php artisan migrate` 验证三表落库（sqlite :memory: 测试连接 + 本机 MySQL 双跑），状态机 enum 与 default 正确
+- [x] T012 [P] Unit 测试 `tests/Unit/Backtest/BacktestModelTest.php`：三 Model 关联/cast/TenantScope/decimal string 读出/simulated_trades 无 updated_at
 
 **Checkpoint**: 数据层就绪，US 实现可开始
 
@@ -54,23 +54,23 @@
 
 ### Tests for User Story 1
 
-- [ ] T013 [P] [US1] Unit 测试 `tests/Unit/Backtest/MatchingEngineTest.php`：buy=close×(1+bps/10000)、sell=close×(1−bps/10000)、fee=price×qty×rate（bcmath 8 位落账断言用 bccomp）、qty=0/负抛 InvalidArgumentException、极端 bps=100 边界
-- [ ] T014 [P] [US1] Unit 测试 `tests/Unit/Backtest/PerformanceCalculatorTest.php`：绩效契约黄金向量 5 场景（单调上涨 drawdown=0 / [1000,1200,900,1100] drawdown=25% / 两胜一负 win_rate+profit_factor / 零方差 sharpe=null / 手续费侵蚀 total_fee）+ 零交易 sharpe/win_rate null 语义
-- [ ] T015 [P] [US1] Unit 测试 `tests/Unit/Backtest/EquityCurveBuilderTest.php`：净值=initial+realizedPnl+持仓估值（多/空方向 ±），读 positionSnapshot 路径
-- [ ] T016 [P] [US1] 架构守护测试 `tests/Unit/Backtest/BacktestNoBypassTest.php`：静态扫描 `app/Domain/Backtest/` 目录源码，断言零 `new SpotGridStrategy|new SpotDcaStrategy|new FuturesGridStrategy|new DslStrategy` 引用（FR-003 红线，对齐 spec 006 DslNoDynamicEvalTest 范式）
-- [ ] T017 [P] [US1] 架构守护测试 `tests/Unit/Backtest/BacktestNoExchangeCallTest.php`：静态扫描断言 Domain\Backtest 零 ExchangeAdapter/ExchangeManager 引用（FR-004 红线）
-- [ ] T018 [US1] Integration 测试 `tests/Integration/Backtest/BacktestRunnerTest.php`：固定 5m K 线 fixture（tests/fixtures/backtest/spot_grid_bars.json）驱动 spot_grid 实例回测，断言信号时点序列与预期一致、净值点数量=bar 数、coverage=100%
+- [x] T013 [P] [US1] Unit 测试 `tests/Unit/Backtest/MatchingEngineTest.php`：buy=close×(1+bps/10000)、sell=close×(1−bps/10000)、fee=price×qty×rate（bcmath 8 位落账断言用 bccomp）、qty=0/负抛 InvalidArgumentException、极端 bps=100 边界
+- [x] T014 [P] [US1] Unit 测试 `tests/Unit/Backtest/PerformanceCalculatorTest.php`：绩效契约黄金向量 5 场景（单调上涨 drawdown=0 / [1000,1200,900,1100] drawdown=25% / 两胜一负 win_rate+profit_factor / 零方差 sharpe=null / 手续费侵蚀 total_fee）+ 零交易 sharpe/win_rate null 语义
+- [x] T015 [P] [US1] Unit 测试 `tests/Unit/Backtest/EquityCurveBuilderTest.php`：净值=initial+realizedPnl+持仓估值（多/空方向 ±），读 positionSnapshot 路径
+- [x] T016 [P] [US1] 架构守护测试 `tests/Unit/Backtest/BacktestNoBypassTest.php`：静态扫描 `app/Domain/Backtest/` 目录源码，断言零 `new SpotGridStrategy|new SpotDcaStrategy|new FuturesGridStrategy|new DslStrategy` 引用（FR-003 红线，对齐 spec 006 DslNoDynamicEvalTest 范式）
+- [x] T017 [P] [US1] 架构守护测试 `tests/Unit/Backtest/BacktestNoExchangeCallTest.php`：静态扫描断言 Domain\Backtest 零 ExchangeAdapter/ExchangeManager 引用（FR-004 红线）
+- [x] T018 [US1] Integration 测试 `tests/Integration/Backtest/BacktestRunnerTest.php`：固定 5m K 线 fixture（tests/fixtures/backtest/spot_grid_bars.json）驱动 spot_grid 实例回测，断言信号时点序列与预期一致、净值点数量=bar 数、coverage=100%
 
 ### Implementation for User Story 1
 
-- [ ] T019 [P] [US1] 创建 DTO `app/Domain/Backtest/Dto/MatchingAssumptions.php`（readonly：feeRate/slippageBps/initialCapital/narrative）+ `SimulatedTrade.php`（readonly：seq/barOpenTime/side/qty/price/fee/realizedPnl）+ `EquityPoint.php`（readonly：barTime/equity 字符串）+ `BacktestRunRequest.php`（tenantId/strategyCode/params/symbol/interval/fromUtc/toUtc/assumptions/pageSize?）+ `BacktestRunResult.php`（barCount/trades/equityPoints/coveragePct）+ `PerformanceReport.php`（readonly 9 指标 + barCount + coveragePct）
-- [ ] T020 [P] [US1] 创建异常 `app/Domain/Backtest/Exceptions/BacktestDataCoverageException.php` + `BacktestConcurrencyException.php` + `BacktestStrategyNotImplemented.php`（一文件一类）
-- [ ] T021 [US1] 实现 `app/Domain/Backtest/Services/MatchingEngine.php`（实现 Contracts\SimulatedMatcher 接口，接口文件同步创建）：撮合公式按 contracts/backtest-runner-contract.md §2；bcmath 12 位中间 8 位落账
-- [ ] T022 [US1] 实现 `app/Domain/Backtest/Services/EquityCurveBuilder.php`：mark() 净值计算按 contracts §3（initial+realizedPnl+持仓按 close 估值，多空方向）；points() 返回全序列
-- [ ] T023 [US1] 实现 `app/Domain/Backtest/Services/BacktestRunner.php`：行为契约 5 条（contracts §1）——Registry::make 唯一构造、分页回放循环（pageSize=config archive.query_page_size）、onBar→shouldOpen/shouldClose（关联数组）→matcher.fill→onFill（含 fee ExchangeOrder）→equity.mark、覆盖率校验抛 BacktestDataCoverageException、instanceId=0 空 Context 不调 restoreState；onProgress() 进度回调注入点
-- [ ] T024 [US1] 实现 `app/Domain/Backtest/Services/PerformanceCalculator.php`：绩效契约全部 9 指标（单遍遍历）；资金 bcmath、Sharpe float；零值 null 语义（sharpe 零方差/win_rate 零平仓/profit_factor 零亏损）
-- [ ] T025 [US1] 创建 `app/Domain/Backtest/Console/BacktestRunCommand.php`（`backtest:run`）：参数族按 contracts/backtest-commands-contract.md §1；--sync 模式走 Runner→Calculator→**单事务**落库（report+trades+run completed）；校验失败 exit 2、策略白名单拒绝抛 BacktestStrategyNotImplemented
-- [ ] T026 [US1] 注册命令 + 跑通 T018 集成路径：`backtest:run --sync` 端到端产出报告行，断言交易所零调用（RecordingAdapter 注入 HistoricalQuery 层旁证）
+- [x] T019 [P] [US1] 创建 DTO `app/Domain/Backtest/Dto/MatchingAssumptions.php`（readonly：feeRate/slippageBps/initialCapital/narrative）+ `SimulatedTrade.php`（readonly：seq/barOpenTime/side/qty/price/fee/realizedPnl）+ `EquityPoint.php`（readonly：barTime/equity 字符串）+ `BacktestRunRequest.php`（tenantId/strategyCode/params/symbol/interval/fromUtc/toUtc/assumptions/pageSize?）+ `BacktestRunResult.php`（barCount/trades/equityPoints/coveragePct）+ `PerformanceReport.php`（readonly 9 指标 + barCount + coveragePct）
+- [x] T020 [P] [US1] 创建异常 `app/Domain/Backtest/Exceptions/BacktestDataCoverageException.php` + `BacktestConcurrencyException.php` + `BacktestStrategyNotImplemented.php`（一文件一类）
+- [x] T021 [US1] 实现 `app/Domain/Backtest/Services/MatchingEngine.php`（实现 Contracts\SimulatedMatcher 接口，接口文件同步创建）：撮合公式按 contracts/backtest-runner-contract.md §2；bcmath 12 位中间 8 位落账
+- [x] T022 [US1] 实现 `app/Domain/Backtest/Services/EquityCurveBuilder.php`：mark() 净值计算按 contracts §3（initial+realizedPnl+持仓按 close 估值，多空方向）；points() 返回全序列
+- [x] T023 [US1] 实现 `app/Domain/Backtest/Services/BacktestRunner.php`：行为契约 5 条（contracts §1）——Registry::make 唯一构造、分页回放循环（pageSize=config archive.query_page_size）、onBar→shouldOpen/shouldClose（关联数组）→matcher.fill→onFill（含 fee ExchangeOrder）→equity.mark、覆盖率校验抛 BacktestDataCoverageException、instanceId=0 空 Context 不调 restoreState；onProgress() 进度回调注入点
+- [x] T024 [US1] 实现 `app/Domain/Backtest/Services/PerformanceCalculator.php`：绩效契约全部 9 指标（单遍遍历）；资金 bcmath、Sharpe float；零值 null 语义（sharpe 零方差/win_rate 零平仓/profit_factor 零亏损）
+- [x] T025 [US1] 创建 `app/Domain/Backtest/Console/BacktestRunCommand.php`（`backtest:run`）：参数族按 contracts/backtest-commands-contract.md §1；--sync 模式走 Runner→Calculator→**单事务**落库（report+trades+run completed）；校验失败 exit 2、策略白名单拒绝抛 BacktestStrategyNotImplemented
+- [x] T026 [US1] 注册命令 + 跑通 T018 集成路径：`backtest:run --sync` 端到端产出报告行，断言交易所零调用（RecordingAdapter 注入 HistoricalQuery 层旁证）
 
 **Checkpoint**: US1 可独立交付——CLI sync 回测产出完整报告（MVP）
 
