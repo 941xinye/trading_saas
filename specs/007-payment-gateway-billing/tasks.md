@@ -26,9 +26,9 @@
 
 **Purpose**: 前置校验与目录骨架（本项目为既有 Laravel 单仓，无工程初始化动作）
 
-- [ ] T001 校验前置并确认零新增依赖：运行 `php -v` / `composer -V`；按 AGENTS.md 工作区规则安装 Laravel Boost（`composer require laravel/boost --dev` + `php artisan boost:install`，**--dev 开发工具依赖**，不违反 plan「功能代码零新增 Composer 依赖」口径），安装后重读定制版 AGENTS.md 再继续；确认功能代码不新增任何依赖（BTCPay 走 `Http` facade，见 plan.md Technical Context）
-- [ ] T002 [P] 创建域包目录骨架 `app/Domain/Payment/{Contracts,Dto,Channels,Exceptions}/`
-- [ ] T003 [P] 创建测试目录骨架 `tests/Unit/Payment/`、`tests/Integration/Payment/`、`tests/Feature/Payment/`
+- [x] T001 校验前置并确认零新增依赖：运行 `php -v` / `composer -V`；按 AGENTS.md 工作区规则安装 Laravel Boost（`composer require laravel/boost --dev` + `php artisan boost:install`，**--dev 开发工具依赖**，不违反 plan「功能代码零新增 Composer 依赖」口径），安装后重读定制版 AGENTS.md 再继续；确认功能代码不新增任何依赖（BTCPay 走 `Http` facade，见 plan.md Technical Context）
+- [x] T002 [P] 创建域包目录骨架 `app/Domain/Payment/{Contracts,Dto,Channels,Exceptions}/`
+- [x] T003 [P] 创建测试目录骨架 `tests/Unit/Payment/`、`tests/Integration/Payment/`、`tests/Feature/Payment/`
 
 ---
 
@@ -40,14 +40,14 @@
 
 ### 数据层 + 配置（WS1）
 
-- [ ] T004 新建 migration `database/migrations/*_create_payment_invoices_table.php`：`tenant_id`（FK `tenants.id` cascadeOnDelete）、`ref` string(64) **unique**、`channel_code` string(30)、`channel_invoice_id` string(120) nullable、`plan_code` string(30)、`currency` string(10) default `USDT`、`chain` string(10) default `TRC20`、`amount_usdt` **decimal(20,8) NOT NULL**、`paid_amount_usdt` decimal(20,8) nullable、`pay_address` string(120) nullable、`pay_uri` string(255) nullable、`status` enum `pending,processing,partial,confirmed,expired,manual` default `pending`、`expires_at` timestamp NOT NULL、`confirmed_at` timestamp nullable、`meta` json nullable；索引 `index(tenant_id,status)` / `index(tenant_id,plan_code,status)` / `index(channel_invoice_id)` / `index(status,expires_at)`
-- [ ] T005 [P] 新建 migration `database/migrations/*_create_payment_webhook_events_table.php`：`tenant_id` nullable、`payment_invoice_id` nullable（FK nullOnDelete）、`channel_code` string(30)、`ref` string(64) nullable、`event_type` string(60)、`signature_valid` boolean、`status` enum `received,processed,idempotent_skipped,rejected,error` default `received`、`processed_key` string(120) **nullable unique**（上界 = ref ≤29 + `:` + event_type ≤60，留余量）、`raw_payload` json、`error` text nullable、`received_at` timestamp、`processed_at` timestamp nullable；索引 `index(ref,created_at)` / `index(channel_code,status,created_at)`
-- [ ] T006 [P] 新建 migration `database/migrations/*_create_payment_renewal_reminders_table.php`：`tenant_id`（FK cascadeOnDelete）、`subscription_id`（FK `subscriptions.id` cascadeOnDelete）、`subscription_ends_at` timestamp、`days_before` smallint、`plan_code` string(30)、`channel` string(20)、`status` enum `queued,sent,failed` default `queued`、`provider_message_id` string(100) nullable、`error` text nullable、`sent_at` timestamp nullable；**唯一索引**写法 `$table->unique(['subscription_id','subscription_ends_at','days_before','channel'], 'idx_prr_cycle_reminder')`（列用数组、名单独传参，**禁止** 5 个位置参数的写法）
-- [ ] T007 [P] 新建模型 `app/Models/PaymentInvoice.php`：挂 `BelongsToTenant`；`$casts = ['amount_usdt' => 'decimal:8', 'paid_amount_usdt' => 'decimal:8', 'meta' => 'array', 'expires_at' => 'datetime', 'confirmed_at' => 'datetime']`；**禁止** float cast
-- [ ] T008 [P] 新建模型 `app/Models/PaymentWebhookEvent.php`：**不挂** `BelongsToTenant`（webhook 无租户上下文，显式写 `tenant_id`，与 `TwoPhaseMeter` 同思路）
-- [ ] T009 [P] 新建模型 `app/Models/PaymentRenewalReminder.php`：挂 `BelongsToTenant`
-- [ ] T010 [P] 新建 `config/payment.php`：`default_channel`（`env('PAYMENT_CHANNEL','fake')`）、`invoice_ttl_minutes`、`renewal_reminder_days=[7,3,1]`、`reminder_channels`、`channels.fake{driver,allowed_env:['local','testing'],settle_event}`、`channels.btcpay{driver,base_url,store_id,api_key,webhook_secret,settled_events,processing_events,expired_events,timeout:10}`（结构见 data-model.md §6.1）
-- [ ] T011 [P] 追加 `.env.example` 六项：`PAYMENT_CHANNEL` / `PAYMENT_INVOICE_TTL_MINUTES` / `BTCPAY_BASE_URL` / `BTCPAY_STORE_ID` / `BTCPAY_API_KEY` / `BTCPAY_WEBHOOK_SECRET`（密钥仅留空占位，不入库不入 git）
+- [x] T004 新建 migration `database/migrations/*_create_payment_invoices_table.php`：`tenant_id`（FK `tenants.id` cascadeOnDelete）、`ref` string(64) **unique**、`channel_code` string(30)、`channel_invoice_id` string(120) nullable、`plan_code` string(30)、`currency` string(10) default `USDT`、`chain` string(10) default `TRC20`、`amount_usdt` **decimal(20,8) NOT NULL**、`paid_amount_usdt` decimal(20,8) nullable、`pay_address` string(120) nullable、`pay_uri` string(255) nullable、`status` enum `pending,processing,partial,confirmed,expired,manual` default `pending`、`expires_at` timestamp NOT NULL、`confirmed_at` timestamp nullable、`meta` json nullable；索引 `index(tenant_id,status)` / `index(tenant_id,plan_code,status)` / `index(channel_invoice_id)` / `index(status,expires_at)`
+- [x] T005 [P] 新建 migration `database/migrations/*_create_payment_webhook_events_table.php`：`tenant_id` nullable、`payment_invoice_id` nullable（FK nullOnDelete）、`channel_code` string(30)、`ref` string(64) nullable、`event_type` string(60)、`signature_valid` boolean、`status` enum `received,processed,idempotent_skipped,rejected,error` default `received`、`processed_key` string(120) **nullable unique**（上界 = ref ≤29 + `:` + event_type ≤60，留余量）、`raw_payload` json、`error` text nullable、`received_at` timestamp、`processed_at` timestamp nullable；索引 `index(ref,created_at)` / `index(channel_code,status,created_at)`
+- [x] T006 [P] 新建 migration `database/migrations/*_create_payment_renewal_reminders_table.php`：`tenant_id`（FK cascadeOnDelete）、`subscription_id`（FK `subscriptions.id` cascadeOnDelete）、`subscription_ends_at` timestamp、`days_before` smallint、`plan_code` string(30)、`channel` string(20)、`status` enum `queued,sent,failed` default `queued`、`provider_message_id` string(100) nullable、`error` text nullable、`sent_at` timestamp nullable；**唯一索引**写法 `$table->unique(['subscription_id','subscription_ends_at','days_before','channel'], 'idx_prr_cycle_reminder')`（列用数组、名单独传参，**禁止** 5 个位置参数的写法）
+- [x] T007 [P] 新建模型 `app/Models/PaymentInvoice.php`：挂 `BelongsToTenant`；`$casts = ['amount_usdt' => 'decimal:8', 'paid_amount_usdt' => 'decimal:8', 'meta' => 'array', 'expires_at' => 'datetime', 'confirmed_at' => 'datetime']`；**禁止** float cast
+- [x] T008 [P] 新建模型 `app/Models/PaymentWebhookEvent.php`：**不挂** `BelongsToTenant`（webhook 无租户上下文，显式写 `tenant_id`，与 `TwoPhaseMeter` 同思路）
+- [x] T009 [P] 新建模型 `app/Models/PaymentRenewalReminder.php`：挂 `BelongsToTenant`
+- [x] T010 [P] 新建 `config/payment.php`：`default_channel`（`env('PAYMENT_CHANNEL','fake')`）、`invoice_ttl_minutes`、`renewal_reminder_days=[7,3,1]`、`reminder_channels`、`channels.fake{driver,allowed_env:['local','testing'],settle_event}`、`channels.btcpay{driver,base_url,store_id,api_key,webhook_secret,settled_events,processing_events,expired_events,timeout:10}`（结构见 data-model.md §6.1）
+- [x] T011 [P] 追加 `.env.example` 六项：`PAYMENT_CHANNEL` / `PAYMENT_INVOICE_TTL_MINUTES` / `BTCPAY_BASE_URL` / `BTCPAY_STORE_ID` / `BTCPAY_API_KEY` / `BTCPAY_WEBHOOK_SECRET`（密钥仅留空占位，不入库不入 git）
 
 ### 通道抽象层（WS2）
 
