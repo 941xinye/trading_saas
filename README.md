@@ -330,7 +330,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 ### 🚧 待实现：剩余路线图
 
-> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 / spec 006 自定义 DSL 已完成（spec 004 为核心落地、节点验收待回填），实测结果见上方对应区块。
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 / spec 006 自定义 DSL / spec 007 支付网关+计费 UI 已完成（spec 004 为核心落地、spec 007 离线轨道已验证真实链路待节点，节点验收待回填），实测结果见上方对应区块。
 > **P5.5 上线前工程化加固代码侧已完成（2026-10-15）**——步骤 1–4 产物、三环境实测证据与待节点侧实跑清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md#执行结果与实测证据2026-10-15步骤-14-代码侧全部完成)。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 | 依赖 |
@@ -339,7 +339,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | **P6 多交易所 Adapter 扩展 ✅ 代码侧完成** | ~~OKX / Bybit / Bitget~~ 三家现货 Adapter 全部落地（spec 001/002/003），复用 P1 BinanceSpotAdapter 范式；Signing 签名域统一四家；统一错误码 → `ExchangeApiException` 翻译表四家一致性。**「第四家接入纯增量」验证通过**：spec 003 落地期 `AbstractExchangeAdapter` 零改动、前三家测试零回归 | Binance 已实跑；OKX demo / Bybit testnet / Bitget 主网小额单待 key + 海外网络（quickstart 齐备，验收总清单见 [海外节点 Runbook](docs/overseas-node-runbook.md)）；P1 `market:feed` 切换所代码 ≤10 行（StrategyExchangeCompatibilityTest 四家断言） | 各所 WS 协议差异（confirm 标志 vs bar 切换检测、心跳形态）、签名算法差异、testnet 配额/可用性 | P1 |
 | **P8 ClickHouse 历史数据归档 ✅ 核心落地（2026-10-19，spec 004；节点机 CH 冒烟与端到端验收待回填）**（执行顺序先于 P7，理由见下） | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
 | **P7 Custom DSL 策略引擎 ✅ 代码侧完成（2026-10-20，spec 006）** | YAML 受限子集声明式策略（entry/exit/filter/risk 四段）；白名单沙箱解释器（禁 eval/exec/fs/网络/反射）；Filament 在线编辑器（即时校验+试装载）+ 历史 K 线回测预览（复用 P8 HistoricalQuery）；售卖门控回归白名单（pro/enterprise） | 一条 DSL 装载跑通 onBar→信号→下单→成交回报闭环；与 SpotDca/SpotGrid 决策序列 100% 等价；`poc:verify-dsl` 28/28 全绿 | DSL 表达力 vs 安全（白名单原语）、每 bar 解释开销（step budget 500）、与 RiskGuard/QuotaGuard 接线 | P1, P2 |
-| **P9 支付网关 + 计费 UI** | 支付集成（**通道选型前置合规调研，见下行注记**）；Filament 计费页（套餐升级/Invoice/用量看板）；订阅状态机自动续费触发；webhook 幂等 | 完整一笔从下单→支付→订阅激活→配额刷新；续费失败走 P3 past_due→suspended 流程 | 支付回调幂等（同 ref 不双激活）、汇率/税额、**通道合规（数字货币 SaaS 品类受限）** | P3 |
+| **P9 支付网关 + 计费 UI ✅ 我方实现已交付（2026-10-20，spec 007；离线轨道已验证，真实 BTCPay 链路待节点）** | 通道抽象层（Registry 不降级）+ fake 离线通道（仅 local/testing）+ BtcPayChannel（验签纯函数已单测）；TRC20-USDT 支付单（decimal:8 bcmath 金额/同套餐不堆叠/TTL 过期清扫）；webhook 固定流水线（验签失败 401 + rejected 审计、processed_key 唯一幂等、Redis 单飞锁降级、状态机只进不退）；激活单事务接线 P3 provision；续费提醒 7/3/1 档 + past_due→suspended 既有流转；Filament 计费页（当前套餐/当日用量/Invoice 列表/升级 3 步出支付信息）+ Billing REST API（双租户隔离） | `poc:verify-payment` 35/35 全绿（建单→验签→状态推进→激活→配额生效→幂等重放→伪造签名拒绝→提醒判定，webhook 单请求 <200ms）；SC-001~006 平台侧全部离线验收；真实 USDT 收单闭环（B1~B3/C1~C2）待节点按 [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) 执行后销账 | ~~支付回调幂等~~（已落地：processed_key 唯一 + 条件更新）、汇率/税额（不做，见已知边界）、**通道合规（数字货币 SaaS 品类受限，BTCPay 自托管为基线，Stripe 申报远期并行）** | P3 |
 | **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；策略绩效（Sharpe/最大回撤/胜率/盈亏比）；Filament 绩效页；与 P4 风控参数自动调优建议 | 一条 DSL 策略回测 1 年数据 < 30s；与 P1 实跑同策略净值曲线误差 < 1% | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
 
 > **执行顺序说明（2026-10-18 决策）**：P8 先于 P7。理由：①kline_bars/liquidation_events 持续增长，归档越晚迁移窗口越大、历史校验越难；②P10 回测与 P7 的回测预览都依赖 P8 的 `HistoricalQuery`。阶段编号保持不动（P7/P8 仅为标识）；P7 的表达力设计可与 P8 实现并行做 specify（纯文档阶段）。
@@ -384,7 +384,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | C3 | ~~refreshStatus 未挂调度~~ **P5.5 步骤 4 已还**：`billing:refresh-status` 薄命令 + 每日 UTC 00:05 调度（`schedule:list` 可查，带流转测试） | past_due→suspended 需手工触发 |
 | C4 | DEK 轮换为非热轮换，需停实例 + 操作停窗 | 运维窗口期限制 |
 | C5 | REST 走阻塞 curl（Swoole hook 关闭 CURL，坑 #1） | 单实例可接受，多租户高密度需换协程 HTTP client |
-| C6 | 无支付网关 / Invoice / Filament 计费页 | 商业化前置，P9 |
+| C6 | ~~无支付网关 / Invoice / Filament 计费页~~ **spec 007 已还**：通道抽象 + fake 离线通道 + BtcPayChannel（验签纯函数单测）；支付单/webhook 幂等/激活事务/续费提醒全链路 `poc:verify-payment` 35/35 离线验证；Filament 计费页 + Billing API 交付；**真实 BTCPay 收单闭环待海外节点**（B1~B3/C1~C2 清单见 [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md)） | 商业化前置，P9 |
 
 ## 快速开始
 
@@ -632,7 +632,7 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | [完整架构方案](.trae/documents/币圈交易SaaS平台架构方案.md) | 11 节：技术选型/多租户/目录结构/数据库表/接口契约/熔断/面板聚合/POC 优先级/风险权衡 |
 | [架构总览](docs/architecture.md) | 核心决策速查 + 目录结构 + POC 路线图 |
 | [P5.5 工程化加固执行计划](docs/p5.5-hardening-plan.md) | 上线前还债：账实对账 / SpotDca / 测试正式化 / 运维化，含验收标准 |
-| [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) | 支付基线（BTCPay 自托管）收单/webhook 幂等/P3 接线的最小验证清单，环境就绪后照单执行 |
+| [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) | 支付基线（BTCPay 自托管）收单/webhook 幂等/P3 接线的最小验证清单；**我方实现已交付（spec 007，离线轨道已验证）**，阶段 A/B/C 待节点照单执行 |
 | [ADR-0001 双进程模型](docs/adr/0001-dual-process-model.md) | 为什么 Octane + 独立 Swoole |
 | [ADR-0002 行级隔离](docs/adr/0002-row-level-tenancy.md) | 为什么 tenant_id 而非 schema 级 |
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |

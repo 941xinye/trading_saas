@@ -17,7 +17,9 @@
 php artisan poc:verify-payment
 ```
 
-预期：`ALL CHECKS PASSED`，覆盖建单 → 验签 → 状态推进 → 订阅激活 → 配额生效 → 幂等重放 → 伪造签名拒绝 → 提醒判定（SC-001~006 平台侧）。
+预期：`ALL CHECKS PASSED`（35/35），覆盖建单 → 验签 → 状态推进 → 订阅激活 → 配额生效 → 幂等重放 → 伪造签名拒绝 → 提醒判定（SC-001~006 平台侧）。
+
+> 耗时注记（2026-10-20 实测）：断言含「webhook 单请求 < 200ms」。Redis 在线时稳态 ~10-30ms；**Windows + Redis 停机时 phpredis 连接超时约 2s/请求**会使该断言失败（webhook 单飞锁降级路径的环境成本，非应用成本）——按前置条件保持 Redis 在线再跑。
 
 ## 2. 离线断言测试
 
@@ -34,7 +36,9 @@ php artisan test tests/Unit/Payment/RenewalReminderServiceTest
 
 预期：全部 PASS，无 skipped。
 
-## 3. 集成测试（Fake 通道，需 MySQL）
+## 3. 集成测试（Fake 通道）
+
+> 执行环境注记（2026-10-20 实测）：默认 phpunit 配置（sqlite `:memory:` + RefreshDatabase）即可全跑以下用例（23 passed）；`@redis` 分组需 Redis 在线，否则可用性守卫 skip（1 skipped）；`@mysql` 分组才需要 ServBay MySQL。
 
 ```bash
 # US1 全链路：建单 → fake webhook → confirmed → 订阅 active + 配额按新套餐放行

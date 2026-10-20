@@ -170,12 +170,12 @@
 
 **Purpose**: 收口冒烟、真实通道占位用例与文档同步（plan.md WS7）
 
-- [ ] T059 [P] 新建命令 `app/Console/Commands/PocVerifyPaymentCommand.php`（签名 `poc:verify-payment`，离线全链路断言，输出 `ALL CHECKS PASSED`；风格对齐既有 `PocVerifyDslCommand`）：覆盖建单 → 验签 → 状态推进 → 订阅激活 → 配额生效 → 幂等重放 → 伪造签名拒绝 → 提醒判定（SC-001~006 平台侧），并断言 webhook 单请求处理耗时 < 200ms（离线基准，承接 plan.md Performance Goals 的 p95 设计目标）
-- [ ] T060 [P] 新建 Integration 测试 `tests/Integration/Payment/BtcPayChannelLiveTest.php`：真实 BTCPay 端到端用例，以**可用性标志** skip（节点/BTCPay 不可达即跳过，沿用既有 56 skipped 惯例，**不得让基线变红**，坑 #23）
-- [ ] T061 [P] 更新 `README.md`：P9 行状态改写为「我方实现已交付（离线轨道已验证），真实链路待节点」，并同步技术债索引
-- [ ] T062 [P] 在 `docs/p9-btcpay-poc-plan.md` 追加归档标注：说明阶段 A/B/C 待节点执行、BtcPayChannel 类与验签纯函数已随本期交付
-- [ ] T063 执行 quickstart.md 三层验证：§2 离线断言测试、§3 集成测试（需 ServBay MySQL/Redis 在线；Redis 停机时仅 `@redis` 用例 skip）、§4 手工端到端（含重放 3 次与伪造签名对抗）、§5 计费页手工点检（需 UI 会话）、§6 续费失败流转时间线
-- [ ] T064 全量回归 `php artisan test` 并核对基线无新增 failed；按 plan.md §5 提交节奏收口（每条提交含实现 + 测试 + 文档同步，消息格式 `feat(spec-007): 中文简述`）
+- [x] T059 [P] 新建命令 `app/Console/Commands/PocVerifyPaymentCommand.php`（签名 `poc:verify-payment`，离线全链路断言，输出 `ALL CHECKS PASSED`；风格对齐既有 `PocVerifyDslCommand`）：覆盖建单 → 验签 → 状态推进 → 订阅激活 → 配额生效 → 幂等重放 → 伪造签名拒绝 → 提醒判定（SC-001~006 平台侧），并断言 webhook 单请求处理耗时 < 200ms（离线基准，承接 plan.md Performance Goals 的 p95 设计目标）
+- [x] T060 [P] 新建 Integration 测试 `tests/Integration/Payment/BtcPayChannelLiveTest.php`：真实 BTCPay 端到端用例，以**可用性标志** skip（节点/BTCPay 不可达即跳过，沿用既有 56 skipped 惯例，**不得让基线变红**，坑 #23）
+- [x] T061 [P] 更新 `README.md`：P9 行状态改写为「我方实现已交付（离线轨道已验证），真实链路待节点」，并同步技术债索引
+- [x] T062 [P] 在 `docs/p9-btcpay-poc-plan.md` 追加归档标注：说明阶段 A/B/C 待节点执行、BtcPayChannel 类与验签纯函数已随本期交付
+- [x] T063 执行 quickstart.md 三层验证：§2 离线断言测试、§3 集成测试（需 ServBay MySQL/Redis 在线；Redis 停机时仅 `@redis` 用例 skip）、§4 手工端到端（含重放 3 次与伪造签名对抗）、§5 计费页手工点检（需 UI 会话）、§6 续费失败流转时间线
+- [x] T064 全量回归 `php artisan test` 并核对基线无新增 failed；按 plan.md §5 提交节奏收口（每条提交含实现 + 测试 + 文档同步，消息格式 `feat(spec-007): 中文简述`）
 
 ---
 

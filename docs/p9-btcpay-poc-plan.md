@@ -82,3 +82,25 @@ export BTCPAYGEN_ADDITIONAL_FRAGMENTS="opt-save-storage"
 ## 6. 完成定义（PoC 销账标准）
 
 A1 + A2 + B1 + B2 + B3 + C1 全部 PASS → README P9 注记追加「BTCPay PoC 已验证（日期）」，P9 行风险列移除「webhook 幂等」项；本文件归档为 P9 specify 的 implementation context。
+
+---
+
+## 归档标注（2026-10-20，spec 007 交付后）
+
+**我方实现已交付，阶段 A/B/C 待节点执行。** spec 007（P9 支付网关 + 计费 UI）已按本方案的契约预期完成平台侧全部编码与离线验证，本文件由「P9 启动前置」转为「真实链路验收清单」，节点就绪后照单执行并销账。
+
+已随本期交付（离线轨道已验证）：
+
+- `app/Domain/Payment/Channels/BtcPayChannel.php`：建单（`POST /api/v1/stores/{store}/invoices`，metadata 写入 `ref/tenant_id/plan_code`，对应 §4 映射表）+ `verifyWebhook` 验签纯函数（`BTCPay-Sig: sha256=` 头，HMAC-SHA256 + `hash_equals`，对原始字节）+ `parseWebhook`（`type` 事件名 + `metadata.ref` 反定位）。
+- `tests/Unit/Payment/WebhookSignatureTest.php`：BTCPay 验签正例 1 + 负例 4（篡改 body / 错密钥 / 缺头 / 前缀非法），100% 离线判定，无需联网。
+- `tests/Integration/Payment/BtcPayChannelLiveTest.php`：真实 BTCPay 端到端探针（建单回读 + 配置密钥验签），可用性守卫 skip——节点/BTCPay 不可达即跳过，基线不变红；节点就绪后自动转真实执行。
+- webhook 端点 `POST /api/v1/billing/webhook/btcpay` 已上线（验签失败 401 + rejected 审计、`processed_key` 唯一幂等、状态机只进不退、激活单事务接线 P3 provision），B2 幂等对抗与 B3 metadata 伪造拒收的**平台侧语义**已由 fake 通道全链路验证（`poc:verify-payment` 35/35，`tests/Integration/Payment/*` 对照 SC-001~006）。
+- C1/C2 时间线的**平台侧语义**已由 `tests/Integration/Payment/RenewalRecoveryTimelineTest` + quickstart §6 手工脚本覆盖（提醒 → past_due → 宽限 → suspended → 补缴恢复）。
+
+与本文原口径的差异（以 spec 007 交付为准）：
+
+- webhook 路径为 `/api/v1/billing/webhook/{channel}`（§3 阶段 B 原文 `/api/v1/billing/btcpay/webhook` 系草案笔误）。
+- 幂等锚收敛为 `processed_key = "{ref}:{event_type}"` 唯一键（§3 的 `invoiceId + deliveryId` 思路已并入，`ref` 由我方建单时写入 metadata，粒度更稳）。
+- 收单链锁定 **TRC20-USDT**（spec 007 Q1 决策）；§5 的主网币种选型注记以此为准，PoC 执行时仍需 BTCPay 侧配置对应 USDT 收单插件/等价方案。
+
+待节点执行（本文件继续作为验收清单）：阶段 A（A1/A2 部署与收单冒烟）、阶段 B（B1 真实 InvoiceSettled 推达验签、B2 重放 3 次幂等、B3 metadata 伪造拒收）、阶段 C（C1/C2 完整时间线）。全部 PASS 后按 §6 销账口径回填 README。
