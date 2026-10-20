@@ -65,5 +65,8 @@ Homestead.yaml
 # AI-API keys / local overrides
 .env.local
 
+# 本地调试脚本（含真实 API 凭据，勿提交）
+/test_key.php
+
 # Trae internal planning docs (not for repo)
 /.trae/documents/
