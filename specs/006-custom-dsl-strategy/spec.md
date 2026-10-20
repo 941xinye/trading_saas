@@ -113,7 +113,7 @@ DSL 策略通过验证后回归套餐策略白名单：订阅含自定义策略�
 
 - **FR-001**: 系统 MUST 支持用 YAML 定义自定义策略，包含四段——entry（入场条件）、exit（出场条件）、filter（前置过滤/闸门条件）、risk（风控参数），以及元信息（名称、交易对、周期、方向、schemaVersion）。
 - **FR-002**: 系统 MUST 提供 DSL 解析器（YAML → 结构化模型 → 可执行 AST）；解析/校验错误 MUST 携带定位（行/字段）与人类可读信息，MUST NOT 静默降级或忽略未知字段。
-- **FR-003**: 解释器 MUST 仅在白名单原语内求值：触发器 `on_bar`/`on_tick`/`on_fill`；动作 `open_long`/`open_short`/`close_long`/`close_short`/`noop`；指标 `ma`/`rsi`/`macd`/`bollinger`/`atr`；以及比较/逻辑/算术运算符。MUST NOT 执行 `eval`/`exec`、任意 PHP、文件系统、网络、shell、类反射或动态包含（沙箱红线，不可协商）。
+- **FR-003**: 解释器 MUST 仅在白名单原语内求值：触发器 `on_bar`/`on_tick`/`on_fill`；动作 `open_long`/`open_short`/`close_long`/`close_short`/`noop`；指标 `ma`/`rsi`/`macd`/`bollinger`/`atr`；以及比较/逻辑/交叉运算符（本期不含算术与任意表达式，见 Assumptions）。MUST NOT 执行 `eval`/`exec`、任意 PHP、文件系统、网络、shell、类反射或动态包含（沙箱红线，不可协商）。
 - **FR-004**: 沙箱 MUST 强制规模与成本上限（脚本大小、条件嵌套深度、指标数量、每 bar 求值步骤数/耗时）；超限 MUST 拒绝或中断求值并记录，不影响行情协程进程推进。
 - **FR-005**: DSL MUST 在写入/启动实例之前完成解析与编译；非法 DSL MUST 被拒（创建实例失败并说明原因），MUST NOT 进入运行态。
 - **FR-006**: DSL 策略 MUST 复用 `StrategyInterface` 全生命周期（onTick/onBar/onFill/shouldOpen/shouldClose/getState/restoreState），由既有 StrategyRunner 一致驱动；下单 MUST 走既有 OrderExecutor 幂等 `clientOrderId` 模板。
