@@ -140,6 +140,27 @@ class TwoPhaseMeter
     }
 
     /**
+     * 展示层降级口径：Redis 热计数不可用时回退 meter_events 当日 frozen+settled 计数
+     * （与 reconcile() 同口径，不另算）。计费页 / billing summary 等读路径专用；
+     * 写路径（freeze/settle/reverse）不降级。
+     */
+    public function usedTodayOrDb(int $tenantId, string $eventType, ?Carbon $day = null): int
+    {
+        try {
+            return $this->usedToday($tenantId, $eventType, $day);
+        } catch (\Throwable) {
+            $day ??= Carbon::now('UTC');
+
+            return (int) DB::table('meter_events')
+                ->where('tenant_id', $tenantId)
+                ->where('event_type', $eventType)
+                ->whereIn('status', ['frozen', 'settled'])
+                ->whereBetween('occurred_at', [$day->copy()->startOfDay(), $day->copy()->endOfDay()])
+                ->count();
+        }
+    }
+
+    /**
      * 从 meter_events 重建当日 Redis 计数（Redis 丢 key/被清库后的自愈手段）。
      * 计数口径：status ∈ (frozen, settled)（reversed 已还额不计）。
      */

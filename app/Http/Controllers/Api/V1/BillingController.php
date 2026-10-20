@@ -12,6 +12,7 @@ use App\Domain\Tenancy\TenantContext;
 use App\Models\PaymentInvoice;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 /**
  * 计费 API（billing-integration-contract.md §6，FR-009 / FR-010）。
@@ -41,7 +42,7 @@ class BillingController extends Controller
         $usage = [];
         foreach (TwoPhaseMeter::DAILY_LIMIT_KEYS as $eventType => $limitKey) {
             $usage[$eventType] = [
-                'used' => $this->meter->usedToday($tenantId, $eventType),
+                'used' => $this->meter->usedTodayOrDb($tenantId, $eventType),
                 'limit' => $this->plans->limit($tenant, $limitKey),
             ];
         }
@@ -100,7 +101,7 @@ class BillingController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'plan_code' => ['required', 'string', 'max:30'],
+            'plan_code' => ['required', 'string', 'max:30', Rule::in(array_keys((array) config('plans.plans')))],
         ]);
 
         $tenantId = (int) TenantContext::getTenantId();

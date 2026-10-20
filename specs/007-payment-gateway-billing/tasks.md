@@ -154,13 +154,13 @@
 
 ### Implementation for User Story 4（WS6）
 
-- [ ] T052 [US4] 新建 `app/Filament/Admin/Widgets/QuotaUsageWidget.php`：计量事件 `ai_call` / `order_placed` 当日用量与上限 + 资源数（交易所账户/策略实例/信号订阅）；**复用** `PlanService` + `QuotaGuard` + `TwoPhaseMeter::usedToday()`，不另算口径（FR-009）
-- [ ] T053 [US4] 新建 `app/Filament/Admin/Pages/Billing.php`：导航组「计费」；展示当前套餐/周期起止/用量看板（内嵌 `QuotaUsageWidget`）；页面内查询一律显式 `TenantContext::getTenantId()`（FR-009 / FR-010）
-- [ ] T054 [US4] 新建 `app/Filament/Admin/Resources/PaymentInvoiceResource.php` + `app/Filament/Admin/Resources/PaymentInvoiceResource/Pages/ListPaymentInvoices.php`：时间倒序展示金额/状态/创建时间；**只读**（禁 create/edit/delete，policy 仅 `viewAny`/`view`）且**无任何退款动作/路径**（FR-014 反向断言：退款人工线下，平台侧不提供入口）；隔离走 `BelongsToTenant` + `TenantScope` 自动过滤（FR-009 / FR-010）
-- [ ] T055 [US4] 在 `app/Filament/Admin/Pages/Billing.php` 实现升级 Action：选中套餐 → `PaymentInvoiceService::create()` → 展示 USDT 金额、收款地址、二维码（`payUri`）与倒计时；已有待支付单 → **引导至既有单**（US4-3）；满足「点击升级 → 选套餐 → 见收款信息」≤ 3 步（SC-005）
-- [ ] T056 [P] [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingPageTest.php`：计费页渲染 + 用量数字与 `TwoPhaseMeter` 一致 + 双租户零串扰 + 产物只读（`RefreshDatabase`）（FR-009 / SC-005 / SC-006）
-- [ ] T057 [P] [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingApiTest.php`：`summary`/`invoices`/`show` 返回结构、跨租户 `{ref}` → 404（不泄露存在性）、`POST invoices` 参数校验（FR-009 / FR-010）
-- [ ] T058 [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingTenantIsolationTest.php`：双租户并发各完成一笔支付 → 双方支付单/订阅/用量零串扰、跨租户访问 100% 拒绝（扩展既有 `tests/Integration/Billing/TenantScopeIsolationTest.php` 范式）（SC-006 / FR-010）
+- [x] T052 [US4] 新建 `app/Filament/Admin/Widgets/QuotaUsageWidget.php`：计量事件 `ai_call` / `order_placed` 当日用量与上限 + 资源数（交易所账户/策略实例/信号订阅）；**复用** `PlanService` + `QuotaGuard` + `TwoPhaseMeter::usedToday()`，不另算口径（FR-009）
+- [x] T053 [US4] 新建 `app/Filament/Admin/Pages/Billing.php`：导航组「计费」；展示当前套餐/周期起止/用量看板（内嵌 `QuotaUsageWidget`）；页面内查询一律显式 `TenantContext::getTenantId()`（FR-009 / FR-010）
+- [x] T054 [US4] 新建 `app/Filament/Admin/Resources/PaymentInvoiceResource.php` + `app/Filament/Admin/Resources/PaymentInvoiceResource/Pages/ListPaymentInvoices.php`：时间倒序展示金额/状态/创建时间；**只读**（禁 create/edit/delete，policy 仅 `viewAny`/`view`）且**无任何退款动作/路径**（FR-014 反向断言：退款人工线下，平台侧不提供入口）；隔离走 `BelongsToTenant` + `TenantScope` 自动过滤（FR-009 / FR-010）
+- [x] T055 [US4] 在 `app/Filament/Admin/Pages/Billing.php` 实现升级 Action：选中套餐 → `PaymentInvoiceService::create()` → 展示 USDT 金额、收款地址、二维码（`payUri`）与倒计时；已有待支付单 → **引导至既有单**（US4-3）；满足「点击升级 → 选套餐 → 见收款信息」≤ 3 步（SC-005）
+- [x] T056 [P] [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingPageTest.php`：计费页渲染 + 用量数字与 `TwoPhaseMeter` 一致 + 双租户零串扰 + 产物只读（`RefreshDatabase`）（FR-009 / SC-005 / SC-006）
+- [x] T057 [P] [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingApiTest.php`：`summary`/`invoices`/`show` 返回结构、跨租户 `{ref}` → 404（不泄露存在性）、`POST invoices` 参数校验（FR-009 / FR-010）
+- [x] T058 [US4] 新建 Feature 测试 `tests/Feature/Payment/BillingTenantIsolationTest.php`：双租户并发各完成一笔支付 → 双方支付单/订阅/用量零串扰、跨租户访问 100% 拒绝（扩展既有 `tests/Integration/Billing/TenantScopeIsolationTest.php` 范式）（SC-006 / FR-010）
 
 **Checkpoint**: US1–US4 全部独立可用 —— 自助化运营前界面就绪。
 
