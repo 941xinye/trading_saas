@@ -326,7 +326,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 - 门控/计费/熔断：DslPlanGateTest + DslBillingBreakerTest（@redis）— free 拒/pro+enterprise 放行；配额耗尽交易所零调用；熔断 OPEN 开仓拦截/平仓放行。
 - 沙箱红线：DslSandboxRedlineCorpusTest（21 条恶意语料解析期+运行期双处拒绝）+ DslNoDynamicEvalTest（DSL 核心目录静态扫描零红线关键词、判别式 match 无 switch）；DSL 全量 147 tests / 561 assertions 全绿。
 
-**已知边界**：DSL 预览未模拟滑点/手续费（结果中已注明）；FuturesDca / SmartMartingale / TrendRolling 仍为骨架未入白名单（B1）。
+**已知边界**：DSL 预览未模拟滑点/手续费（结果中已注明）；FuturesDca / SmartMartingale / TrendRolling 骨架已于 2026-10-20 移除（B1 销账，未来实现须先立项 spec）。
 
 ### 🚧 待实现：剩余路线图
 
@@ -366,7 +366,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 | # | 占位项 | 当前行为 |
 |---|---|---|
-| B1 | ~~SpotDca 等 5 策略全抛异常~~ **P5.5 步骤 2：SpotDca 已实现并带 16 项测试**；~~FuturesGrid 骨架~~ **spec 005 已实现**（20 项测试）；FuturesDca / SmartMartingale / TrendRolling 仍为骨架，未入套餐白名单 | 方法体全部 `throw new RuntimeException('Not implemented')` |
+| B1 | ~~SpotDca 等 5 策略全抛异常~~ **P5.5 步骤 2：SpotDca 已实现并带 16 项测试**；~~FuturesGrid 骨架~~ **spec 005 已实现**（20 项测试）；~~FuturesDca / SmartMartingale / TrendRolling 骨架~~ **2026-10-20 已移除**（注册表/配置/目录注释同步清理，未落地语义改由虚构 code 测试守护；未来实现须先立项 spec 并加入 `strategy.implemented` 白名单） | 方法体全部 `throw new RuntimeException('Not implemented')` |
 | B2 | ~~Custom DSL（DslParser / DslStrategy）骨架~~ **spec 006 已还**：受限 YAML 子集解析器 + 判别式 AST + 白名单沙箱解释器（禁 eval/exec/fs/网络/反射）+ DslStrategy 全生命周期（schema_version=2 + 崩溃恢复幂等）+ Filament 编辑器/试装载 + 历史 K 线预览；DslBillingBreakerTest 验证计费/熔断接线 | 无骨架残留 |
 | B3 | ~~OKX / Bybit / Bitget Adapter~~ **已全还**：spec 001/002/003 三家现货落地（REST/WS/签名下单；OKX 模拟盘 header + Bybit testnet 域名开关 + Bitget 无模拟盘边界）；四家横切契约测试齐备（错误码/路由/策略兼容性）；真实链路实跑待 key + 海外网络（验收总清单见 runbook） | 无骨架残留 |
 | B4 | ~~BinanceFuturesAdapter 仅强平流~~ **spec 005 已补全 9 个交易接口**：placeOrder/cancelOrder/getOrder/getPosition/setLeverage/setMarginType/leverageBracket/getBalance/getTicker + 错误码翻译；testnet 真实下单待海外节点 | 无骨架残留 |

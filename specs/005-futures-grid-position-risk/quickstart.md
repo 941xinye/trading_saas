@@ -140,5 +140,5 @@ php artisan market:feed
 
 - 强平价为平台侧保守估算，以 `positionRisk.liquidationPrice` 为准
 - 首期仅单向持仓 + 逐仓模式；双向/全仓不在范围
-- 其余三个合约策略骨架（futures_dca / smart_martingale / trend_rolling）仍不在白名单
+- 其余三个合约策略骨架（futures_dca / smart_martingale / trend_rolling）已于 2026-10-20 移除；未来实现须先立项 spec 并加入 `strategy.implemented` 白名单
 - `getPosition` 为阻塞 REST，30s 节流；极端行情下风控动作可能滞后一个 bar

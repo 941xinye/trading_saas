@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
- * 平台级策略目录（spot_grid/futures_grid/spot_dca/futures_dca/smart_martingale/trend_rolling/custom_dsl）。
+ * 平台级策略目录（spot_grid/futures_grid/spot_dca/custom_dsl）。
  */
 class Strategy extends Model
 {

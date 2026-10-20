@@ -339,9 +339,10 @@ class PocVerifyFuturesCommand extends Command
         $this->check($plans->allowsStrategy($pro, 'custom_dsl'), 'pro 套餐放行 custom_dsl');
         $this->check($plans->allowsStrategy($enterprise, 'custom_dsl'), 'enterprise 套餐放行 custom_dsl');
 
-        // 未落地策略全部拒绝
-        foreach (['futures_dca', 'smart_martingale', 'trend_rolling'] as $code) {
-            $this->check(! $plans->allowsStrategy($pro, $code), "未落地策略 {$code} 即使 pro 也拒绝");
+        // 未注册策略全部拒绝（骨架 futures_dca/smart_martingale/trend_rolling 已于 2026-10-20 移除，
+        // 此处以虚构 code 验证「不在 implemented 白名单即拒绝」语义）
+        foreach (['ghost_strategy'] as $code) {
+            $this->check(! $plans->allowsStrategy($pro, $code), "未注册策略 {$code} 即使 pro 也拒绝");
         }
 
         // QuotaGuard::assertStrategyAllowed 抛 EntitlementException

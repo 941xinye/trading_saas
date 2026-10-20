@@ -12,7 +12,8 @@ use Tests\TestCase;
  * 套餐策略售卖闸门（P5.5 步骤 2 验收 #8）。
  *
  * plans.php 白名单 ∩ config('strategy.implemented') 双闸门：
- * 任何未真实落地的策略代码（合约网格/DCA/马丁/滚仓/DSL）在任何套餐下都必须拒绝。
+ * 任何未真实落地的策略代码在任何套餐下都必须拒绝。
+ * （合约 DCA/马丁/滚仓骨架已于 2026-10-20 移除，未落地语义改用虚构 code 验证）
  */
 class PlanStrategyGateTest extends TestCase
 {
@@ -57,7 +58,8 @@ class PlanStrategyGateTest extends TestCase
     public function test_unimplemented_strategies_denied_everywhere(): void
     {
         $service = app(PlanService::class);
-        $unimplemented = ['futures_dca', 'smart_martingale', 'trend_rolling'];
+        // 虚构 code：任何不在 config('strategy.implemented') 白名单中的策略
+        $unimplemented = ['ghost_dca', 'ghost_martingale'];
 
         foreach (['free', 'pro', 'enterprise'] as $plan) {
             foreach ($unimplemented as $code) {
@@ -72,14 +74,14 @@ class PlanStrategyGateTest extends TestCase
     public function test_hard_gate_rejects_unimplemented_code_even_if_plan_whitelist_lists_it(): void
     {
         // 模拟运营误配置：套餐白名单超前写入了未落地策略
-        config()->set('plans.plans.pro.features.strategies', ['spot_grid', 'futures_grid', 'smart_martingale']);
+        config()->set('plans.plans.pro.features.strategies', ['spot_grid', 'futures_grid', 'ghost_martingale']);
         $service = app(PlanService::class);
 
         static::assertTrue($service->allowsStrategy($this->tenant('pro'), 'spot_grid'));
         // futures_grid 已落地，硬闸门放行
         static::assertTrue($service->allowsStrategy($this->tenant('pro'), 'futures_grid'));
-        // smart_martingale 未落地，硬闸门拒绝
-        static::assertFalse($service->allowsStrategy($this->tenant('pro'), 'smart_martingale'));
+        // ghost_martingale 未落地，硬闸门拒绝
+        static::assertFalse($service->allowsStrategy($this->tenant('pro'), 'ghost_martingale'));
     }
 
     public function test_unknown_strategy_code_denied(): void
