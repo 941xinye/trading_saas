@@ -10,6 +10,7 @@ use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\ExchangeManager;
 use App\Domain\Risk\Breaker\BreakerStateMachine;
 use App\Domain\Risk\Breaker\CircuitBreaker;
+use App\Domain\Risk\Contracts\PositionRiskMonitor;
 use App\Domain\Risk\RiskGuard;
 use App\Domain\Risk\Rules\ConsecutiveLossRule;
 use App\Domain\Risk\Rules\MaxDailyLossRule;
@@ -57,6 +58,7 @@ class StrategyRunner
         private readonly KeyResolver $keyResolver,
         private readonly AesGcmCrypt $crypt,
         private readonly PendingOrderRecovery $pendingOrderRecovery,
+        private readonly PositionRiskMonitor $positionRiskMonitor,
     ) {}
 
     /**
@@ -222,6 +224,7 @@ class StrategyRunner
         // 决策链闭包状态（仅 WS 协程串行访问）
         $recentBars = [];
         $lastDbSnapshot = 0;
+        $lastRiskEval = 0;  // 仓位风控评估节流（30s）
 
         $subscription = $adapter->subscribeKlineStream(
             $symbol,
@@ -229,6 +232,7 @@ class StrategyRunner
             function (ExchangeKline $bar) use (
                 &$recentBars,
                 &$lastDbSnapshot,
+                &$lastRiskEval,
                 $strategy,
                 $risk,
                 $adapter,
@@ -248,8 +252,12 @@ class StrategyRunner
 
                     $ctx = new StrategyContext($instanceId, $strategy->getState()->params, null, null, $recentBars, null);
 
+                    // paused_by_position_risk：禁止开仓，允许平仓
+                    $status = (string) DB::table('strategy_instances')->where('id', $instanceId)->value('status');
+                    $pausedByRisk = $status === 'paused_by_position_risk';
+
                     // shouldOpen/shouldClose 均消费内部 pending 信号，只能调用一次
-                    $open = $strategy->shouldOpen($ctx);
+                    $open = $pausedByRisk ? null : $strategy->shouldOpen($ctx);
                     $close = $open !== null ? null : $strategy->shouldClose($ctx);
                     $signal = $open ?? $close;
                     $action = $open !== null ? 'open' : 'close';
@@ -267,6 +275,12 @@ class StrategyRunner
                             $risk,
                         );
                     }
+
+                    // 仓位级风控（仅持仓时评估，30s 节流避免频繁 REST getPosition）
+                    $this->evaluatePositionRisk(
+                        $strategy, $adapter, $instance, $tenantId, $instanceId, $symbol,
+                        $bar->close, $lastRiskEval,
+                    );
                 } catch (Throwable $e) {
                     Log::error('onBar decision failed', [
                         'instance' => $instanceId, 'error' => $e->getMessage(),
@@ -353,6 +367,87 @@ class StrategyRunner
 
         $strategy->onFill($order);
         $risk->recordTrade($instanceId, $order);
+    }
+
+    /**
+     * 仓位级风控评估（30s 节流，仅持仓时触发）。
+     *
+     * reduce/emergency_close 决策构造为平仓信号走 executeSignal('close', reduceOnly=true)。
+     * warning 仅通知（PositionRiskMonitor 内部已分发事件），无需下单。
+     */
+    private function evaluatePositionRisk(
+        StrategyInterface $strategy,
+        ExchangeAdapter $adapter,
+        object $instance,
+        int $tenantId,
+        int $instanceId,
+        string $symbol,
+        string $markPrice,
+        int &$lastRiskEval,
+    ): void {
+        // 仅对有 currentPositionQty 方法的策略（网格类）且有持仓时评估
+        if (! method_exists($strategy, 'currentPositionQty')) {
+            return;
+        }
+        $posQty = (string) $strategy->currentPositionQty();
+        if ($posQty === '0' || $posQty === '') {
+            return;
+        }
+
+        // 30s 节流
+        $now = time();
+        if ($now - $lastRiskEval < 30) {
+            return;
+        }
+        $lastRiskEval = $now;
+
+        try {
+            $exchangePosition = $adapter->getPosition($symbol);
+        } catch (Throwable $e) {
+            Log::warning('Position risk: getPosition failed', [
+                'instance' => $instanceId, 'error' => $e->getMessage(),
+            ]);
+
+            return;
+        }
+
+        $decision = $this->positionRiskMonitor->evaluate(
+            $tenantId, $instanceId, $symbol, $exchangePosition, $markPrice,
+        );
+
+        if ($decision === null || ! in_array($decision->actionType, ['reduce', 'emergency_close'], true)) {
+            return;
+        }
+
+        // 构造平仓信号（reduceOnly=true）
+        $closeSide = $posQty > 0 ? 'sell' : 'buy'; // 多仓卖、空仓买
+        $signal = [
+            'side' => $closeSide,
+            'qty' => $decision->orderQty ?? ltrim($posQty, '-'),
+            'price' => null,
+            'reduce_only' => true,
+            'leverage' => $exchangePosition?->leverage ?? null,
+        ];
+
+        // 紧急全平时标记实例为 paused_by_position_risk
+        if ($decision->actionType === 'emergency_close') {
+            DB::table('strategy_instances')->where('id', $instanceId)->update([
+                'status' => 'paused_by_position_risk',
+                'updated_at' => now(),
+            ]);
+        }
+
+        $this->executeSignal(
+            'close',
+            $signal,
+            $instance,
+            $tenantId,
+            $instanceId,
+            $symbol,
+            $adapter,
+            $strategy,
+            new RiskGuard([], new CircuitBreaker(new BreakerStateMachine, $tenantId, $instanceId), '0', $tenantId, $instanceId),
+        );
     }
 
     private function failedFill(string $symbol, array $signal, string $clientOrderId): ExchangeOrder

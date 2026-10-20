@@ -251,38 +251,46 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
 
     /**
      * REST 基础 URL（testnet 开关自动切换）。
+     * 合约 testnet 使用独立的 futures_testnet_rest_url（Binance 合约 testnet 域名与现货不同）。
      */
     protected function restBaseUrl(): string
     {
         $code = $this->exchangeCode();
         $cfg = "exchange.exchanges.{$code}.";
+        $isFutures = $this->market() === 'futures';
 
         if ($this->isTestnet()) {
-            $url = config($cfg.'testnet_rest_url');
+            $url = $isFutures
+                ? config($cfg.'futures_testnet_rest_url')
+                : config($cfg.'testnet_rest_url');
 
-            return is_string($url) && $url !== '' ? $url : config($cfg.'rest_url');
+            return is_string($url) && $url !== '' ? $url : config($cfg.($isFutures ? 'futures_rest_url' : 'rest_url'));
         }
 
-        $url = config($cfg.($this->market() === 'futures' ? 'futures_rest_url' : 'rest_url'));
+        $url = config($cfg.($isFutures ? 'futures_rest_url' : 'rest_url'));
 
         return is_string($url) ? $url : '';
     }
 
     /**
      * WebSocket 基础 URL（testnet 开关自动切换）。
+     * 合约 testnet 使用独立的 futures_testnet_ws_url。
      */
     protected function wsBaseUrl(): string
     {
         $code = $this->exchangeCode();
         $cfg = "exchange.exchanges.{$code}.";
+        $isFutures = $this->market() === 'futures';
 
         if ($this->isTestnet()) {
-            $url = config($cfg.'testnet_ws_url');
+            $url = $isFutures
+                ? config($cfg.'futures_testnet_ws_url')
+                : config($cfg.'testnet_ws_url');
 
-            return is_string($url) && $url !== '' ? $url : config($cfg.'ws_url');
+            return is_string($url) && $url !== '' ? $url : config($cfg.($isFutures ? 'futures_ws_url' : 'ws_url'));
         }
 
-        $url = config($cfg.($this->market() === 'futures' ? 'futures_ws_url' : 'ws_url'));
+        $url = config($cfg.($isFutures ? 'futures_ws_url' : 'ws_url'));
 
         return is_string($url) ? $url : '';
     }

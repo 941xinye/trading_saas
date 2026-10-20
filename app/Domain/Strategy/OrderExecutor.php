@@ -108,7 +108,10 @@ class OrderExecutor
         }
 
         // 幂等落库：unique(tenant_id, client_order_id)
-        $rowId = $this->insertPendingRow($tenantId, $instance, $symbol, $side, $clientOrderId, $qty);
+        $leverage = isset($decision['leverage']) ? (int) $decision['leverage'] : null;
+        $reduceOnly = (bool) ($decision['reduce_only'] ?? false);
+
+        $rowId = $this->insertPendingRow($tenantId, $instance, $symbol, $side, $clientOrderId, $qty, $leverage, $reduceOnly);
         if ($rowId === null) {
             // DB 不可用或该 cid 已有生效行：未发起交易所调用，归还本次冻结（已结算的旧 meter 不受影响）
             $this->quotaGuard->release($meter);
@@ -119,6 +122,8 @@ class OrderExecutor
         try {
             $order = $adapter->placeOrder($symbol, $side, 'market', $qty, null, null, [
                 'clientOrderId' => $clientOrderId,
+                'reduceOnly' => (bool) ($decision['reduce_only'] ?? false),
+                'leverage' => isset($decision['leverage']) ? (int) $decision['leverage'] : null,
             ]);
         } catch (Throwable $e) {
             Log::error('Exchange placeOrder failed', [
@@ -163,6 +168,8 @@ class OrderExecutor
         string $side,
         string $clientOrderId,
         string $qty,
+        ?int $leverage,
+        bool $reduceOnly,
     ): ?int {
         try {
             return (int) DB::table('strategy_orders')->insertGetId([
@@ -173,6 +180,8 @@ class OrderExecutor
                 'side' => $side,
                 'type' => 'market',
                 'quantity' => $qty,
+                'leverage' => $leverage,
+                'reduce_only' => $reduceOnly,
                 'status' => 'pending',
                 'created_at' => now(),
                 'updated_at' => now(),

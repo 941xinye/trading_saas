@@ -50,7 +50,7 @@ abstract class AbstractStrategy implements StrategyInterface
     public function getState(): StrategyState
     {
         return new StrategyState(
-            schemaVersion: self::SCHEMA_VERSION,
+            schemaVersion: static::SCHEMA_VERSION,
             params: $this->params,
             positionSnapshot: $this->positionSnapshot,
             realizedPnl: $this->realizedPnl,
@@ -61,11 +61,11 @@ abstract class AbstractStrategy implements StrategyInterface
 
     public function restoreState(StrategyState $state): void
     {
-        if ($state->schemaVersion > self::SCHEMA_VERSION) {
+        if ($state->schemaVersion > static::SCHEMA_VERSION) {
             throw new RuntimeException(sprintf(
                 'Strategy state schema version %d is newer than supported version %d (instance %d)',
                 $state->schemaVersion,
-                self::SCHEMA_VERSION,
+                static::SCHEMA_VERSION,
                 $this->instanceId,
             ));
         }

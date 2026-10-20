@@ -63,4 +63,26 @@ return [
 
     // 关键约束：仅业务亏损触发熔断，API 异常不触发
     'count_api_errors' => false,
+
+    // 仓位级风控（spec 005，合约场景）
+    // 保证金率 = 维持保证金 / 仓位名义价值；越小越危险
+    'position' => [
+        // 预警阈值：保证金率 ≤ 50% → 发通知（15min 去重）
+        'warning_margin_ratio' => env('RISK_POSITION_WARNING', 0.50),
+        // 行动阈值：保证金率 ≤ 20% → 自动减仓（reduce_ratio 比例）
+        'action_margin_ratio' => env('RISK_POSITION_ACTION', 0.20),
+        // 紧急阈值：保证金率 ≤ 10% → 市价全平
+        'emergency_margin_ratio' => env('RISK_POSITION_EMERGENCY', 0.10),
+        // 减仓比例（行动阈值触发时减仓 50%）
+        'reduce_ratio' => env('RISK_POSITION_REDUCE_RATIO', 0.50),
+        // 单飞锁 TTL（秒）：防止风控动作与网格平仓并发重复下单
+        'lock_ttl' => env('RISK_POSITION_LOCK_TTL', 30),
+        // 通知去重冷却（秒）：同 instanceId+actionType 15min 内只通知一次
+        'dedup_cooldown' => env('RISK_POSITION_DEDUP', 900),
+        // 默认维持保证金率（按交易对，从 leverageBracket 动态获取后覆盖）
+        'default_mmr' => [
+            'BTCUSDT' => '0.0040',
+            'ETHUSDT' => '0.0050',
+        ],
+    ],
 ];

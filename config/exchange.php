@@ -26,6 +26,9 @@ return [
             'ws_url' => env('EXCHANGE_BINANCE_WS', 'wss://stream.binance.com:9443/stream'),
             'futures_rest_url' => env('EXCHANGE_BINANCE_FUTURES_REST', 'https://fapi.binance.com'),
             'futures_ws_url' => env('EXCHANGE_BINANCE_FUTURES_WS', 'wss://fstream.binance.com/ws'),
+            // 合约 testnet（独立于现货 testnet，需单独注册 API key）
+            'futures_testnet_rest_url' => env('EXCHANGE_BINANCE_FUTURES_TESTNET_REST', 'https://testnet.binancefuture.com'),
+            'futures_testnet_ws_url' => env('EXCHANGE_BINANCE_FUTURES_TESTNET_WS', 'wss://stream.binancefuture.com/ws'),
             // P1 POC：testnet 开关与端点（EXCHANGE_BINANCE_TESTNET=true 时 REST/WS 自动切换）
             'testnet' => env('EXCHANGE_BINANCE_TESTNET', false),
             'testnet_rest_url' => env('EXCHANGE_BINANCE_TESTNET_REST', 'https://testnet.binance.vision'),

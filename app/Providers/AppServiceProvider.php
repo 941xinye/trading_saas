@@ -8,6 +8,10 @@ use App\Domain\Archive\Contracts\ArchiveStore;
 use App\Domain\Archive\Contracts\HistoricalQuery;
 use App\Domain\Archive\Services\HistoricalQueryService;
 use App\Domain\Archive\Stores\ClickHouseStore;
+use App\Domain\Risk\Contracts\LiquidationPriceCalculator;
+use App\Domain\Risk\Contracts\PositionRiskMonitor as PositionRiskMonitorContract;
+use App\Domain\Risk\Breaker\IsolatedLiquidationPriceCalculator;
+use App\Domain\Risk\Position\PositionRiskMonitor;
 use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
 use App\Support\AesGcmCrypt;
@@ -33,6 +37,10 @@ class AppServiceProvider extends ServiceProvider
 
         // P8 统一历史查询（bind 非 singleton，同上；US2 / T020）
         $this->app->bind(HistoricalQuery::class, fn ($app) => new HistoricalQueryService($app->make(ArchiveStore::class)));
+
+        // spec 005 仓位级风控（bind 非 singleton：Octane 长驻禁 static 缓存）
+        $this->app->bind(LiquidationPriceCalculator::class, IsolatedLiquidationPriceCalculator::class);
+        $this->app->bind(PositionRiskMonitorContract::class, PositionRiskMonitor::class);
     }
 
     /**

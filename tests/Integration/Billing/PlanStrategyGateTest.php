@@ -33,10 +33,21 @@ class PlanStrategyGateTest extends TestCase
         static::assertTrue($service->allowsStrategy($this->tenant('enterprise'), 'spot_dca'));
     }
 
-    public function test_unimplemented_futures_and_dsl_strategies_denied_everywhere(): void
+    public function test_futures_grid_allowed_in_pro_and_enterprise_but_not_free(): void
     {
         $service = app(PlanService::class);
-        $unimplemented = ['futures_grid', 'futures_dca', 'smart_martingale', 'trend_rolling', 'custom_dsl'];
+
+        // free 不含合约
+        static::assertFalse($service->allowsStrategy($this->tenant('free'), 'futures_grid'));
+        // pro/enterprise 含合约
+        static::assertTrue($service->allowsStrategy($this->tenant('pro'), 'futures_grid'));
+        static::assertTrue($service->allowsStrategy($this->tenant('enterprise'), 'futures_grid'));
+    }
+
+    public function test_unimplemented_strategies_denied_everywhere(): void
+    {
+        $service = app(PlanService::class);
+        $unimplemented = ['futures_dca', 'smart_martingale', 'trend_rolling', 'custom_dsl'];
 
         foreach (['free', 'pro', 'enterprise'] as $plan) {
             foreach ($unimplemented as $code) {
@@ -55,7 +66,9 @@ class PlanStrategyGateTest extends TestCase
         $service = app(PlanService::class);
 
         static::assertTrue($service->allowsStrategy($this->tenant('pro'), 'spot_grid'));
-        static::assertFalse($service->allowsStrategy($this->tenant('pro'), 'futures_grid'));
+        // futures_grid 已落地，硬闸门放行
+        static::assertTrue($service->allowsStrategy($this->tenant('pro'), 'futures_grid'));
+        // smart_martingale 未落地，硬闸门拒绝
         static::assertFalse($service->allowsStrategy($this->tenant('pro'), 'smart_martingale'));
     }
 

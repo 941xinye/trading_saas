@@ -24,7 +24,7 @@
 | 交易所 | ExchangeAdapter 抽象 + RequestSigner 签名域（Binance/OKX/Bybit/Bitget 四家）+ Binance 现货（完整实跑）/Binance 合约（仅强平流）+ OKX 现货（spec 001 完成，真实链路待 demo key）+ Bybit 现货（spec 002 完成，真实链路待 testnet key）+ Bitget 现货（spec 003 完成，无公开模拟盘，主网小额单待 key） |
 | 后台 | Filament 5.x 双面板（Platform 超管 / Admin 租户） |
 | 加密 | AES-256-GCM（libsodium）三段密钥层级 KEK → DEK → API Key |
-| 风控 | Circuit Breaker 四维度状态机（单笔/日内/回撤/连亏） |
+| 风控 | Circuit Breaker 四维度状态机（单笔/日内/回撤/连亏）+ 仓位级风控（warning/reduce/emergency_close 三档） |
 
 ## 双进程模型
 
@@ -51,9 +51,9 @@ app/
 ├── Domain/                     # 领域模块（核心）
 │   ├── Tenancy/                # 多租户基础设施
 │   ├── Exchange/               # 交易所适配器（ExchangeAdapter 接口 + DTO）
-│   ├── Strategy/                # 策略引擎（SpotGrid 已实跑；其余 5 策略为骨架；Custom DSL 占位）
+│   ├── Strategy/                # 策略引擎（SpotGrid/SpotDca/FuturesGrid 已实跑；其余 4 策略为骨架；Custom DSL 占位）
 │   ├── Signal/                  # AI 信号（AIPrompter 接口 + RuleEngineFallback 兜底）
-│   ├── Risk/                    # 熔断风控（CircuitBreaker 状态机 + 4 维度 Rule）
+│   ├── Risk/                    # 熔断风控（CircuitBreaker 状态机 + 4 维度 Rule）+ 仓位级风控（PositionRiskMonitor 三档 + 强平价计算器）
 │   ├── Billing/                 # 订阅计费（两阶段计量）
 │   ├── Notification/            # 通知（NotificationPayload 契约 + Log/Telegram/企微/邮件渠道信号/风控双链共用 + 冷却去重；企微/邮件待实测）
 │   ├── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
@@ -261,6 +261,30 @@ Bitget V2 现货适配器全量落地，40/40 任务；验证「第四家接入�
 
 **已知边界**：Bitget 主网小额下单与 WS 实跑待 key 与海外网络到位后按 quickstart 补测（连同 OKX demo / Bybit testnet 一并打包，见 [海外节点 Runbook](docs/overseas-node-runbook.md) 验收总清单）。
 
+### ✅ 已完成：spec 005 合约网格策略 + 仓位级风控（2026-10-19）
+
+合约网格策略（FuturesGridStrategy）+ 仓位级风控（PositionRiskMonitor）全量落地，6 工作流 48 任务；离线断言 + 单元/集成测试全绿，testnet 真实链路待海外节点 + key 补测。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 强平价计算器 | IsolatedLiquidationPriceCalculator：逐仓模式 `entry × (1 ∓ 1/leverage ± MMR)`；保证金率 = 距强平价剩余缓冲比例（入场=1.0，强平=0） | [spec](specs/005-futures-grid-position-risk/spec.md) |
+| 仓位风控三档 | PositionRiskMonitor：warning(≤50% 通知)/action(≤20% 减仓 50% reduceOnly)/emergency(≤10% 全平)；Redis 单飞锁防与网格平仓并发；position_risk_events 审计 + PositionRiskAlert 事件 | [plan](specs/005-futures-grid-position-risk/plan.md) |
+| 合约网格策略 | FuturesGridStrategy（schema_version=2）：6 种决策（开多/开空/平多/平空/加多/加空）+ reduceOnly 平仓 + onFill 加权平均成本 + RecoverablePendingOrders 崩溃恢复 + 区间外不交易 | — |
+| Runner 接线 | StrategyRunner：30s 节流调 adapter.getPosition() + evaluatePositionRisk()；emergency_close → status=paused_by_position_risk（禁止开仓，平仓仍可触发） | — |
+| 下单执行器 | OrderExecutor：透传 reduceOnly/leverage 到 adapter + 落库 strategy_orders | — |
+| 合约 Adapter | BinanceFuturesAdapter：9 个交易接口（placeOrder/cancelOrder/getOrder/getPosition/setLeverage/setMarginType/leverageBracket/getBalance/getTicker）+ 错误码翻译 | — |
+| 售卖门控 | config/strategy.implemented 加入 futures_grid；pro/enterprise 套餐白名单加入 futures_grid，free 不含；StrategyWhitelistIntegrityTest 防超卖 | — |
+| 通知 | NotifyPositionRiskAlert：ShouldQueue + 15min 去重（sha1(instanceId\|actionType)），复用 RiskNotificationJob | — |
+| POC 命令 | `poc:verify-futures`（36 项离线断言：强平价公式 + 决策矩阵 + 风控三档 + 门控）/ `poc:futures-testnet-setup`（建实例 + 设杠杆 + 逐仓）/ `poc:futures-risk-simulate`（注入模拟仓位触发风控） | [quickstart](specs/005-futures-grid-position-risk/quickstart.md) |
+
+**实测结果**：
+- 离线断言 PASS：`php artisan poc:verify-futures` → **36/36 ALL CHECKS PASSED**：强平价多/空 × 4 杠杆 + MMR 影响、保证金率入场=1/强平=0/中点=0.5/越界钳制、决策矩阵 6 种 + 区间外无信号、风控 warning/reduce/emergency 三档 + 无持仓、售卖门控 free 拒/pro+enterprise 放行/未落地策略全拒。
+- 单元测试：FuturesGridStrategyTest **20 passed**；LiquidationPriceCalculatorTest **30 passed**。
+- 集成测试：PositionRiskMonitorTest 9 项（@redis）、FuturesBreakerSemanticsTest 4 项（@redis）、FuturesOrderExecutorTest 3 项、FuturesGatewayTest 2 项。
+- 全量回归（排除 redis/exchange 组）：**396 passed / 71 skipped / 1 incomplete / 0 failed**。
+
+**已知边界**：testnet 真实下单链路 + 仓位风控实跑待海外节点 + Binance futures testnet key（quickstart 齐备）；仓位风控 action/emergency 档依赖 Redis 单飞锁，Redis 不可用时保守返回 skipped（不重复下单）。
+
 ### 🚧 待实现：剩余路线图
 
 > P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget 已完成，实测结果见上方对应区块。
@@ -293,16 +317,16 @@ Bitget V2 现货适配器全量落地，40/40 任务；验证「第四家接入�
 | A1 | ~~无账实对账~~ **P5.5 步骤 1 已还**：`reconcile:run/status` + `reconciliation_reports`（ok/drift/critical/unknown 四级，每 5 分钟调度；critical 自动暂停实例 `paused_by_reconcile` + 多渠道告警，**只报告不自动改账**）；testnet 转账检出 drift 待海外节点实跑 | P1 已知边界 |
 | A2 | ~~售卖能力超出代码~~ **P5.5 步骤 2 已还**：SpotDca 完整落地；套餐白名单硬闸门先查 `config('strategy.implemented')`，pro/free 仅保留已实装的 spot_grid/spot_dca，合约骨架策略全部摘出白名单 | P0/P1 盘点 |
 | A3 | ~~drawdown 缺真实净值口径~~ **P5.5 步骤 1 已产数据**：每次成功对账写 `balance_snapshots` 净值序列（算法切换留待后续；本期只产数据） | P4 已知边界 |
-| A4 | 合约策略为骨架且缺仓位级风控（杠杆/强平价/保证金监控）；现有熔断仅账户级 | P0/P5 盘点 |
+| A4 | ~~合约策略为骨架且缺仓位级风控~~ **spec 005 已还**：FuturesGridStrategy 完整实现（6 决策 + reduceOnly + 崩溃恢复）；PositionRiskMonitor 三档风控（warning/reduce/emergency_close）+ 强平价计算器；paused_by_position_risk 状态；testnet 真实链路待海外节点补测 | P0/P5 盘点 |
 
 **B. 功能占位 / 未实测**
 
 | # | 占位项 | 当前行为 |
 |---|---|---|
-| B1 | ~~SpotDca 等 5 策略全抛异常~~ **P5.5 步骤 2：SpotDca 已实现并带 16 项测试**；FuturesGrid / FuturesDca / SmartMartingale / TrendRolling 仍为骨架，且已从套餐白名单摘除（不再"卖了不能用"），随合约阶段落地 | 方法体全部 `throw new RuntimeException('Not implemented')` |
+| B1 | ~~SpotDca 等 5 策略全抛异常~~ **P5.5 步骤 2：SpotDca 已实现并带 16 项测试**；~~FuturesGrid 骨架~~ **spec 005 已实现**（20 项测试）；FuturesDca / SmartMartingale / TrendRolling 仍为骨架，未入套餐白名单 | 方法体全部 `throw new RuntimeException('Not implemented')` |
 | B2 | Custom DSL（DslParser / DslStrategy） | parse/onBar/onTick 等全部抛异常，P7 落地 |
 | B3 | ~~OKX / Bybit / Bitget Adapter~~ **已全还**：spec 001/002/003 三家现货落地（REST/WS/签名下单；OKX 模拟盘 header + Bybit testnet 域名开关 + Bitget 无模拟盘边界）；四家横切契约测试齐备（错误码/路由/策略兼容性）；真实链路实跑待 key + 海外网络（验收总清单见 runbook） | 无骨架残留 |
-| B4 | BinanceFuturesAdapter 交易接口 | 仅实现 subscribeLiquidationStream，其余接口抛 LogicException |
+| B4 | ~~BinanceFuturesAdapter 仅强平流~~ **spec 005 已补全 9 个交易接口**：placeOrder/cancelOrder/getOrder/getPosition/setLeverage/setMarginType/leverageBracket/getBalance/getTicker + 错误码翻译；testnet 真实下单待海外节点 | 无骨架残留 |
 | B5 | ~~企微 / 邮件通知渠道~~ **已实现（2026-10-18）**：WeComChannel（群机器人 markdown webhook）+ MailChannel（DomainNotificationMail 纯文本）注册入 channel_classes，信号/风控/对账三链共用；未配置即抛异常落 failed（与 Telegram 同契约，既有 failed 断言不变）；6 项渠道测试；待 WECHAT_WORK_WEBHOOK / NOTIFY_MAIL_TO 实测（入 runbook 验收矩阵 #10） | 配置缺失=failed 语义 |
 | B6 | Telegram 渠道 | 代码就绪，未配 TELEGRAM_BOT_TOKEN/CHAT_ID 真实实测（信号 + 风控两处，同一渠道类双链复用） |
 | B7 | ~~Reverb 告警广播缺前端~~ **已接（2026-10-18）**：补 `config/broadcasting.php`（原缺失导致 broadcast 静默失败，[坑 #29](docs/pitfalls.md)）+ Admin 面板 BODY_END 注入 `window.__tenantAlerts` 与 alerts.js（Echo 订阅 `private-tenant.{tid}.alerts` → FilamentNotification 弹窗），Feature 测试覆盖注入/平台面板不串订阅；待 reverb 进程 + REVERB_* 实跑联调 |
@@ -438,6 +462,24 @@ php artisan poc:liquidation-demo --duration=120
 `poc:verify-liquidation` 覆盖 15 项断言：LiquidationEvent DTO 解析与 value_usd、0.1% 桶宽边界、ingest 单条/批量、snapshot 结构与排序、HASH bucket qty 一致性、eviction 空桶清理 + ZCARD 减少、window/side/symbol 隔离、MapService topN + distance_pct 正负号。
 
 真实流实跑 `poc:liquidation-demo` 需要 WSL 出口对 `fstream.binance.com:443` 可达；当前开发机出口被 Binance 主网封禁（testnet 端点可达但合约强平流只在主网），离线断言已覆盖全部核心逻辑，网络恢复后可随时补测。
+
+### POC 验证（spec 005 合约网格 + 仓位风控）
+
+```bash
+# 1. 离线全链路断言（36 项：强平价公式 + 保证金率语义 + 决策矩阵 6 种 + 风控三档 + 售卖门控）
+php artisan poc:verify-futures
+
+# 2. testnet 合约实例装配（建实例 + 设杠杆 + 逐仓模式）
+#    .env 配置 EXCHANGE_TESTNET_KEY/SECRET（futures testnet: https://testnet.binancefuture.com）
+php artisan poc:futures-testnet-setup --symbol=BTCUSDT --leverage=10 --margin=100
+
+# 3. 注入模拟仓位触发风控评估，验证 warning/reduce/emergency 三档动作
+php artisan poc:futures-risk-simulate --tenant=1 --instance=1
+```
+
+`poc:verify-futures` 覆盖 36 项断言：强平价多/空 × 4 杠杆（1x/5x/10x/20x）+ MMR 影响、保证金率入场=1/强平=0/中点=0.5/越界钳制、决策矩阵 6 种（开多/开空/平多/平空/加多/加空）+ 区间外无信号、风控 warning/reduce/emergency 三档 + 无持仓、售卖门控 free 拒/pro+enterprise 放行/未落地策略全拒。
+
+**注意**：仓位风控 action/emergency 档依赖 Redis 单飞锁，Redis 不可用时保守返回 skipped（不重复下单）；warning 档不依赖锁。
 
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 

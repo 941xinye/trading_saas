@@ -1,7 +1,7 @@
-# 踩坑记录（P1–P5.5 实测，共 30 条）
+# 踩坑记录（P1–spec 005 实测，共 38 条）
 
-> 2026-10-13 起在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀，随各阶段持续追加（#1–9 P1 / #10–12 P2 / #13–16 P3 / #17–19 P4 / #20–23 P5 / #24–28 P5.5 测试与 CI）。
-> 每条记录：现象 → 根因 → 处理 → 代码位置。后续阶段（P6+）踩坑继续追加到本文件。
+> 2026-10-13 起在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀，随各阶段持续追加（#1–9 P1 / #10–12 P2 / #13–16 P3 / #17–19 P4 / #20–23 P5 / #24–28 P5.5 测试与 CI / #29–33 P8/B7 回填 / #34–38 spec 005 合约网格 + 仓位风控）。
+> 每条记录：现象 → 根因 → 处理 → 代码位置。后续阶段踩坑继续追加到本文件。
 
 ## 1. Swoole curl hook 与 Guzzle 7.9 不兼容
 
@@ -259,3 +259,42 @@
 - **根因**：设计内行为而非缺陷——failed 不推进水位是防数据丢失的正确语义，窗口只向前扫是增量归档的前提；定点恢复通道就是 `--from`。
 - **处理**：`php artisan archive:run kline_bar --from="<批次 time_from>"` 复位重跑该批（failed→pending→重 copy→重 verify），passed 后再 `--apply`。
 - **附带确认（verify 语义分层）**：三级校验里 rows 级只是「账目对平」（批次表 source_rows==archived_rows 字段比对，不触 CH 内容）；内容级真校验在 hash_sum（删 CH 一行时 rows=OK、hash_sum=MISMATCH，报双侧哈希值）与抽样逐位。排查复检失败先看挂在哪一级再定方向：rows 级=两侧行数账目，hash_sum=内容指纹，sample=逐位精度。
+
+## 34. 保证金率公式与阈值语义不一致会导致所有仓位直接 emergency_close（spec 005 WS3，2026-10-19）
+
+- **现象**：PositionRiskMonitor 对任何有持仓的仓位都返回 emergency_close，BTC 10x 多头入场即触发全平。
+- **根因**：原 marginRatio 公式 `MMR × entryPrice / markPrice` 在入场时 ratio = 0.004（MMR=0.4%），远低于 emergency 阈值 0.10。该公式实际是"维持保证金占当前市值比例"，与"距强平价剩余缓冲比例"语义不符。
+- **处理**：改为 `(markPrice - liqPrice) / (entryPrice - liqPrice)` [long]，入场=1.0，强平=0.0，与三档阈值（warning 0.50/action 0.20/emergency 0.10）对齐。
+- **位置**：[IsolatedLiquidationPriceCalculator.php](../app/Domain/Risk/Breaker/IsolatedLiquidationPriceCalculator.php)
+- **教训**：风控阈值的语义必须与计算公式的语义严格对齐，否则"看起来合理"的阈值会产生灾难性后果。
+
+## 35. 1x 杠杆强平价期望值易算错（spec 005 WS3，2026-10-19）
+
+- **现象**：1x 多头强平价测试期望值写成 100.5，实际为 0.5。
+- **根因**：1x 杠杆下 `1/leverage = 1`，多头公式 `entry × (1 - 1 + MMR) = entry × MMR = 100 × 0.005 = 0.5`，不是 `entry × (1 + MMR)`。
+- **处理**：1x 多头 = entry × MMR；1x 空头 = entry × (2 - MMR)。
+- **教训**：杠杆=1 时公式退化为边界情况，手算期望值容易符号搞反，必须用 bcmath 实际复算后再写断言。
+
+## 36. AbstractStrategy 用 self::SCHEMA_VERSION 导致子类多态失效（spec 005 WS4，2026-10-19）
+
+- **现象**：FuturesGridStrategy::getState() 返回 schemaVersion=1，而非定义的 2。
+- **根因**：AbstractStrategy 中 `self::SCHEMA_VERSION` 是编译期绑定，始终取基类的 1；子类 const 2 被忽略。
+- **处理**：全部改为 `static::SCHEMA_VERSION`（后期静态绑定）。
+- **位置**：[AbstractStrategy.php](../app/Domain/Strategy/Base/AbstractStrategy.php)
+- **教训**：基类引用 const 时，若希望子类覆盖，必须用 static:: 而非 self::。
+
+## 37. shouldOpen 消费信号后 pendingSignal=null 导致 attachClientOrderId 提前返回（spec 005 WS4，2026-10-19）
+
+- **现象**：shouldOpen 返回信号后调用 attachClientOrderId，但 pendingFills 始终为空，onFill 无法匹配。
+- **根因**：shouldOpen 内部调用 consumeSignal，consumeSignal 将 pendingSignal 置 null 并返回信号；attachClientOrderId 原本读 pendingSignal 取 reduce_only，但此时已为 null。
+- **处理**：参考 SpotGridStrategy 的 lastSignalMeta 模式——consumeSignal 时保存元数据到 lastSignalMeta，attachClientOrderId 从 lastSignalMeta 读取。
+- **位置**：[FuturesGridStrategy.php](../app/Domain/Strategy/Futures/FuturesGridStrategy.php)
+- **教训**：信号"消费"与"下单元数据"是两个步骤，消费后必须保留元数据供后续 attach 使用。
+
+## 38. 实现类与接口同名导致 PHP 类声明冲突（spec 005 WS6，2026-10-19）
+
+- **现象**：`php artisan poc:verify-futures` 报 `Cannot redeclare class App\Domain\Risk\Position\PositionRiskMonitor`。
+- **根因**：实现类 `App\Domain\Risk\Position\PositionRiskMonitor` 与接口 `App\Domain\Risk\Contracts\PositionRiskMonitor` 同名，`use App\Domain\Risk\Contracts\PositionRiskMonitor` 后 `class PositionRiskMonitor implements PositionRiskMonitor` 产生命名冲突。
+- **处理**：use 时加别名 `use ...PositionRiskMonitor as PositionRiskMonitorContract`，类声明 `implements PositionRiskMonitorContract`。
+- **位置**：[PositionRiskMonitor.php](../app/Domain/Risk/Position/PositionRiskMonitor.php)
+- **教训**：实现类与接口同名时，use 必须加别名；PSR-4 不同命名空间允许同名类，但同文件内 use 引入后会冲突。
