@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace App\Filament\Admin\Pages;
 
+use App\Domain\Backtest\Contracts\OptimizationStatus;
 use App\Domain\Backtest\Dto\BacktestRunRequest;
 use App\Domain\Backtest\Dto\MatchingAssumptions;
 use App\Domain\Backtest\Dto\OptimizationRequest;
+use App\Domain\Backtest\Exceptions\OptimizationNotApplicableException;
 use App\Domain\Backtest\Models\ParameterOptimization;
 use App\Domain\Backtest\Models\ParameterOptimizationTrial;
 use App\Domain\Backtest\Services\OptimizationService;
 use App\Domain\Tenancy\TenantContext;
+use App\Models\StrategyInstance;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Forms\Components\DateTimePicker;
@@ -149,6 +152,24 @@ class ParameterOptimizationPage extends Page
                 ->action(function (array $data): void {
                     $this->createAndDispatch($data);
                 }),
+            Action::make('apply')
+                ->label('应用到实例')
+                ->icon('heroicon-o-arrow-down-tray')
+                ->color('success')
+                ->visible(fn (): bool => $this->canApply())
+                ->modalHeading('应用最优参数到实例')
+                ->modalDescription('最优参数与固定参数合并写入实例 params（保留实例其他参数）；实例须为 stopped。')
+                ->modalSubmitActionLabel('应用')
+                ->schema([
+                    Select::make('instance_id')
+                        ->label('目标实例')
+                        ->options(fn (): array => $this->applicableInstanceOptions())
+                        ->helperText('仅列同策略 / 同交易对 / 同周期且状态为 stopped 的实例')
+                        ->required(),
+                ])
+                ->action(function (array $data): void {
+                    $this->applyOptimizationToInstance((int) $data['instance_id']);
+                }),
         ];
     }
 
@@ -279,6 +300,81 @@ class ParameterOptimizationPage extends Page
         } catch (\InvalidArgumentException $e) {
             $this->notifyError('发起寻优失败：'.$e->getMessage());
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 应用到实例（回测 → 寻优 → 实盘闭环）
+    // ------------------------------------------------------------------
+
+    /**
+     * 当前详情任务是否可应用：completed 且含最优参数。
+     */
+    public function canApply(): bool
+    {
+        $optimization = $this->selectedOptimization;
+
+        return $optimization !== null
+            && $optimization->status === OptimizationStatus::Completed
+            && ! empty($optimization->best_params);
+    }
+
+    /**
+     * 可应用的目标实例：同租户 / 同策略 / 同交易对 / 同周期且 stopped。
+     *
+     * @return array<int, string>
+     */
+    public function applicableInstanceOptions(): array
+    {
+        $optimization = $this->selectedOptimization;
+        if ($optimization === null) {
+            return [];
+        }
+
+        return StrategyInstance::query()
+            ->where('tenant_id', $this->tenantId())
+            ->where('symbol', $optimization->symbol)
+            ->where('interval', $optimization->interval)
+            ->where('status', 'stopped')
+            ->whereHas('strategy', fn ($query) => $query->where('code', $optimization->strategy_code))
+            ->orderBy('id')
+            ->get()
+            ->mapWithKeys(fn (StrategyInstance $instance): array => [
+                (int) $instance->id => sprintf('#%d %s/%s', $instance->id, $instance->symbol, $instance->interval),
+            ])
+            ->all();
+    }
+
+    private function applyOptimizationToInstance(int $instanceId): void
+    {
+        $optimization = $this->selectedOptimization;
+        if ($optimization === null) {
+            $this->notifyError('请先选择寻优任务');
+
+            return;
+        }
+
+        $instance = StrategyInstance::query()
+            ->where('tenant_id', $this->tenantId())
+            ->find($instanceId);
+
+        if ($instance === null) {
+            $this->notifyError('目标实例不存在或不属于当前租户');
+
+            return;
+        }
+
+        try {
+            app(OptimizationService::class)->applyToInstance($optimization, $instance);
+        } catch (OptimizationNotApplicableException $e) {
+            $this->notifyError($e->getMessage());
+
+            return;
+        }
+
+        Notification::make()
+            ->success()
+            ->title('最优参数已应用到实例 #'.$instance->id)
+            ->send();
     }
 
     /**

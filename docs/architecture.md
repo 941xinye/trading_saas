@@ -76,7 +76,7 @@ routes/ {api.php, channels.php, web.php}
 | P7 Custom DSL | 受限 YAML 四段（entry/exit/filter/risk）+ 沙箱解释器 + Filament 编辑器 + 预览（不含手续费滑点）+ 售卖门控 | [006 DSL](../specs/006-custom-dsl-strategy/spec.md) |
 | P9 支付 | `PaymentGatewayInterface` 通道抽象（BTCPay 首发）+ webhook 幂等 + 激活事务 + 续费提醒 + 计费页/API | [007 支付网关](../specs/007-payment-gateway-billing/spec.md) / [BTCPay PoC](p9-btcpay-poc-plan.md) |
 | P10 回测 | `BacktestRunner` 回放驱动（不依赖交易所）+ bar 级撮合 + 9 指标 + 报告持久化零重算 + 绩效页 | [008 回测引擎](../specs/008-backtest-engine/spec.md) |
-| P11 参数寻优 | `ParameterGrid`（白名单 + 上限）+ `ParameterOptimizer`（grid / walk-forward OOS 均值）+ `RunOptimizationJob`（backtest 队列）+ REST API / Filament 参数寻优页 + 双表持久化 | [README 功能矩阵](../README.md#功能矩阵--路线图) |
+| P11 参数寻优 | `ParameterGrid`（白名单 + 上限）+ `ParameterOptimizer`（grid / walk-forward OOS 均值）+ `RunOptimizationJob`（backtest 队列）+ REST API / Filament 参数寻优页 + 双表持久化 + `applyToInstance`（最优参数合并进 stopped 实例并留痕，闭环回测→寻优→实盘） | [README 功能矩阵](../README.md#功能矩阵--路线图) |
 
 ## P8 ClickHouse 历史归档（spec 004，2026-10-19 核心落地）
 

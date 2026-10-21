@@ -39,6 +39,8 @@ class ParameterOptimizationResource extends JsonResource
             'error_message' => $this->error_message,
             'started_at' => $this->started_at?->toIso8601String(),
             'finished_at' => $this->finished_at?->toIso8601String(),
+            'applied_instance_id' => $this->applied_instance_id,
+            'applied_at' => $this->applied_at?->toIso8601String(),
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];

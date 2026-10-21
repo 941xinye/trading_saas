@@ -7,12 +7,15 @@ namespace App\Http\Controllers\Api\V1;
 use App\Domain\Backtest\Dto\BacktestRunRequest;
 use App\Domain\Backtest\Dto\MatchingAssumptions;
 use App\Domain\Backtest\Dto\OptimizationRequest;
+use App\Domain\Backtest\Exceptions\OptimizationNotApplicableException;
 use App\Domain\Backtest\Models\ParameterOptimization;
 use App\Domain\Backtest\Models\ParameterOptimizationTrial;
 use App\Domain\Backtest\Services\OptimizationService;
 use App\Domain\Tenancy\TenantContext;
 use App\Http\Resources\ParameterOptimizationResource;
 use App\Http\Resources\ParameterOptimizationTrialResource;
+use App\Http\Resources\StrategyInstanceResource;
+use App\Models\StrategyInstance;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -112,6 +115,44 @@ class OptimizationController extends Controller
                 ->orderBy('id')
                 ->paginate(),
         );
+    }
+
+    /**
+     * 应用最优参数到策略实例（回测 → 寻优 → 实盘闭环）。
+     *
+     * 422：任务未完成 / 无最优参数 / 实例与任务不匹配；
+     * 409：实例运行中（须先 stop）；404：跨租户实例或任务。
+     */
+    public function apply(Request $request, ParameterOptimization $optimization): JsonResponse
+    {
+        $this->ensureTenantOwned($optimization);
+
+        $tenantId = TenantContext::requireTenantId();
+
+        $data = $request->validate([
+            'instance_id' => ['required', 'integer', 'min:1'],
+        ]);
+
+        $instance = StrategyInstance::query()
+            ->where('tenant_id', $tenantId)
+            ->find((int) $data['instance_id']);
+
+        if ($instance === null) {
+            abort(404);
+        }
+
+        try {
+            $instance = app(OptimizationService::class)->applyToInstance($optimization, $instance);
+        } catch (OptimizationNotApplicableException $e) {
+            return response()->json(
+                ['message' => $e->getMessage()],
+                $e->conflict ? 409 : 422,
+            );
+        }
+
+        return (new StrategyInstanceResource($instance->load(['strategy', 'exchangeAccount'])))
+            ->response()
+            ->setStatusCode(200);
     }
 
     private function toUtc(string $value): \DateTimeImmutable

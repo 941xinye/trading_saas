@@ -55,6 +55,8 @@ Route::middleware(['auth:sanctum', 'tenant'])
             ->only(['index', 'store', 'show']);
         Route::get('parameter-optimizations/{optimization}/trials', [OptimizationController::class, 'trials'])
             ->name('parameter-optimizations.trials');
+        Route::post('parameter-optimizations/{optimization}/apply', [OptimizationController::class, 'apply'])
+            ->name('parameter-optimizations.apply');
 
         // P5：大户爆仓密集区（市场级数据，无 tenant_id 隔离）
         Route::get('liquidation/map', [LiquidationController::class, 'map'])->name('liquidation.map');

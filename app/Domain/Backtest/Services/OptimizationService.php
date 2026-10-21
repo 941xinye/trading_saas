@@ -7,9 +7,12 @@ namespace App\Domain\Backtest\Services;
 use App\Domain\Backtest\Contracts\OptimizationStatus;
 use App\Domain\Backtest\Dto\OptimizationRequest;
 use App\Domain\Backtest\Dto\OptimizationResult;
+use App\Domain\Backtest\Exceptions\OptimizationNotApplicableException;
 use App\Domain\Backtest\Jobs\RunOptimizationJob;
 use App\Domain\Backtest\Models\ParameterOptimization;
 use App\Domain\Backtest\Optimization\ParameterOptimizer;
+use App\Models\StrategyInstance;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /**
@@ -110,5 +113,92 @@ final class OptimizationService
     public function dryRun(OptimizationRequest $request): OptimizationResult
     {
         return $this->optimizer->optimize($request);
+    }
+
+    /**
+     * 将最优参数应用到策略实例（回测 → 寻优 → 实盘闭环）。
+     *
+     * 合并顺序：实例现有 params ← base_params ← best_params（最优参数最终覆盖）；
+     * 实例其他参数键保留不动。仅允许同策略 / 同交易对 / 同周期且 stopped 的实例，
+     * 写入 params 与 applied_instance_id/applied_at 在同一事务。
+     *
+     * @throws OptimizationNotApplicableException 任务未完成 / 无最优参数 / 实例不匹配 / 实例运行中
+     */
+    public function applyToInstance(ParameterOptimization $optimization, StrategyInstance $instance): StrategyInstance
+    {
+        if ($optimization->status !== OptimizationStatus::Completed) {
+            throw new OptimizationNotApplicableException('寻优任务尚未完成，无法应用最优参数。');
+        }
+
+        $bestParams = (array) ($optimization->best_params ?? []);
+        if ($bestParams === []) {
+            throw new OptimizationNotApplicableException('该寻优任务没有可应用的最优参数。');
+        }
+
+        if ((int) $instance->tenant_id !== (int) $optimization->tenant_id) {
+            throw new OptimizationNotApplicableException('策略实例与寻优任务不属于同一租户。');
+        }
+
+        $strategyCode = (string) $instance->strategy()->value('code');
+        if ($strategyCode !== (string) $optimization->strategy_code) {
+            throw new OptimizationNotApplicableException(sprintf(
+                '策略不匹配：寻优任务为 %s，实例为 %s。',
+                $optimization->strategy_code,
+                $strategyCode !== '' ? $strategyCode : '未知',
+            ));
+        }
+
+        if (mb_strtoupper((string) $instance->symbol) !== mb_strtoupper((string) $optimization->symbol)) {
+            throw new OptimizationNotApplicableException(sprintf(
+                '交易对不匹配：寻优任务为 %s，实例为 %s。',
+                $optimization->symbol,
+                $instance->symbol,
+            ));
+        }
+
+        if ((string) $instance->interval !== (string) $optimization->interval) {
+            throw new OptimizationNotApplicableException(sprintf(
+                'K 线周期不匹配：寻优任务为 %s，实例为 %s。',
+                $optimization->interval,
+                $instance->interval,
+            ));
+        }
+
+        if ($instance->isLive()) {
+            throw new OptimizationNotApplicableException('实例运行中，请先 stop 再应用最优参数。', conflict: true);
+        }
+
+        // 双保险：best_params 的键必须仍在策略可寻优白名单内（防御历史脏数据）
+        $whitelist = (array) config("optimization.strategies.{$optimization->strategy_code}", []);
+        foreach ($bestParams as $key => $value) {
+            if (! in_array((string) $key, $whitelist, true)) {
+                throw new OptimizationNotApplicableException(sprintf(
+                    '最优参数 %s 不在策略 %s 的可寻优白名单内。',
+                    $key,
+                    $optimization->strategy_code,
+                ));
+            }
+
+            if (! is_scalar($value)) {
+                throw new OptimizationNotApplicableException("最优参数 {$key} 的值非法。");
+            }
+        }
+
+        $params = array_replace(
+            (array) ($instance->params ?? []),
+            (array) ($optimization->base_params ?? []),
+            $bestParams,
+        );
+
+        DB::transaction(function () use ($optimization, $instance, $params): void {
+            $instance->forceFill(['params' => $params])->save();
+
+            $optimization->forceFill([
+                'applied_instance_id' => $instance->getKey(),
+                'applied_at' => now(),
+            ])->save();
+        });
+
+        return $instance->refresh();
     }
 }

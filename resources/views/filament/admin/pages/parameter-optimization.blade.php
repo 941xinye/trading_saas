@@ -87,6 +87,11 @@
                         <div class="mt-1 font-mono">{{ $optimization->mode }}{{ $optimization->mode === 'walk_forward' ? ' / '.$optimization->folds.' 折' : '' }}</div>
                     </div>
                 </div>
+                @if ($optimization->applied_instance_id !== null)
+                    <p class="mt-3 text-xs text-emerald-600 dark:text-emerald-400">
+                        已应用到实例 #{{ $optimization->applied_instance_id }}（{{ $this->formatUtc($optimization->applied_at) }} UTC）
+                    </p>
+                @endif
                 <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
                     固定参数：<span class="font-mono">{{ $this->formatJson($optimization->base_params) }}</span>
                 </p>
