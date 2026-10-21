@@ -10,6 +10,7 @@ use App\Domain\Backtest\Dto\MatchingAssumptions;
 use App\Domain\Backtest\Dto\OptimizationRequest;
 use App\Domain\Backtest\Exceptions\OptimizationNotApplicableException;
 use App\Domain\Backtest\Models\ParameterOptimization;
+use App\Domain\Backtest\Models\ParameterOptimizationApplication;
 use App\Domain\Backtest\Models\ParameterOptimizationTrial;
 use App\Domain\Backtest\Services\OptimizationService;
 use App\Domain\Tenancy\TenantContext;
@@ -157,10 +158,16 @@ class ParameterOptimizationPage extends Page
                 ->icon('heroicon-o-arrow-down-tray')
                 ->color('success')
                 ->visible(fn (): bool => $this->canApply())
-                ->modalHeading('应用最优参数到实例')
-                ->modalDescription('最优参数与固定参数合并写入实例 params（保留实例其他参数）；实例须为 stopped。')
+                ->modalHeading('应用寻优参数到实例')
+                ->modalDescription('所选 Top N 参数与固定参数合并写入实例 params（保留实例其他参数）；实例须为 stopped。')
                 ->modalSubmitActionLabel('应用')
                 ->schema([
+                    Select::make('rank')
+                        ->label('参数组（Top N）')
+                        ->options(fn (): array => $this->rankOptions())
+                        ->default(1)
+                        ->helperText('1 = 最优；其余取 Top N 候选')
+                        ->required(),
                     Select::make('instance_id')
                         ->label('目标实例')
                         ->options(fn (): array => $this->applicableInstanceOptions())
@@ -168,7 +175,10 @@ class ParameterOptimizationPage extends Page
                         ->required(),
                 ])
                 ->action(function (array $data): void {
-                    $this->applyOptimizationToInstance((int) $data['instance_id']);
+                    $this->applyOptimizationToInstance(
+                        (int) $data['instance_id'],
+                        (int) ($data['rank'] ?? 1),
+                    );
                 }),
         ];
     }
@@ -214,6 +224,25 @@ class ParameterOptimizationPage extends Page
             ->where('optimization_id', $this->selectedOptimizationId)
             ->orderBy('id')
             ->limit(300)
+            ->get();
+    }
+
+    /**
+     * 当前任务的应用历史（最近在前，最多 20 条）。
+     *
+     * @return Collection<int, ParameterOptimizationApplication>
+     */
+    public function getSelectedApplicationsProperty(): Collection
+    {
+        if ($this->selectedOptimizationId === null) {
+            return collect();
+        }
+
+        return ParameterOptimizationApplication::query()
+            ->where('tenant_id', $this->tenantId())
+            ->where('optimization_id', $this->selectedOptimizationId)
+            ->orderByDesc('id')
+            ->limit(20)
             ->get();
     }
 
@@ -319,6 +348,36 @@ class ParameterOptimizationPage extends Page
     }
 
     /**
+     * 可应用的 Top N 名次选项（1 = best；report.top 缺失时仅 1）。
+     *
+     * @return array<int, string>
+     */
+    public function rankOptions(): array
+    {
+        $optimization = $this->selectedOptimization;
+        if ($optimization === null) {
+            return [1 => 'Top 1（最优）'];
+        }
+
+        $objectiveLabel = (string) config(
+            "optimization.objectives.{$optimization->objective}",
+            $optimization->objective,
+        );
+
+        $top = (array) ($optimization->report['top'] ?? []);
+        if ($top === []) {
+            return [1 => 'Top 1（最优）'];
+        }
+
+        $options = [];
+        foreach ($top as $index => $row) {
+            $options[$index + 1] = sprintf('Top %d（%s %s）', $index + 1, $objectiveLabel, $row['score'] ?? '—');
+        }
+
+        return $options;
+    }
+
+    /**
      * 可应用的目标实例：同租户 / 同策略 / 同交易对 / 同周期且 stopped。
      *
      * @return array<int, string>
@@ -344,7 +403,7 @@ class ParameterOptimizationPage extends Page
             ->all();
     }
 
-    private function applyOptimizationToInstance(int $instanceId): void
+    private function applyOptimizationToInstance(int $instanceId, int $rank = 1): void
     {
         $optimization = $this->selectedOptimization;
         if ($optimization === null) {
@@ -364,7 +423,12 @@ class ParameterOptimizationPage extends Page
         }
 
         try {
-            app(OptimizationService::class)->applyToInstance($optimization, $instance);
+            $application = app(OptimizationService::class)->applyToInstance(
+                $optimization,
+                $instance,
+                $rank,
+                auth()->id(),
+            );
         } catch (OptimizationNotApplicableException $e) {
             $this->notifyError($e->getMessage());
 
@@ -373,7 +437,36 @@ class ParameterOptimizationPage extends Page
 
         Notification::make()
             ->success()
-            ->title('最优参数已应用到实例 #'.$instance->id)
+            ->title(sprintf('Top %d 参数组已应用到实例 #%d', $application->rank, $instance->id))
+            ->send();
+    }
+
+    /**
+     * 回滚一条应用记录（恢复实例应用前参数；仅 stopped 且参数未变更时允许）。
+     */
+    public function rollbackApplication(int $applicationId): void
+    {
+        $application = ParameterOptimizationApplication::query()
+            ->where('tenant_id', $this->tenantId())
+            ->find($applicationId);
+
+        if ($application === null) {
+            $this->notifyError('应用记录不存在或不属于当前租户');
+
+            return;
+        }
+
+        try {
+            app(OptimizationService::class)->rollbackApplication($application);
+        } catch (OptimizationNotApplicableException $e) {
+            $this->notifyError($e->getMessage());
+
+            return;
+        }
+
+        Notification::make()
+            ->success()
+            ->title('已回滚实例 #'.$application->strategy_instance_id.' 的参数')
             ->send();
     }
 

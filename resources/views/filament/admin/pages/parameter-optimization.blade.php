@@ -176,6 +176,59 @@
                 </div>
             @endif
 
+            @if ($this->selectedApplications->isNotEmpty())
+                <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
+                    <h3 class="text-sm font-semibold mb-3">应用历史（最近 20 条）</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="text-xs text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+                                <tr>
+                                    <th class="py-2 pr-3">ID</th>
+                                    <th class="py-2 pr-3">名次</th>
+                                    <th class="py-2 pr-3">实例</th>
+                                    <th class="py-2 pr-3">应用后参数</th>
+                                    <th class="py-2 pr-3">应用时间 (UTC)</th>
+                                    <th class="py-2 pr-3">状态</th>
+                                    <th class="py-2">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach ($this->selectedApplications as $application)
+                                    <tr class="border-b border-gray-50 dark:border-gray-700/50">
+                                        <td class="py-1.5 pr-3 font-mono">{{ $application->id }}</td>
+                                        <td class="py-1.5 pr-3 font-mono">Top {{ $application->rank }}</td>
+                                        <td class="py-1.5 pr-3 font-mono">#{{ $application->strategy_instance_id ?? '—' }}</td>
+                                        <td class="py-1.5 pr-3 font-mono text-xs break-all">{{ $this->formatJson($application->params_after) }}</td>
+                                        <td class="py-1.5 pr-3 font-mono text-xs">{{ $this->formatUtc($application->created_at) }}</td>
+                                        <td class="py-1.5 pr-3">
+                                            @if ($application->rolled_back_at !== null)
+                                                <span class="text-xs text-gray-500 dark:text-gray-400">已回滚（{{ $this->formatUtc($application->rolled_back_at) }} UTC）</span>
+                                            @else
+                                                <span class="text-xs text-emerald-600 dark:text-emerald-400">生效中</span>
+                                            @endif
+                                        </td>
+                                        <td class="py-1.5">
+                                            @if ($application->rolled_back_at === null && $application->strategy_instance_id !== null)
+                                                <button
+                                                    type="button"
+                                                    wire:click="rollbackApplication({{ $application->id }})"
+                                                    wire:confirm="确认回滚该次应用？实例参数将恢复为应用前快照。"
+                                                    class="text-xs text-danger-600 dark:text-danger-400 hover:underline"
+                                                >
+                                                    回滚
+                                                </button>
+                                            @else
+                                                —
+                                            @endif
+                                        </td>
+                                    </tr>
+                                @endforeach
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            @endif
+
             <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 shadow-sm">
                 <h3 class="text-sm font-semibold mb-3">逐次试跑（最多 300 条）</h3>
                 <div class="overflow-x-auto">

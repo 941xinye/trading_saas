@@ -39,6 +39,8 @@ Route::middleware(['auth:sanctum', 'tenant'])
             ->name('strategy-instances.start');
         Route::post('strategy-instances/{instance}/stop', [StrategyInstanceController::class, 'stop'])
             ->name('strategy-instances.stop');
+        Route::get('strategy-instances/{instance}/optimization-applications', [StrategyInstanceController::class, 'optimizationApplications'])
+            ->name('strategy-instances.optimization-applications');
 
         // 信号订阅 + 信号（信号只读）
         Route::apiResource('signal-subscriptions', SignalSubscriptionController::class)
@@ -57,6 +59,8 @@ Route::middleware(['auth:sanctum', 'tenant'])
             ->name('parameter-optimizations.trials');
         Route::post('parameter-optimizations/{optimization}/apply', [OptimizationController::class, 'apply'])
             ->name('parameter-optimizations.apply');
+        Route::post('parameter-optimization-applications/{application}/rollback', [OptimizationController::class, 'rollback'])
+            ->name('parameter-optimization-applications.rollback');
 
         // P5：大户爆仓密集区（市场级数据，无 tenant_id 隔离）
         Route::get('liquidation/map', [LiquidationController::class, 'map'])->name('liquidation.map');

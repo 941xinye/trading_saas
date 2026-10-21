@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Domain\Backtest\Models\ParameterOptimizationApplication;
 use App\Domain\Tenancy\TenantContext;
+use App\Http\Resources\ParameterOptimizationApplicationResource;
 use App\Http\Resources\StrategyInstanceResource;
 use App\Models\StrategyInstance;
 use Illuminate\Http\JsonResponse;
@@ -171,6 +173,22 @@ class StrategyInstanceController extends Controller
         return (new StrategyInstanceResource($instance->refresh()))
             ->response()
             ->setStatusCode(200);
+    }
+
+    /**
+     * 实例维度的寻优应用历史（最近在前），用于反查实例当前参数来源。
+     */
+    public function optimizationApplications(StrategyInstance $instance): AnonymousResourceCollection
+    {
+        $this->ensureTenantOwned($instance);
+
+        return ParameterOptimizationApplicationResource::collection(
+            ParameterOptimizationApplication::query()
+                ->with(['optimization'])
+                ->where('strategy_instance_id', $instance->getKey())
+                ->orderByDesc('id')
+                ->paginate(),
+        );
     }
 
     private function conflict(string $message): JsonResponse

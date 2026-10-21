@@ -9,6 +9,7 @@ use App\Domain\Backtest\Dto\MatchingAssumptions;
 use App\Domain\Backtest\Dto\OptimizationRequest;
 use App\Domain\Backtest\Exceptions\OptimizationNotApplicableException;
 use App\Domain\Backtest\Models\ParameterOptimization;
+use App\Domain\Backtest\Models\ParameterOptimizationApplication;
 use App\Domain\Backtest\Models\ParameterOptimizationTrial;
 use App\Domain\Backtest\Services\OptimizationService;
 use App\Domain\Tenancy\TenantContext;
@@ -118,9 +119,10 @@ class OptimizationController extends Controller
     }
 
     /**
-     * 应用最优参数到策略实例（回测 → 寻优 → 实盘闭环）。
+     * 应用寻优结果到策略实例（回测 → 寻优 → 实盘闭环）。
      *
-     * 422：任务未完成 / 无最优参数 / 实例与任务不匹配；
+     * body：instance_id（必填）、rank（可选，Top N 名次，默认 1 = best）。
+     * 422：任务未完成 / 名次不存在 / 实例与任务不匹配；
      * 409：实例运行中（须先 stop）；404：跨租户实例或任务。
      */
     public function apply(Request $request, ParameterOptimization $optimization): JsonResponse
@@ -131,6 +133,7 @@ class OptimizationController extends Controller
 
         $data = $request->validate([
             'instance_id' => ['required', 'integer', 'min:1'],
+            'rank' => ['sometimes', 'integer', 'min:1'],
         ]);
 
         $instance = StrategyInstance::query()
@@ -142,7 +145,36 @@ class OptimizationController extends Controller
         }
 
         try {
-            $instance = app(OptimizationService::class)->applyToInstance($optimization, $instance);
+            $application = app(OptimizationService::class)->applyToInstance(
+                $optimization,
+                $instance,
+                (int) ($data['rank'] ?? 1),
+                $request->user()?->id,
+            );
+        } catch (OptimizationNotApplicableException $e) {
+            return response()->json(
+                ['message' => $e->getMessage()],
+                $e->conflict ? 409 : 422,
+            );
+        }
+
+        return (new StrategyInstanceResource($application->instance->load(['strategy', 'exchangeAccount'])))
+            ->additional(['application_id' => $application->id])
+            ->response()
+            ->setStatusCode(200);
+    }
+
+    /**
+     * 回滚一次应用：实例 params 恢复为应用前快照。
+     *
+     * 409：已回滚 / 运行中 / 参数已被人工修改；422：实例已删除。
+     */
+    public function rollback(ParameterOptimizationApplication $application): JsonResponse
+    {
+        $this->ensureTenantOwned($application);
+
+        try {
+            $instance = app(OptimizationService::class)->rollbackApplication($application);
         } catch (OptimizationNotApplicableException $e) {
             return response()->json(
                 ['message' => $e->getMessage()],

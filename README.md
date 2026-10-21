@@ -370,7 +370,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **实测结果**：
 - 离线断言 PASS：`php artisan poc:verify-backtest` → **55/55 ALL CHECKS PASSED**；H 组性能：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（两轮实测，预算 30s，SC-001）。
-- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **795 passed / 10 skipped / 1 incomplete / 3060 assertions**（2026-10-21 复测，含 P11 参数寻优与结果应用；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
+- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **801 passed / 10 skipped / 1 incomplete / 3102 assertions**（2026-10-21 复测，含 P11 参数寻优与结果应用闭环；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
 - 等价性：BacktestEquivalenceTest — fixture 决策序列（bar/side/qty）100% 一致，净值 ≤ 实跑毛收益。
 - 报告零重算：BacktestReportReloadTest + J 组 DB::listen — 二次读取 backtest_* 写查询 0。
 - 红线：BacktestNoExchangeCallTest + I 组静态扫描 — Runner 依赖面不含 exchange/adapter，零交易所调用。
@@ -399,7 +399,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | 异步执行 | `RunOptimizationJob`（backtest 队列，tries=1）：按 id 还原请求快照 → 恢复租户上下文 → 写入 trials 与进度；`OptimizationService` 拆为 create / execute / dispatch（命令仍可同步 `run`） |
 | REST API | `GET/POST /api/v1/parameter-optimizations`（创建 202 入队）+ `GET .../{id}` + `GET .../{id}/trials`（分页）；网格非法在构造期拒绝（422，不落 failed 任务） |
 | Filament 页 | Admin「策略」组 →【参数寻优】（slug `parameter-optimization`）：列表 10s 轮询 + 发起表单（JSON 网格/固定参数/目标）+ 详情（最优参数 / Top N / 分折明细 / 逐次试跑） |
-| 结果应用 | `POST /api/v1/parameter-optimizations/{id}/apply`（body `instance_id`）+ 详情页「应用到实例」action：best_params + base_params 合并写入实例 params（保留实例其他键），实例须同策略 / 同交易对 / 同周期且 `stopped`；事务回写 `applied_instance_id` / `applied_at` 留痕 |
+| 结果应用 | `POST /api/v1/parameter-optimizations/{id}/apply`（body `instance_id` + 可选 `rank`）+ 详情页「应用到实例」action：支持 Top N 任选参数组，best/base params 合并写入实例 params（保留实例其他键），实例须同策略 / 同交易对 / 同周期且 `stopped`；事务写应用历史（前后快照 + 操作人），`POST /parameter-optimization-applications/{id}/rollback` 可回滚一次（参数被人工修改或运行中拒绝），`GET /strategy-instances/{id}/optimization-applications` 反查实例参数来源 |
 | 命令 | `backtest:optimize`（`--grid` JSON 或 `@file`、`--mode`、`--folds`、`--objective`、`--top`、`--dry-run`） |
 
 ```bash
@@ -677,10 +677,14 @@ curl -X POST /api/v1/parameter-optimizations -H "Authorization: Bearer <token>" 
        "base_params":{"lower_price":"100","upper_price":"120","investment_amount":"1000"}}'
 # → 202；GET /api/v1/parameter-optimizations/{id} 查结果，.../{id}/trials 查逐次试跑
 
-# 7. 应用最优参数到策略实例（实例须 stopped，且同策略 / 同交易对 / 同周期）
+# 7. 应用寻优结果到策略实例（可选 rank 选 Top N，默认 1 = best；实例须 stopped）
 curl -X POST /api/v1/parameter-optimizations/{id}/apply -H "Authorization: Bearer <token>" \
-  -d '{"instance_id":1}'
-# → 200 返回实例（params 已更新）；运行中 409、不匹配 422、跨租户 404
+  -d '{"instance_id":1,"rank":2}'
+# → 200 返回实例（params 已更新）+ application_id；运行中 409、不匹配 422、跨租户 404
+
+# 8. 回滚一次应用 / 反查实例的寻优应用历史
+curl -X POST /api/v1/parameter-optimization-applications/{application_id}/rollback -H "Authorization: Bearer <token>"
+curl /api/v1/strategy-instances/1/optimization-applications -H "Authorization: Bearer <token>"
 ```
 
 H 组实测：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（预算 30s）；SC-001~006 对照表与已知边界见 [quickstart](specs/008-backtest-engine/quickstart.md)。

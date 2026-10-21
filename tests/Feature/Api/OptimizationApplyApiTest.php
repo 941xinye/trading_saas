@@ -6,6 +6,7 @@ namespace Tests\Feature\Api;
 
 use App\Domain\Backtest\Contracts\OptimizationStatus;
 use App\Domain\Backtest\Models\ParameterOptimization;
+use App\Domain\Backtest\Models\ParameterOptimizationApplication;
 use App\Domain\Tenancy\TenantContext;
 use App\Models\StrategyInstance;
 use App\Models\User;
@@ -99,7 +100,7 @@ final class OptimizationApplyApiTest extends TestCase
         $optimization = $this->createOptimization();
         $instance = $this->createInstance();
 
-        $this->postJson(
+        $response = $this->postJson(
             "/api/v1/parameter-optimizations/{$optimization->id}/apply",
             ['instance_id' => $instance->id],
         )
@@ -119,6 +120,134 @@ final class OptimizationApplyApiTest extends TestCase
         $optimization->refresh();
         self::assertSame($instance->id, $optimization->applied_instance_id);
         self::assertNotNull($optimization->applied_at);
+
+        $application = ParameterOptimizationApplication::query()->findOrFail($response->json('application_id'));
+        self::assertSame(1, $application->rank);
+        self::assertSame($instance->id, $application->strategy_instance_id);
+        self::assertSame($this->userA->id, $application->applied_by);
+        self::assertSame(['grid_count' => 3, 'qty_per_grid' => '0.1'], $application->params_before);
+        self::assertSame(7, $application->params_after['grid_count']);
+    }
+
+    public function test_apply_top_n_rank_and_rollback_restore_previous_params(): void
+    {
+        Sanctum::actingAs($this->userA);
+
+        $optimization = $this->createOptimization([
+            'report' => [
+                'mode' => 'grid',
+                'objective' => 'total_return_pct',
+                'top' => [
+                    ['params' => ['grid_count' => 7], 'score' => '1.50000000', 'metrics' => []],
+                    ['params' => ['grid_count' => 9], 'score' => '1.20000000', 'metrics' => []],
+                ],
+            ],
+        ]);
+        $instance = $this->createInstance();
+
+        $response = $this->postJson(
+            "/api/v1/parameter-optimizations/{$optimization->id}/apply",
+            ['instance_id' => $instance->id, 'rank' => 2],
+        )
+            ->assertOk()
+            ->assertJsonPath('data.params.grid_count', 9);
+
+        $applicationId = (int) $response->json('application_id');
+        self::assertSame(2, ParameterOptimizationApplication::query()->findOrFail($applicationId)->rank);
+
+        $this->postJson("/api/v1/parameter-optimization-applications/{$applicationId}/rollback")
+            ->assertOk()
+            ->assertJsonPath('data.params.grid_count', 3)
+            ->assertJsonPath('data.params.qty_per_grid', '0.1');
+
+        $instance->refresh();
+        self::assertSame(['grid_count' => 3, 'qty_per_grid' => '0.1'], $instance->params);
+        self::assertNotNull(ParameterOptimizationApplication::query()->findOrFail($applicationId)->rolled_back_at);
+
+        // 同一记录不可重复回滚
+        $this->postJson("/api/v1/parameter-optimization-applications/{$applicationId}/rollback")
+            ->assertStatus(409);
+    }
+
+    public function test_apply_rejects_rank_out_of_range(): void
+    {
+        Sanctum::actingAs($this->userA);
+
+        $optimization = $this->createOptimization([
+            'report' => [
+                'mode' => 'grid',
+                'top' => [
+                    ['params' => ['grid_count' => 7], 'score' => '1.50000000'],
+                ],
+            ],
+        ]);
+        $instance = $this->createInstance();
+
+        $this->postJson(
+            "/api/v1/parameter-optimizations/{$optimization->id}/apply",
+            ['instance_id' => $instance->id, 'rank' => 3],
+        )
+            ->assertStatus(422)
+            ->assertJsonPath('message', '该寻优任务不存在第 3 名参数组。');
+    }
+
+    public function test_rollback_rejects_when_instance_params_changed(): void
+    {
+        Sanctum::actingAs($this->userA);
+
+        $optimization = $this->createOptimization();
+        $instance = $this->createInstance();
+
+        $applicationId = (int) $this->postJson(
+            "/api/v1/parameter-optimizations/{$optimization->id}/apply",
+            ['instance_id' => $instance->id],
+        )->assertOk()->json('application_id');
+
+        // 人工改参后不允许自动回滚，避免覆盖人工修改
+        $instance->forceFill(['params' => ['grid_count' => 4]])->save();
+
+        $this->postJson("/api/v1/parameter-optimization-applications/{$applicationId}/rollback")
+            ->assertStatus(409)
+            ->assertJsonPath('message', '实例参数已被修改，无法自动回滚。');
+    }
+
+    public function test_instance_lists_its_optimization_applications(): void
+    {
+        Sanctum::actingAs($this->userA);
+
+        $optimization = $this->createOptimization();
+        $instance = $this->createInstance();
+
+        $this->postJson(
+            "/api/v1/parameter-optimizations/{$optimization->id}/apply",
+            ['instance_id' => $instance->id],
+        )->assertOk();
+
+        $this->getJson("/api/v1/strategy-instances/{$instance->id}/optimization-applications")
+            ->assertOk()
+            ->assertJsonPath('data.0.optimization_id', $optimization->id)
+            ->assertJsonPath('data.0.strategy_instance_id', $instance->id)
+            ->assertJsonPath('data.0.optimization.strategy_code', 'spot_grid')
+            ->assertJsonPath('data.0.optimization.symbol', 'BTCUSDT')
+            ->assertJsonPath('data.0.rolled_back_at', null);
+    }
+
+    public function test_cross_tenant_rollback_is_not_found(): void
+    {
+        Sanctum::actingAs($this->userA);
+
+        $optimization = $this->createOptimization();
+        $instance = $this->createInstance();
+
+        $applicationId = (int) $this->postJson(
+            "/api/v1/parameter-optimizations/{$optimization->id}/apply",
+            ['instance_id' => $instance->id],
+        )->assertOk()->json('application_id');
+
+        Sanctum::actingAs($this->userB);
+
+        $this->postJson("/api/v1/parameter-optimization-applications/{$applicationId}/rollback")
+            ->assertNotFound();
     }
 
     public function test_apply_rejects_unfinished_optimization(): void

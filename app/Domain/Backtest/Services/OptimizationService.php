@@ -10,6 +10,7 @@ use App\Domain\Backtest\Dto\OptimizationResult;
 use App\Domain\Backtest\Exceptions\OptimizationNotApplicableException;
 use App\Domain\Backtest\Jobs\RunOptimizationJob;
 use App\Domain\Backtest\Models\ParameterOptimization;
+use App\Domain\Backtest\Models\ParameterOptimizationApplication;
 use App\Domain\Backtest\Optimization\ParameterOptimizer;
 use App\Models\StrategyInstance;
 use Illuminate\Support\Facades\DB;
@@ -116,23 +117,41 @@ final class OptimizationService
     }
 
     /**
-     * 将最优参数应用到策略实例（回测 → 寻优 → 实盘闭环）。
+     * 将寻优结果应用到策略实例（回测 → 寻优 → 实盘闭环）。
      *
-     * 合并顺序：实例现有 params ← base_params ← best_params（最优参数最终覆盖）；
-     * 实例其他参数键保留不动。仅允许同策略 / 同交易对 / 同周期且 stopped 的实例，
-     * 写入 params 与 applied_instance_id/applied_at 在同一事务。
+     * rank 为 Top N 名次（1 = best，默认），>1 时从 report.top 取对应候选参数。
+     * 合并顺序：实例现有 params ← base_params ← 候选 params（候选最终覆盖）；
+     * 实例其他参数键保留不动。仅允许同策略 / 同交易对 / 同周期且 stopped 的实例。
      *
-     * @throws OptimizationNotApplicableException 任务未完成 / 无最优参数 / 实例不匹配 / 实例运行中
+     * 同一事务内写实例 params、任务 applied 留痕与应用历史（含前后快照，可回滚）。
+     *
+     * @throws OptimizationNotApplicableException 任务未完成 / 名次不存在 / 实例不匹配 / 实例运行中
      */
-    public function applyToInstance(ParameterOptimization $optimization, StrategyInstance $instance): StrategyInstance
-    {
+    public function applyToInstance(
+        ParameterOptimization $optimization,
+        StrategyInstance $instance,
+        int $rank = 1,
+        ?int $appliedBy = null,
+    ): ParameterOptimizationApplication {
         if ($optimization->status !== OptimizationStatus::Completed) {
             throw new OptimizationNotApplicableException('寻优任务尚未完成，无法应用最优参数。');
         }
 
-        $bestParams = (array) ($optimization->best_params ?? []);
-        if ($bestParams === []) {
-            throw new OptimizationNotApplicableException('该寻优任务没有可应用的最优参数。');
+        if ($rank < 1) {
+            throw new OptimizationNotApplicableException('参数组名次必须从 1 开始。');
+        }
+
+        $top = (array) ($optimization->report['top'] ?? []);
+        $appliedParams = $rank === 1
+            ? (array) ($optimization->best_params ?? [])
+            : (array) ($top[$rank - 1]['params'] ?? []);
+
+        if ($appliedParams === []) {
+            throw new OptimizationNotApplicableException(
+                $rank === 1
+                    ? '该寻优任务没有可应用的最优参数。'
+                    : "该寻优任务不存在第 {$rank} 名参数组。",
+            );
         }
 
         if ((int) $instance->tenant_id !== (int) $optimization->tenant_id) {
@@ -168,35 +187,90 @@ final class OptimizationService
             throw new OptimizationNotApplicableException('实例运行中，请先 stop 再应用最优参数。', conflict: true);
         }
 
-        // 双保险：best_params 的键必须仍在策略可寻优白名单内（防御历史脏数据）
+        // 双保险：参与寻优的维度必须仍在策略白名单内（防御历史脏数据）
         $whitelist = (array) config("optimization.strategies.{$optimization->strategy_code}", []);
-        foreach ($bestParams as $key => $value) {
+        foreach (array_keys((array) $optimization->grid) as $key) {
             if (! in_array((string) $key, $whitelist, true)) {
                 throw new OptimizationNotApplicableException(sprintf(
-                    '最优参数 %s 不在策略 %s 的可寻优白名单内。',
+                    '寻优维度 %s 不在策略 %s 的白名单内。',
                     $key,
                     $optimization->strategy_code,
                 ));
             }
-
-            if (! is_scalar($value)) {
-                throw new OptimizationNotApplicableException("最优参数 {$key} 的值非法。");
-            }
         }
 
-        $params = array_replace(
-            (array) ($instance->params ?? []),
+        $before = (array) ($instance->params ?? []);
+        $after = array_replace(
+            $before,
             (array) ($optimization->base_params ?? []),
-            $bestParams,
+            $appliedParams,
         );
 
-        DB::transaction(function () use ($optimization, $instance, $params): void {
-            $instance->forceFill(['params' => $params])->save();
+        $application = DB::transaction(function () use (
+            $optimization,
+            $instance,
+            $before,
+            $after,
+            $rank,
+            $appliedBy,
+        ): ParameterOptimizationApplication {
+            $instance->forceFill(['params' => $after])->save();
 
             $optimization->forceFill([
                 'applied_instance_id' => $instance->getKey(),
                 'applied_at' => now(),
             ])->save();
+
+            return ParameterOptimizationApplication::create([
+                'tenant_id' => $optimization->tenant_id,
+                'optimization_id' => $optimization->id,
+                'strategy_instance_id' => $instance->getKey(),
+                'rank' => $rank,
+                'params_before' => $before,
+                'params_after' => $after,
+                'applied_by' => $appliedBy,
+            ]);
+        });
+
+        $application->setRelation('instance', $instance->refresh());
+
+        return $application;
+    }
+
+    /**
+     * 回滚一次应用：实例 params 恢复为应用前快照。
+     *
+     * 仅当实例仍 stopped 且参数与 params_after 一致时可回滚（避免覆盖人工修改）；
+     * 每条应用记录只允许回滚一次。
+     *
+     * @throws OptimizationNotApplicableException 已回滚 / 实例已删除 / 参数已变更 / 实例运行中
+     */
+    public function rollbackApplication(ParameterOptimizationApplication $application): StrategyInstance
+    {
+        if ($application->rolled_back_at !== null) {
+            throw new OptimizationNotApplicableException('该应用记录已回滚，不能重复回滚。', conflict: true);
+        }
+
+        $instance = $application->instance;
+        if ($instance === null) {
+            throw new OptimizationNotApplicableException('目标实例已删除，无法回滚。');
+        }
+
+        if ((int) $instance->tenant_id !== (int) $application->tenant_id) {
+            throw new OptimizationNotApplicableException('应用记录与实例不属于同一租户。');
+        }
+
+        if ($instance->isLive()) {
+            throw new OptimizationNotApplicableException('实例运行中，请先 stop 再回滚。', conflict: true);
+        }
+
+        if ((array) ($instance->params ?? []) != (array) ($application->params_after ?? [])) {
+            throw new OptimizationNotApplicableException('实例参数已被修改，无法自动回滚。', conflict: true);
+        }
+
+        DB::transaction(function () use ($application, $instance): void {
+            $instance->forceFill(['params' => (array) ($application->params_before ?? [])])->save();
+            $application->forceFill(['rolled_back_at' => now()])->save();
         });
 
         return $instance->refresh();

@@ -7,6 +7,7 @@ namespace Tests\Feature\Filament;
 use App\Domain\Archive\Contracts\HistoricalQuery;
 use App\Domain\Backtest\Contracts\OptimizationStatus;
 use App\Domain\Backtest\Models\ParameterOptimization;
+use App\Domain\Backtest\Models\ParameterOptimizationApplication;
 use App\Domain\Backtest\Models\ParameterOptimizationTrial;
 use App\Domain\Tenancy\TenantContext;
 use App\Filament\Admin\Pages\ParameterOptimizationPage;
@@ -198,6 +199,78 @@ final class ParameterOptimizationPageTest extends TestCase
         $optimization->refresh();
         self::assertSame($instance->id, $optimization->applied_instance_id);
         self::assertNotNull($optimization->applied_at);
+    }
+
+    public function test_apply_top_n_and_rollback_from_page(): void
+    {
+        $strategyId = $this->createStrategy();
+        $accountId = $this->createAccount();
+
+        $instance = StrategyInstance::query()->create([
+            'tenant_id' => self::TENANT_ID,
+            'strategy_id' => $strategyId,
+            'exchange_account_id' => $accountId,
+            'symbol' => 'BTCUSDT',
+            'interval' => '5m',
+            'params' => ['grid_count' => 3, 'qty_per_grid' => '0.1'],
+            'allocated_capital' => '1000',
+            'status' => 'stopped',
+        ]);
+
+        $optimization = ParameterOptimization::query()->create([
+            'tenant_id' => self::TENANT_ID,
+            'strategy_code' => 'spot_grid',
+            'symbol' => 'BTCUSDT',
+            'interval' => '5m',
+            'from_utc' => '2023-11-14 00:00:00',
+            'to_utc' => '2023-11-14 01:00:00',
+            'mode' => 'grid',
+            'folds' => 3,
+            'objective' => 'total_return_pct',
+            'grid' => ['grid_count' => [5, 10]],
+            'base_params' => ['lower_price' => '90', 'upper_price' => '110', 'investment_amount' => '1000'],
+            'top_n' => 5,
+            'assumptions' => ['fee_rate' => '0.001', 'slippage_bps' => 5, 'initial_capital' => '1000'],
+            'status' => OptimizationStatus::Completed,
+            'progress_pct' => 100,
+            'best_params' => ['grid_count' => 7],
+            'best_score' => '1.50000000',
+            'report' => [
+                'mode' => 'grid',
+                'objective' => 'total_return_pct',
+                'top' => [
+                    ['params' => ['grid_count' => 7], 'score' => '1.50000000', 'metrics' => []],
+                    ['params' => ['grid_count' => 9], 'score' => '1.20000000', 'metrics' => []],
+                ],
+            ],
+            'finished_at' => now(),
+        ]);
+
+        Livewire::test(ParameterOptimizationPage::class)
+            ->set('selectedOptimizationId', $optimization->id)
+            ->callAction('apply', data: ['rank' => 2, 'instance_id' => $instance->id])
+            ->assertHasNoActionErrors()
+            ->assertSee('应用历史')
+            ->assertSee('Top 2');
+
+        $instance->refresh();
+        self::assertSame(9, $instance->params['grid_count']);
+        self::assertSame('0.1', $instance->params['qty_per_grid']);
+
+        $application = ParameterOptimizationApplication::query()
+            ->where('optimization_id', $optimization->id)
+            ->firstOrFail();
+        self::assertSame(2, $application->rank);
+
+        Livewire::test(ParameterOptimizationPage::class)
+            ->set('selectedOptimizationId', $optimization->id)
+            ->call('rollbackApplication', $application->id)
+            ->assertSee('已回滚');
+
+        $instance->refresh();
+        self::assertSame(3, $instance->params['grid_count']);
+        self::assertSame('0.1', $instance->params['qty_per_grid']);
+        self::assertNotNull($application->refresh()->rolled_back_at);
     }
 
     private function createStrategy(): int
