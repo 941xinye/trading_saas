@@ -8,11 +8,10 @@ use App\Domain\Exchange\Adapters\BinanceFuturesAdapter;
 use App\Domain\Exchange\ExchangeHealthChecker;
 use App\Domain\Exchange\RateLimiter;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
-use Throwable;
 
 /**
  * Binance 合约适配器离线断言（spec 005 WS2）。
@@ -22,32 +21,21 @@ use Throwable;
 class BinanceFuturesAdapterTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const FILTERS_KEY = 'market:symbols:binance_futures:BTCUSDT:filters';
     private const BRACKET_KEY = 'futures:leverage_bracket:BTCUSDT';
-
-    private bool $redisAvailable = false;
 
     protected function setUp(): void
     {
         parent::setUp();
 
-        try {
-            Redis::connection('default')->del(self::FILTERS_KEY, self::BRACKET_KEY);
-            $this->redisAvailable = true;
-        } catch (Throwable) {
-            $this->redisAvailable = false;
-        }
+        $this->cleanupRedis([self::FILTERS_KEY, self::BRACKET_KEY]);
     }
 
     protected function tearDown(): void
     {
-        if ($this->redisAvailable) {
-            try {
-                Redis::connection('default')->del(self::FILTERS_KEY, self::BRACKET_KEY);
-            } catch (Throwable) {
-            }
-        }
+        $this->cleanupRedis([self::FILTERS_KEY, self::BRACKET_KEY]);
 
         parent::tearDown();
     }

@@ -4,16 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Integration\Signal;
 
-use App\Domain\Billing\Metering\TwoPhaseMeter;
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Signal\SignalPipeline;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -28,6 +27,7 @@ use Throwable;
 class SignalPipelineAiTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990061;
 
@@ -42,7 +42,7 @@ class SignalPipelineAiTest extends TestCase
         Queue::fake();
         Carbon::setTestNow(Carbon::create(2026, 10, 15, 8, 0, 0, 'UTC'));
 
-        app(TwoPhaseMeter::class)->flushDayCounter(self::TENANT_ID, 'ai_call');
+        $this->cleanupRedis($this->currentRedisKeys());
 
         $now = Carbon::now();
         DB::table('tenants')->insert([
@@ -66,23 +66,7 @@ class SignalPipelineAiTest extends TestCase
     {
         if ($this->redisAvailable) {
             try {
-                app(TwoPhaseMeter::class)->flushDayCounter(self::TENANT_ID, 'ai_call');
-                // 按精确逻辑名清理（phpredis 全局前缀会自动拼接一次，不能用 keys() 的全名再 del）
-                Redis::connection('default')->del(sprintf(
-                    'tenant:%d:dedup:signal:%s',
-                    self::TENANT_ID,
-                    sha1('PBFPHPUNIT|5m|long'),
-                ));
-                Redis::connection('default')->del(sprintf(
-                    'tenant:%d:dedup:signal:%s',
-                    self::TENANT_ID,
-                    sha1('AIOKPHPUNIT|5m|long'),
-                ));
-                Redis::connection('default')->del(sprintf(
-                    'tenant:%d:ai:ratelimit:deepseek:%d',
-                    self::TENANT_ID,
-                    intdiv(time(), 60),
-                ));
+                $this->cleanupRedis($this->currentRedisKeys());
             } catch (Throwable) {
                 // 坑 #24：外部清理必须守卫
             }
@@ -90,6 +74,21 @@ class SignalPipelineAiTest extends TestCase
         Carbon::setTestNow(null);
 
         parent::tearDown();
+    }
+
+    /**
+     * 本测试涉及的 Redis 键（逻辑名，无前缀；分钟桶按调用时刻重算）。
+     *
+     * 坑 #26：phpredis 全局前缀会自动拼接一次，必须传逻辑名而非 keys() 返回的全名。
+     */
+    private function currentRedisKeys(): array
+    {
+        return [
+            sprintf('tenant:%d:meter:ai_call:%s', self::TENANT_ID, '20261015'),
+            sprintf('tenant:%d:dedup:signal:%s', self::TENANT_ID, sha1('PBFPHPUNIT|5m|long')),
+            sprintf('tenant:%d:dedup:signal:%s', self::TENANT_ID, sha1('AIOKPHPUNIT|5m|long')),
+            sprintf('tenant:%d:ai:ratelimit:deepseek:%d', self::TENANT_ID, intdiv(time(), 60)),
+        ];
     }
 
     /**

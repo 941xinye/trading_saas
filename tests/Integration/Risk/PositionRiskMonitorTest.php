@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -35,6 +36,7 @@ use Throwable;
 class PositionRiskMonitorTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990050;
 
@@ -322,8 +324,7 @@ class PositionRiskMonitorTest extends TestCase
 
     private function clearRedis(): void
     {
-        $prefix = "tenant:" . self::TENANT_ID . ":position_risk:" . self::INSTANCE_ID;
-        Redis::connection('default')->del($prefix . ':lock');
-        Redis::connection('default')->del($prefix . ':warned');
+        $prefix = 'tenant:'.self::TENANT_ID.':position_risk:'.self::INSTANCE_ID;
+        $this->cleanupRedis([$prefix.':lock', $prefix.':warned']);
     }
 }

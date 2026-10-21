@@ -9,6 +9,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -26,12 +27,16 @@ use Throwable;
 class TwoPhaseMeterTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990001;
 
     private const EVENT = 'ai_call';
 
     private TwoPhaseMeter $meter;
+
+    /** 本测试组用到的日计数桶键（逻辑名，日期由 Carbon::setTestNow 固定为 20261015） */
+    private array $redisKeys = [];
 
     /** Redis 是否真实可用；tearDown 绝不能因 Redis 不可用再抛异常（否则污染事务回滚，级联拖垮后续测试） */
     private bool $redisAvailable = false;
@@ -45,7 +50,8 @@ class TwoPhaseMeterTest extends TestCase
         $this->meter = app(TwoPhaseMeter::class);
 
         Carbon::setTestNow(Carbon::create(2026, 10, 15, 8, 0, 0, 'UTC'));
-        $this->meter->flushDayCounter(self::TENANT_ID, self::EVENT);
+        $this->redisKeys = [self::meterKey(self::TENANT_ID, self::EVENT, Carbon::now('UTC'))];
+        $this->cleanupRedis($this->redisKeys);
 
         // meter_events.tenant_id 有外键约束（坑 #15），插入真实租户行
         DB::table('tenants')->insert([
@@ -65,7 +71,7 @@ class TwoPhaseMeterTest extends TestCase
         // 顺序：先做可能失败的外部清理（受守卫保护），最后 parent::tearDown() 回滚事务
         if ($this->redisAvailable) {
             try {
-                app(TwoPhaseMeter::class)->flushDayCounter(self::TENANT_ID, self::EVENT);
+                $this->cleanupRedis($this->redisKeys);
             } catch (Throwable) {
                 // 清理失败不允许吞掉测试结果本身（key TTL 2 天，且用的是高位隔离租户 ID）
             }
@@ -73,6 +79,17 @@ class TwoPhaseMeterTest extends TestCase
         Carbon::setTestNow(null);
 
         parent::tearDown();
+    }
+
+    /**
+     * 两阶段计量桶的 Redis 键名（逻辑名，与 TwoPhaseMeter::key() 一致）。
+     *
+     * 坑 #26：phpredis 全局前缀下直接 facade 调 del 会自动拼一次前缀，
+     *        必须传逻辑名（无前缀）才能正确命中。
+     */
+    private static function meterKey(int $tenantId, string $eventType, Carbon $day): string
+    {
+        return sprintf('tenant:%d:meter:%s:%s', $tenantId, $eventType, $day->format('Ymd'));
     }
 
     public function test_freeze_within_limit_increments_counter(): void

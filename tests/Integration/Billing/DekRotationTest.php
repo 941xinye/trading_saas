@@ -8,11 +8,10 @@ use App\Domain\Tenancy\TenantKeyResolver;
 use App\Support\AesGcmCrypt;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
-use Throwable;
 
 /**
  * 租户 DEK 轮换（迁自 poc:verify-billing 第 8 段，@group redis）。
@@ -24,6 +23,7 @@ use Throwable;
 class DekRotationTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_A = 990036;
 
@@ -40,18 +40,13 @@ class DekRotationTest extends TestCase
 
     private int $accountB;
 
-    /** tearDown 守卫：仅 setUp ping 成功才清 Redis（坑 #24） */
-    private bool $redisAvailable = false;
-
     protected function setUp(): void
     {
         parent::setUp();
         $this->requireRedis();
-        $this->redisAvailable = true;
 
         config(['exchange.master_key' => self::TEST_KEK_HEX]);
-        $this->redisDel('tenant:'.self::TENANT_A.':dek:rotation');
-        $this->redisDel('tenant:'.self::TENANT_B.':dek:rotation');
+        $this->cleanupRedis($this->redisKeys());
 
         $now = Carbon::create(2026, 10, 15, 8, 0, 0, 'UTC');
         $exchangeId = (int) DB::table('exchanges')->insertGetId([
@@ -70,14 +65,8 @@ class DekRotationTest extends TestCase
 
     protected function tearDown(): void
     {
-        if ($this->redisAvailable) {
-            try {
-                $this->redisDel('tenant:'.self::TENANT_A.':dek:rotation');
-                $this->redisDel('tenant:'.self::TENANT_B.':dek:rotation');
-            } catch (Throwable) {
-                // 锁有 120s TTL 兜底，清理失败不致命
-            }
-        }
+        // 坑 #24：外部清理先于 parent::tearDown()（trait 内部静默降级）
+        $this->cleanupRedis($this->redisKeys());
 
         parent::tearDown();
     }
@@ -162,12 +151,14 @@ class DekRotationTest extends TestCase
         ]);
     }
 
-    private function redisDel(string $key): void
+    /**
+     * @return string[]
+     */
+    private function redisKeys(): array
     {
-        try {
-            Redis::connection('default')->del($key);
-        } catch (Throwable) {
-            // requireRedis 已 ping；防御性兜底
-        }
+        return [
+            'tenant:'.self::TENANT_A.':dek:rotation',
+            'tenant:'.self::TENANT_B.':dek:rotation',
+        ];
     }
 }

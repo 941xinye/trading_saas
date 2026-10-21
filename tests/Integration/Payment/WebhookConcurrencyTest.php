@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Redis;
 use Illuminate\Testing\TestResponse;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 
 /**
@@ -24,6 +25,7 @@ use Tests\TestCase;
 class WebhookConcurrencyTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990204;
 
@@ -102,7 +104,7 @@ class WebhookConcurrencyTest extends TestCase
         static::assertSame(0, DB::table('subscriptions')->count());
 
         // 锁释放后重投 → 正常处理且 confirmed_at 仅一次迁移
-        Redis::connection('default')->del([$lockKey]);
+        $this->cleanupRedis([$lockKey]);
 
         $processed = $this->deliver($payload, $signature);
         $processed->assertOk();
@@ -138,6 +140,6 @@ class WebhookConcurrencyTest extends TestCase
 
     private function clearLock(): void
     {
-        Redis::connection('default')->del([$this->lockKey()]);
+        $this->cleanupRedis([$this->lockKey()]);
     }
 }

@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
 use Tests\Fakes\FakeExchangeAdapter;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 
 /**
@@ -30,6 +31,7 @@ use Tests\TestCase;
 class DslCrashRecoveryTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990090;
 
@@ -37,14 +39,11 @@ class DslCrashRecoveryTest extends TestCase
 
     private PendingOrderRecovery $recovery;
 
-    private bool $redisAvailable = false;
-
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->requireRedis();
-        $this->redisAvailable = true;
         $this->recovery = app(PendingOrderRecovery::class);
         $this->scaffold();
     }
@@ -52,9 +51,7 @@ class DslCrashRecoveryTest extends TestCase
     protected function tearDown(): void
     {
         // 清理先于 parent::tearDown() 回滚 RefreshDatabase 事务（docs/pitfalls #24）
-        if ($this->redisAvailable) {
-            Redis::connection('default')->del($this->stateKey());
-        }
+        $this->cleanupRedis([$this->stateKey()]);
 
         parent::tearDown();
     }

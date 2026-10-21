@@ -9,9 +9,9 @@ use App\Domain\Signal\SignalDispatcher;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -25,6 +25,7 @@ use Throwable;
 class SignalDispatcherDedupTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990062;
 
@@ -60,14 +61,14 @@ class SignalDispatcherDedupTest extends TestCase
             self::TENANT_ID,
             sha1(self::SYMBOL.'|5m|long'),
         );
-        Redis::connection('default')->del($this->dedupKey);
+        $this->cleanupRedis([$this->dedupKey]);
     }
 
     protected function tearDown(): void
     {
         if ($this->redisAvailable) {
             try {
-                Redis::connection('default')->del($this->dedupKey);
+                $this->cleanupRedis([$this->dedupKey]);
             } catch (Throwable) {
                 // 坑 #24：外部清理必须守卫
             }

@@ -11,9 +11,9 @@ use App\Listeners\NotifyBreakerTrip;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -32,6 +32,7 @@ use Throwable;
 class RiskNotificationRouteTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990041;
 
@@ -41,6 +42,20 @@ class RiskNotificationRouteTest extends TestCase
 
     /** @var string[] config/risk.php 去掉 websocket 后应落库的 4 个推送渠道 */
     private const PUSH_CHANNELS = ['log', 'telegram', 'wechat_work', 'mail'];
+
+    /** 本测试组用到的全部 Redis 键（逻辑名，无前缀；Redis facade 自动拼一次） */
+    private const REDIS_KEYS = [
+        // 熔断状态 Hash
+        'tenant:{tenant_id}:breaker:{instance_id}',
+        // DedupCooldown：risk_breaker notification + risk status 两类
+        'tenant:{tenant_id}:dedup:risk_breaker:{fp_test_rule}',
+        'tenant:{tenant_id}:dedup:risk_breaker:{fp_dedup_test}',
+        'tenant:{tenant_id}:dedup:risk_status:{fp_test_rule}',
+        'tenant:{tenant_id}:dedup:risk_status:{fp_dedup_test}',
+    ];
+
+    /** 按实际 tenant/instance/rule 拼装出的具体键名 */
+    private array $redisKeys = [];
 
     private bool $redisAvailable = false;
 
@@ -53,20 +68,46 @@ class RiskNotificationRouteTest extends TestCase
         Queue::fake();
         Http::fake();
         $this->scaffold();
-        $this->clearDedupKeys();
+
+        // 构建本轮要清理的具体键（坑 #25：全套连跑顺序依赖）
+        $this->redisKeys = self::buildRedisKeys();
+        $this->cleanupRedis($this->redisKeys);
     }
 
     protected function tearDown(): void
     {
         if ($this->redisAvailable) {
             try {
-                $this->clearDedupKeys();
+                $this->cleanupRedis($this->redisKeys);
             } catch (Throwable) {
                 // 清理失败不允许吞掉测试结果本身（用的是高位隔离租户 ID）
             }
         }
 
         parent::tearDown();
+    }
+
+    /**
+     * 生成本测试用到的全部逻辑名 Redis 键。
+     *
+     * DedupCooldown 的 fingerprint = sha1(instanceId|ruleType)，
+     * risk_breaker / risk_status 两类通知各占一个 dedup 槽。
+     *
+     * 坑 #26：phpredis 全局前缀下 keys() 返回带前缀全名，再 del 会二次拼接删不掉；
+     *        本 trait 的 cleanupRedis 按逻辑名调 Redis facade，客户端自动拼一次前缀。
+     */
+    private static function buildRedisKeys(): array
+    {
+        $tenant = self::TENANT_ID;
+        $iid = self::INSTANCE_ID;
+        $keys = ["tenant:{$tenant}:breaker:{$iid}"];
+        foreach (['test_rule', 'dedup_test'] as $ruleType) {
+            $fp = sha1("{$iid}|{$ruleType}");
+            $keys[] = "tenant:{$tenant}:dedup:risk_breaker:{$fp}";
+            $keys[] = "tenant:{$tenant}:dedup:risk_status:{$fp}";
+        }
+
+        return $keys;
     }
 
     // ------------------------------------------------------------------
@@ -169,21 +210,6 @@ class RiskNotificationRouteTest extends TestCase
             'created_at' => $now,
             'updated_at' => $now,
         ]);
-    }
-
-    private function clearDedupKeys(): void
-    {
-        $redis = Redis::connection('default');
-        $redis->del('tenant:'.self::TENANT_ID.':breaker:'.self::INSTANCE_ID);
-        // 注意：phpredis 开了全局前缀（config database.redis.options.prefix），keys() 返回带前缀的
-        // 完整名，直接 del 会被二次拼接前缀而删不掉；这里按本类已知 fingerprint 精确删（无前缀逻辑名，
-        // del 时由客户端补一次前缀）。
-        foreach (['test_rule', 'dedup_test'] as $ruleType) {
-            $redis->del(
-                'tenant:'.self::TENANT_ID.':dedup:risk_breaker:'
-                .sha1(self::INSTANCE_ID.'|'.$ruleType),
-            );
-        }
     }
 
     private function scaffold(): void

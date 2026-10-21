@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Integration\Signal;
 
-use App\Domain\Billing\Metering\TwoPhaseMeter;
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Signal\Contracts\AiUnavailableException;
 use App\Domain\Signal\IndicatorCalculator;
@@ -12,9 +11,9 @@ use App\Domain\Signal\Prompters\DeepSeekAdapter;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -28,6 +27,7 @@ use Throwable;
 class DeepSeekAdapterTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990060;
 
@@ -41,15 +41,7 @@ class DeepSeekAdapterTest extends TestCase
 
         Carbon::setTestNow(Carbon::create(2026, 10, 15, 8, 0, 0, 'UTC'));
 
-        app(TwoPhaseMeter::class)->flushDayCounter(self::TENANT_ID, 'ai_call');
-        try {
-            Redis::connection('default')->del(sprintf(
-                'tenant:%d:ai:ratelimit:deepseek:%d',
-                self::TENANT_ID,
-                intdiv(time(), 60),
-            ));
-        } catch (Throwable) {
-        }
+        $this->cleanupRedis($this->currentRedisKeys());
 
         DB::table('tenants')->insert([
             'id' => self::TENANT_ID,
@@ -72,13 +64,26 @@ class DeepSeekAdapterTest extends TestCase
     {
         if ($this->redisAvailable) {
             try {
-                app(TwoPhaseMeter::class)->flushDayCounter(self::TENANT_ID, 'ai_call');
+                $this->cleanupRedis($this->currentRedisKeys());
             } catch (Throwable) {
             }
         }
         Carbon::setTestNow(null);
 
         parent::tearDown();
+    }
+
+    /**
+     * 本测试涉及的 Redis 键（逻辑名，无前缀；分钟桶按调用时刻重算）。
+     *
+     * 坑 #26：逻辑名交给 Redis facade，客户端自动拼一次全局前缀。
+     */
+    private function currentRedisKeys(): array
+    {
+        return [
+            sprintf('tenant:%d:meter:ai_call:%s', self::TENANT_ID, '20261015'),
+            sprintf('tenant:%d:ai:ratelimit:deepseek:%d', self::TENANT_ID, intdiv(time(), 60)),
+        ];
     }
 
     /**

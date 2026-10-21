@@ -11,9 +11,9 @@ use App\Domain\Signal\SignalPipeline;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -28,6 +28,7 @@ use Throwable;
 class AiQuotaFallbackTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990033;
 
@@ -62,9 +63,7 @@ class AiQuotaFallbackTest extends TestCase
         ]);
 
         $this->meter = app(TwoPhaseMeter::class);
-        $this->meter->flushDayCounter(self::TENANT_ID, self::EVENT);
-        $this->redisDel($this->rateLimitKey());
-        $this->redisDel($this->dedupKey());
+        $this->cleanupRedis($this->currentRedisKeys());
     }
 
     protected function tearDown(): void
@@ -75,10 +74,8 @@ class AiQuotaFallbackTest extends TestCase
 
         if ($this->redisAvailable) {
             try {
-                $meter = app(TwoPhaseMeter::class);
-                $meter->flushDayCounter(self::TENANT_ID, self::EVENT);
-                $this->redisDel($this->rateLimitKey());
-                $this->redisDel($this->dedupKey());
+                // 分钟桶按调用时刻重算，跨分钟边界也能清干净
+                $this->cleanupRedis($this->currentRedisKeys());
             } catch (Throwable) {
                 // key 均带 TTL 且使用高位隔离租户 ID，清理失败不吞测试结果
             }
@@ -86,6 +83,20 @@ class AiQuotaFallbackTest extends TestCase
         Carbon::setTestNow(null);
 
         parent::tearDown();
+    }
+
+    /**
+     * 本测试涉及的 Redis 键（逻辑名，无前缀）。
+     *
+     * 坑 #26：逻辑名交给 Redis facade，客户端自动拼一次全局前缀。
+     */
+    private function currentRedisKeys(): array
+    {
+        return [
+            sprintf('tenant:%d:meter:%s:%s', self::TENANT_ID, self::EVENT, '20261015'),
+            $this->rateLimitKey(),
+            $this->dedupKey(),
+        ];
     }
 
     public function test_exhausted_quota_emits_deterministic_rule_fallback_without_http_or_meter_row(): void
@@ -189,15 +200,6 @@ class AiQuotaFallbackTest extends TestCase
     private function dedupKey(): string
     {
         return sprintf('tenant:%d:dedup:signal:%s', self::TENANT_ID, sha1('PBFTEST|5m|long'));
-    }
-
-    private function redisDel(string $key): void
-    {
-        try {
-            Redis::connection('default')->del($key);
-        } catch (Throwable) {
-            // requireRedis 已 ping；防御性兜底
-        }
     }
 
     /**

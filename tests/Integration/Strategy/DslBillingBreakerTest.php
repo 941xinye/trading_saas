@@ -18,10 +18,10 @@ use App\Domain\Strategy\Contracts\StrategyContext;
 use App\Domain\Strategy\Custom\DslStrategy;
 use App\Domain\Strategy\OrderExecutor;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
 use Mockery;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 
 /**
@@ -37,6 +37,7 @@ use Tests\TestCase;
 class DslBillingBreakerTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_QUOTA = 990120;
 
@@ -46,34 +47,36 @@ class DslBillingBreakerTest extends TestCase
 
     private const INSTANCE_BREAKER = 990221;
 
-    private bool $redisAvailable = false;
-
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->requireRedis();
-        $this->redisAvailable = true;
         $this->scaffold();
     }
 
     protected function tearDown(): void
     {
         // 清理先于 parent::tearDown() 回滚事务（docs/pitfalls #24）
-        if ($this->redisAvailable) {
-            $redis = Redis::connection('default');
-            $day = gmdate('Ymd');
-            foreach ([self::TENANT_QUOTA, self::TENANT_BREAKER] as $tenantId) {
-                $redis->del(sprintf('tenant:%d:meter:order_placed:%s', $tenantId, $day));
-            }
-            $redis->del(sprintf(
-                'tenant:%d:breaker:%d',
-                self::TENANT_BREAKER,
-                self::INSTANCE_BREAKER,
-            ));
-        }
+        $this->cleanupRedis($this->redisKeys());
 
         parent::tearDown();
+    }
+
+    /**
+     * 本用例写入的 Redis 键（逻辑名，trait 自动拼前缀）。
+     *
+     * @return string[]
+     */
+    private function redisKeys(): array
+    {
+        $day = gmdate('Ymd');
+
+        return [
+            sprintf('tenant:%d:meter:order_placed:%s', self::TENANT_QUOTA, $day),
+            sprintf('tenant:%d:meter:order_placed:%s', self::TENANT_BREAKER, $day),
+            sprintf('tenant:%d:breaker:%d', self::TENANT_BREAKER, self::INSTANCE_BREAKER),
+        ];
     }
 
     // ------------------------------------------------------------------

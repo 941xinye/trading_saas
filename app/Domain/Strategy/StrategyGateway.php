@@ -8,6 +8,7 @@ use App\Domain\Billing\QuotaGuard;
 use App\Models\Strategy;
 use App\Models\StrategyInstance;
 use App\Models\Tenant;
+use App\Support\Enums\CircuitBreakerState;
 use RuntimeException;
 
 /**
@@ -70,7 +71,7 @@ class StrategyGateway
             'allocated_capital' => $allocatedCapital,
             'leverage' => $leverage,
             'status' => 'stopped',
-            'breaker_state' => 'closed',
+            'breaker_state' => CircuitBreakerState::Closed,
         ]);
     }
 }

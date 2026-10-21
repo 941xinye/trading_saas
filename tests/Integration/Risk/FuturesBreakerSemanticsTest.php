@@ -9,9 +9,9 @@ use App\Domain\Risk\Breaker\BreakerStateMachine;
 use App\Domain\Risk\Breaker\CircuitBreaker;
 use App\Domain\Risk\RiskGuard;
 use App\Domain\Risk\Rules\MaxLossPerTradeRule;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -32,6 +32,7 @@ use Throwable;
 class FuturesBreakerSemanticsTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private bool $redisAvailable = false;
 
@@ -140,9 +141,9 @@ class FuturesBreakerSemanticsTest extends TestCase
      */
     private function clearRedis(): void
     {
-        Redis::connection('default')->del(
+        $this->cleanupRedis([
             'tenant:'.self::TENANT_ID.':breaker:'.self::INSTANCE_ID,
-        );
+        ]);
     }
 
     private function makeOrder(string $side, string $qty, string $price): ExchangeOrder

@@ -14,8 +14,8 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use ReflectionMethod;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
-use Throwable;
 
 /**
  * OKX 现货适配器离线断言（US1 MVP）。
@@ -29,34 +29,23 @@ use Throwable;
 class OkxAdapterTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const FILTERS_KEY = 'market:symbols:okx:BTCUSDT:filters';
-
-    private bool $redisAvailable = false;
 
     protected function setUp(): void
     {
         parent::setUp();
 
         // constitution VI：TTL 键在 setUp/tearDown 都精确清理。
-        // Redis 不可用时静默降级（T007-T009 不依赖 Redis，T010 由 requireRedis() 守卫）。
-        try {
-            Redis::connection('default')->del(self::FILTERS_KEY);
-            $this->redisAvailable = true;
-        } catch (Throwable) {
-            $this->redisAvailable = false;
-        }
+        // Redis 不可用时 trait 内部静默降级（T007-T009 不依赖 Redis，T010 由 requireRedis() 守卫）。
+        $this->cleanupRedis([self::FILTERS_KEY]);
     }
 
     protected function tearDown(): void
     {
-        // constitution VI：外部 IO 清理先于 parent::tearDown()，可用性标志 + try/catch。
-        if ($this->redisAvailable) {
-            try {
-                Redis::connection('default')->del(self::FILTERS_KEY);
-            } catch (Throwable) {
-            }
-        }
+        // constitution VI：外部 IO 清理先于 parent::tearDown()。
+        $this->cleanupRedis([self::FILTERS_KEY]);
 
         parent::tearDown();
     }

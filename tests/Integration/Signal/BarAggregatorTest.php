@@ -6,9 +6,9 @@ namespace Tests\Integration\Signal;
 
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Signal\BarAggregator;
-use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -21,6 +21,7 @@ use Throwable;
 class BarAggregatorTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const SYMBOL = 'PHPUNITAGG';
 
@@ -37,7 +38,7 @@ class BarAggregatorTest extends TestCase
     {
         if ($this->redisAvailable) {
             try {
-                Redis::connection('default')->del(self::STATE_KEY);
+                $this->cleanupRedis([self::STATE_KEY]);
             } catch (Throwable) {
                 // 清理失败不允许污染测试结果（坑 #24：外部清理必须守卫）
             }
@@ -65,7 +66,7 @@ class BarAggregatorTest extends TestCase
     {
         $this->requireRedis();
         $this->redisAvailable = true;
-        Redis::connection('default')->del(self::STATE_KEY);
+        $this->cleanupRedis([self::STATE_KEY]);
 
         $base = $this->alignedBucketBase();
         $agg = new BarAggregator;
@@ -96,7 +97,7 @@ class BarAggregatorTest extends TestCase
     {
         $this->requireRedis();
         $this->redisAvailable = true;
-        Redis::connection('default')->del(self::STATE_KEY);
+        $this->cleanupRedis([self::STATE_KEY]);
 
         $base = $this->alignedBucketBase();
         $agg = new BarAggregator;

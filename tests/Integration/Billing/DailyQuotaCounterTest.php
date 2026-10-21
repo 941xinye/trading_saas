@@ -11,6 +11,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -26,12 +27,16 @@ use Throwable;
 class DailyQuotaCounterTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990031;
 
     private const EVENT = 'ai_call';
 
     private TwoPhaseMeter $meter;
+
+    /** 本测试要清的两个日桶键（15 日与跨天后的 16 日） */
+    private array $redisKeys = [];
 
     /** tearDown 守卫：仅 setUp ping 成功才清 Redis（坑 #24） */
     private bool $redisAvailable = false;
@@ -55,8 +60,14 @@ class DailyQuotaCounterTest extends TestCase
             'updated_at' => Carbon::now(),
         ]);
 
+        // 坑 #25：跨天用例会写 15/16 两个桶，两头都清掉避免全套连跑顺序依赖
+        $this->redisKeys = [
+            self::meterKey(self::TENANT_ID, self::EVENT, '20261015'),
+            self::meterKey(self::TENANT_ID, self::EVENT, '20261016'),
+        ];
+        $this->cleanupRedis($this->redisKeys);
+
         $this->meter = app(TwoPhaseMeter::class);
-        $this->meter->flushDayCounter(self::TENANT_ID, self::EVENT);
     }
 
     protected function tearDown(): void
@@ -64,9 +75,7 @@ class DailyQuotaCounterTest extends TestCase
         // 顺序同 TwoPhaseMeterTest：外部清理受守卫保护且先于 parent::tearDown()（坑 #24）
         if ($this->redisAvailable) {
             try {
-                $meter = app(TwoPhaseMeter::class);
-                $meter->flushDayCounter(self::TENANT_ID, self::EVENT);
-                $meter->flushDayCounter(self::TENANT_ID, self::EVENT, Carbon::create(2026, 10, 16, 0, 0, 0, 'UTC'));
+                $this->cleanupRedis($this->redisKeys);
             } catch (Throwable) {
                 // key TTL 2 天且用高位隔离租户 ID，清理失败不吞测试结果
             }
@@ -74,6 +83,16 @@ class DailyQuotaCounterTest extends TestCase
         Carbon::setTestNow(null);
 
         parent::tearDown();
+    }
+
+    /**
+     * 两阶段计量桶键（逻辑名，与 TwoPhaseMeter::key() 一致）。
+     *
+     * 坑 #26：逻辑名交给 Redis facade，客户端自动拼一次全局前缀，避免二次拼接。
+     */
+    private static function meterKey(int $tenantId, string $eventType, string $day): string
+    {
+        return sprintf('tenant:%d:meter:%s:%s', $tenantId, $eventType, $day);
     }
 
     public function test_fresh_day_counter_starts_at_zero(): void

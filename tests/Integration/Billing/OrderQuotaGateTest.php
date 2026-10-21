@@ -16,6 +16,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 use Throwable;
 
@@ -29,12 +30,16 @@ use Throwable;
 class OrderQuotaGateTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private const TENANT_ID = 990034;
 
     private const EVENT = 'order_placed';
 
     private int $instanceId;
+
+    /** 本轮要清的日配额桶键（逻辑名，Carbon 固定为 2026-10-15） */
+    private array $redisKeys = [];
 
     /** tearDown 守卫：仅 redis 用例真实连过 Redis 才清理（坑 #24） */
     private bool $redisAvailable = false;
@@ -44,6 +49,9 @@ class OrderQuotaGateTest extends TestCase
         parent::setUp();
 
         Carbon::setTestNow(Carbon::create(2026, 10, 15, 8, 0, 0, 'UTC'));
+        $this->redisKeys = [
+            sprintf('tenant:%d:meter:%s:%s', self::TENANT_ID, self::EVENT, '20261015'),
+        ];
 
         $now = Carbon::now();
         DB::table('tenants')->insert([
@@ -92,7 +100,7 @@ class OrderQuotaGateTest extends TestCase
     {
         if ($this->redisAvailable) {
             try {
-                app(TwoPhaseMeter::class)->flushDayCounter(self::TENANT_ID, self::EVENT);
+                $this->cleanupRedis($this->redisKeys);
             } catch (Throwable) {
                 // key TTL 2 天且用高位隔离租户 ID
             }
@@ -109,7 +117,7 @@ class OrderQuotaGateTest extends TestCase
         // limit<=0 虽在 INCR 前短路，但异常 payload 仍触 Redis，故归 redis 组。
         $this->requireRedis();
         $this->redisAvailable = true;
-        app(TwoPhaseMeter::class)->flushDayCounter(self::TENANT_ID, self::EVENT);
+        $this->cleanupRedis($this->redisKeys);
 
         config(['plans.plans.free.features.orders_per_day' => 0]);
 
@@ -150,9 +158,9 @@ class OrderQuotaGateTest extends TestCase
     {
         $this->requireRedis();
         $this->redisAvailable = true;
+        $this->cleanupRedis($this->redisKeys);
 
         $meter = app(TwoPhaseMeter::class);
-        $meter->flushDayCounter(self::TENANT_ID, self::EVENT);
         $executor = app(OrderExecutor::class);
 
         // (c) 正常下单 → filled，交易所被调用 1 次，order_placed 用量=1

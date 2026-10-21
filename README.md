@@ -1,4 +1,4 @@
-﻿# Trading SaaS Platform
+﻿﻿# Trading SaaS Platform
 
 币圈交易 SaaS 平台 —— 多租户策略交易 + AI 信号 + 实时风控 + 熔断保护。
 
@@ -217,6 +217,20 @@ Binance 合约强平流 `!forceOrder@arr` 实时订阅 + Redis ZSET+HASH 聚类 
 - API 路由 `/api/v1/liquidation/map` + `/api/v1/liquidation/recent` 接入 `auth:sanctum + tenant` 中间件栈。
 
 **已知边界**：真实 fstream 实跑阻塞于 WSL 出口网络对 Binance 主网（fstream.binance.com / api.binance.com）不可达（ECONNREFUSED），testnet 端点可达——离线断言已覆盖全部核心逻辑（DTO/聚类/Redis 数据结构/三档窗口/eviction/MapService），网络恢复后 `poc:liquidation-demo --duration=120` 可随时补测；Reverb 广播爆仓密集区、多交易所强平流、ClickHouse 历史归档留待后续迭代。
+
+### ✅ 已完成：P5.5 上线前工程化加固（2026-10-15，代码侧全部交付，节点侧待海外实跑）
+
+**阶段定位**：不做新业务功能，只还上线前必还的债（A1/A2/A3/C1/C2/C3）。步骤 0–3 全绿，步骤 4 运维化代码已就绪（节点 kill -9 拉起 / 强平实跑待节点执行）。
+
+| 步骤 | 产出 | 验证 | 销债编号 |
+|---|---|---|---|
+| 0 测试基建 | PHPUnit 分组（default/redis/mysql/smoke）+ CI workflow + 样板测试 | 本机 12 passed/3 skipped；停 Redis 后 redis 组自动 skip | C1 前半 |
+| 1 账实对账 | ReconciliationService + `reconciliation_reports` + `reconcile:run/status` 命令 + `paused_by_reconcile` 暂停态 + 崩溃恢复 pending 格核单 | PHPUnit 23 项（离线+@redis）；每 5 分钟调度，critical 自动暂停实例 + 多渠道告警 | A1、A3 |
+| 2 SpotDca 落地 | SpotDcaStrategy 完整实现（16 项测试）+ 套餐白名单硬闸门 `config('strategy.implemented')` 前置检查 | PHPUnit 16 项；testnet 小额实跑待海外节点 | A2、B1 |
+| 3 存量断言迁入 PHPUnit | P1–P5 原 154 项 poc:verify 断言全部迁入 Feature/Unit/Redis 分组 | 三环境实测全绿；`poc:verify-*` 命令保留为便捷入口 | C1 后半 |
+| 4 运维化 | deploy/supervisor 五样板（market-feed / worker-ai / worker-default / octane / reverb）+ `billing:refresh-status` 每日调度 + 海外节点 runbook | `schedule:list` 两条目 + 3 项 PHPUnit；supervisor 节点侧 kill -9 拉起待实跑 | C2、C3、B8 |
+
+> 执行计划与实测证据见 [p5.5-hardening-plan.md](docs/p5.5-hardening-plan.md)；海外节点验收清单见 [overseas-node-runbook.md](docs/overseas-node-runbook.md)。
 
 ### ✅ 已完成：spec 001 OKX 现货适配器（2026-10-17，spec-kit SDD 首个落地 feature）
 

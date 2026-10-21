@@ -13,6 +13,7 @@ use App\Models\Tenant;
 use App\Domain\Tenancy\TenantContext;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Redis;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 
 /**
@@ -24,6 +25,7 @@ use Tests\TestCase;
  */
 final class BacktestConcurrencyTest extends TestCase
 {
+    use RedisCleanup;
     use RefreshDatabase;
 
     private Tenant $tenant;
@@ -167,13 +169,7 @@ final class BacktestConcurrencyTest extends TestCase
 
     private function cleanupLocks(): void
     {
-        $prefix = config('database.redis.options.prefix', '');
-        // keys 内部会自动加前缀，pattern 无需手动加前缀
-        $keys = Redis::connection('default')->keys('tenant:*:backtest:lock:*');
-        foreach ($keys as $key) {
-            // keys 返回的 key 已含前缀，del 时会自动再加前缀，需先剥离
-            $rawKey = str_starts_with($key, $prefix) ? substr($key, strlen($prefix)) : $key;
-            Redis::connection('default')->del($rawKey);
-        }
+        // keys 内部会自动加前缀，pattern 无需手动加前缀；trait 自动 strip 前缀后再 del（坑 #26）
+        $this->flushRedisPattern('tenant:*:backtest:lock:*');
     }
 }

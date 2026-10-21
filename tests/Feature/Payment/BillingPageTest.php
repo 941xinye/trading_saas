@@ -14,6 +14,7 @@ use App\Policies\PaymentInvoicePolicy;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  */
 class BillingPageTest extends TestCase
 {
+    use RedisCleanup;
+
     private const TENANT_A = 990301;
 
     private const TENANT_B = 990302;
@@ -37,11 +40,18 @@ class BillingPageTest extends TestCase
 
     private User $userB;
 
+    /** 本轮要清的 Redis 键（逻辑名，flush 在 setUp/tearDown 两头做） */
+    private array $redisKeys = [];
+
     protected function setUp(): void
     {
         parent::setUp();
 
         Carbon::setTestNow(Carbon::create(2026, 10, 20, 8, 0, 0, 'UTC'));
+
+        // 先清当日桶（坑 #25：全套连跑时前序测试残留 TTL 键会让 reconcile 基线漂移）
+        $this->redisKeys = self::buildMeterKeys();
+        $this->cleanupRedis($this->redisKeys);
 
         foreach ([
             [self::TENANT_A, 'free', 'poc-bill-page-a-990301'],
@@ -99,15 +109,7 @@ class BillingPageTest extends TestCase
     protected function tearDown(): void
     {
         try {
-            foreach ([self::TENANT_A, self::TENANT_B] as $tenantId) {
-                foreach (array_keys(TwoPhaseMeter::DAILY_LIMIT_KEYS) as $eventType) {
-                    try {
-                        app(TwoPhaseMeter::class)->flushDayCounter($tenantId, $eventType);
-                    } catch (\Throwable) {
-                        // Redis 不可用无需清理
-                    }
-                }
-            }
+            $this->cleanupRedis($this->redisKeys);
             DB::table('payment_invoices')->whereIn('tenant_id', [self::TENANT_A, self::TENANT_B])->delete();
             DB::table('meter_events')->whereIn('tenant_id', [self::TENANT_A, self::TENANT_B])->delete();
             DB::table('users')->whereIn('tenant_id', [self::TENANT_A, self::TENANT_B])->delete();
@@ -119,6 +121,25 @@ class BillingPageTest extends TestCase
         Carbon::setTestNow(null);
 
         parent::tearDown();
+    }
+
+    /**
+     * 构建本轮要清的全部日计数桶键（两租户 × 两类事件 × 测试日 20261020）。
+     *
+     * TwoPhaseMeter::key() 逻辑：`tenant:{tid}:meter:{event}:{Ymd}`。
+     * 坑 #26：逻辑名传入 Redis facade，客户端自动拼一次全局前缀，不会二次拼接。
+     */
+    private static function buildMeterKeys(): array
+    {
+        $day = '20261020';
+        $keys = [];
+        foreach ([self::TENANT_A, self::TENANT_B] as $tid) {
+            foreach (array_keys(TwoPhaseMeter::DAILY_LIMIT_KEYS) as $event) {
+                $keys[] = "tenant:{$tid}:meter:{$event}:{$day}";
+            }
+        }
+
+        return $keys;
     }
 
     public function test_billing_page_renders_plan_usage_and_upgrade_action(): void

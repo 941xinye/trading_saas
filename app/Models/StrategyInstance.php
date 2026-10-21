@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Domain\Tenancy\BelongsToTenant;
+use App\Support\Enums\CircuitBreakerState;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -60,6 +61,7 @@ class StrategyInstance extends Model
         'leverage' => 'integer',
         'started_at' => 'datetime',
         'stopped_at' => 'datetime',
+        'breaker_state' => CircuitBreakerState::class,
     ];
 
     public function isLive(): bool

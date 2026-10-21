@@ -8,7 +8,7 @@ use App\Domain\Payment\PaymentInvoiceService;
 use App\Http\Controllers\Api\V1\BillingWebhookController;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 
 /**
@@ -20,6 +20,8 @@ use Tests\TestCase;
  */
 class WebhookIdempotencyTest extends TestCase
 {
+    use RedisCleanup;
+
     private const TENANT_ID = 990202;
 
     private string $ref = '';
@@ -118,12 +120,8 @@ class WebhookIdempotencyTest extends TestCase
             return;
         }
 
-        try {
-            Redis::connection('default')->del([
-                sprintf(BillingWebhookController::LOCK_KEY_PATTERN, self::TENANT_ID, $this->ref),
-            ]);
-        } catch (\Throwable) {
-            // Redis 不可用时无需清理（锁未生效）
-        }
+        $this->cleanupRedis([
+            sprintf(BillingWebhookController::LOCK_KEY_PATTERN, self::TENANT_ID, $this->ref),
+        ]);
     }
 }

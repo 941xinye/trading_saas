@@ -12,8 +12,8 @@ use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
 use Tests\Fakes\FakeExchangeAdapter;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
-use Throwable;
 
 /**
  * 账实对账编排集成测试（P5.5 步骤 1 验收 #2、#3、#5-#8）。
@@ -24,6 +24,7 @@ use Throwable;
 class ReconciliationServiceTest extends TestCase
 {
     use ChecksRedisAvailability;
+    use RedisCleanup;
 
     private ReconciliationService $service;
 
@@ -82,20 +83,18 @@ class ReconciliationServiceTest extends TestCase
      */
     private function clearReconcileRedisState(array $ids): void
     {
-        try {
-            $redis = Redis::connection('default');
-            foreach ([[$ids['tenant_a'] ?? null, $ids['instance_a'] ?? null], [$ids['tenant_b'] ?? null, $ids['instance_b'] ?? null]] as [$tid, $iid]) {
-                if ($tid === null || $iid === null) {
-                    continue;
-                }
-                foreach (['critical', 'unknown_streak'] as $kind) {
-                    $redis->del(sprintf('tenant:%d:dedup:reconcile:%s', $tid, sha1($iid.'|'.$kind)));
-                }
-                $redis->del(sprintf('tenant:%d:reconcile:%d:unknown', $tid, $iid));
+        $keys = [];
+        foreach ([[$ids['tenant_a'] ?? null, $ids['instance_a'] ?? null], [$ids['tenant_b'] ?? null, $ids['instance_b'] ?? null]] as [$tid, $iid]) {
+            if ($tid === null || $iid === null) {
+                continue;
             }
-        } catch (Throwable) {
-            // Redis 不可用时无需清理（fail-open 路径不落键）
+            foreach (['critical', 'unknown_streak'] as $kind) {
+                $keys[] = sprintf('tenant:%d:dedup:reconcile:%s', $tid, sha1($iid.'|'.$kind));
+            }
+            $keys[] = sprintf('tenant:%d:reconcile:%d:unknown', $tid, $iid);
         }
+
+        $this->cleanupRedis($keys);
     }
 
     public function test_ok_when_ledger_matches_exchange(): void
@@ -269,7 +268,7 @@ class ReconciliationServiceTest extends TestCase
         $this->requireRedis();
         $redis = Redis::connection('default');
         $key = "tenant:{$this->ids['tenant_a']}:reconcile:{$this->ids['instance_a']}:unknown";
-        $redis->del($key);
+        $this->cleanupRedis([$key]);
 
         $this->adapterA->throwOnBalance = true;
         $this->service->runForInstance($this->ids['instance_a'], '5m', $this->t0, $this->adapterA);
@@ -289,7 +288,7 @@ class ReconciliationServiceTest extends TestCase
         $this->adapterA->throwOnBalance = false;
         $this->service->runForInstance($this->ids['instance_a'], '5m', $this->t0 + 180, $this->adapterA);
         static::assertSame(0, (int) $redis->get($key));
-        $redis->del($key);
+        $this->cleanupRedis([$key]);
     }
 
     /**

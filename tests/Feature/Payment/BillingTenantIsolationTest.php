@@ -10,9 +10,9 @@ use App\Http\Controllers\Api\V1\BillingWebhookController;
 use App\Models\User;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
 use Illuminate\Testing\TestResponse;
 use Laravel\Sanctum\Sanctum;
+use Tests\Support\RedisCleanup;
 use Tests\TestCase;
 
 /**
@@ -26,6 +26,8 @@ use Tests\TestCase;
  */
 class BillingTenantIsolationTest extends TestCase
 {
+    use RedisCleanup;
+
     private const TENANT_A = 990311;
 
     private const TENANT_B = 990312;
@@ -186,13 +188,9 @@ class BillingTenantIsolationTest extends TestCase
     {
         foreach ([self::TENANT_A, self::TENANT_B] as $tenantId) {
             foreach ($this->refs as $ref) {
-                try {
-                    Redis::connection('default')->del([
-                        sprintf(BillingWebhookController::LOCK_KEY_PATTERN, $tenantId, $ref),
-                    ]);
-                } catch (\Throwable) {
-                    // Redis 不可用：锁未生效，无需清理
-                }
+                $this->cleanupRedis([
+                    sprintf(BillingWebhookController::LOCK_KEY_PATTERN, $tenantId, $ref),
+                ]);
             }
         }
     }
