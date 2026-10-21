@@ -1,6 +1,6 @@
-# 踩坑记录（P1–spec 006 实测，共 43 条）
+# 踩坑记录（P1–spec 008 实测，共 47 条）
 
-> 2026-10-13 起在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀，随各阶段持续追加（#1–9 P1 / #10–12 P2 / #13–16 P3 / #17–19 P4 / #20–23 P5 / #24–28 P5.5 测试与 CI / #29–33 P8/B7 回填 / #34–38 spec 005 合约网格 + 仓位风控 / #39–42 spec 006 DSL / #43 spec 005 单飞锁修复）。
+> 2026-10-13 起在 WSL2 + Ubuntu 22.04（PHP 8.4.26 + Swoole 6.2.3）环境实测沉淀，随各阶段持续追加（#1–9 P1 / #10–12 P2 / #13–16 P3 / #17–19 P4 / #20–23 P5 / #24–28 P5.5 测试与 CI / #29–33 P8/B7 回填 / #34–38 spec 005 合约网格 + 仓位风控 / #39–42 spec 006 DSL / #43 spec 005 单飞锁修复 / #44–47 spec 008 回测引擎）。
 > 每条记录：现象 → 根因 → 处理 → 代码位置。后续阶段踩坑继续追加到本文件。
 
 ## 1. Swoole curl hook 与 Guzzle 7.9 不兼容
@@ -334,3 +334,34 @@
 - **处理**：改为 `set($key, $value, 'EX', $ttl, 'NX')`（`flag` 永远放最后），与仓库既有 [TenantKeyResolver](../app/Domain/Tenancy/TenantKeyResolver.php#L97) / [DedupCooldown](../app/Domain/Notification/DedupCooldown.php#L30) 写法对齐。`orderQty` 那条是测试期望过严：实现走 `bcmul($size, $reduceRatio, 8)` 产出 scale-8 字符串，符合 constitution II 的 bcmath 字符串约定（下游 `StrategyRunner` 直接透传给 `OrderExecutor`），故修正测试期望为 `'1.00000000'`。
 - **位置**：[PositionRiskMonitor.php](../app/Domain/Risk/Position/PositionRiskMonitor.php#L122)（单飞锁）、[同文件 L188](../app/Domain/Risk/Position/PositionRiskMonitor.php#L188)（去重）
 - **教训**：①Laravel 的 `SET` 选项不能像原生 Redis 命令那样自由叠加，`SET NX EX` 一律写 `set($k, $v, 'EX', $ttl, 'NX')`；②"标志位被吞掉"类 bug 不报错、不抛异常，只表现为"锁/去重不生效"，**只有负向并发测试**（先抢占、再断言被拒）能发现，正向单次调用测试永远发现不了；③断言 bcmath 产物时不要用 trimmed 期望值，统一按 scale-8 字符串比对。
+
+## 44. Laravel 命令自动发现只扫 `app/Console/Commands`，放领域目录不会注册（spec 008 WS7，2026-10-21）
+
+- **现象**：tasks.md 设计的落点是 `app/Domain/Backtest/Console/PocVerifyBacktestCommand.php`；若照此放置，`php artisan poc:verify-backtest` 不会出现在命令列表，`Artisan::call()` 同样找不到命令。
+- **根因**：Laravel 11/13 的默认命令发现路径由 `bootstrap/app.php` 的 `withCommands()` 决定，只扫描 `app/Console/Commands`；领域目录不会自动注册（`app/Domain/*/Console` 不在扫描面）。
+- **处理**：落到 [PocVerifyBacktestCommand.php](../app/Console/Commands/PocVerifyBacktestCommand.php#L50)，与既有 `PocVerifyPaymentCommand` 同目录；领域命令如确需留在领域目录，必须在 `bootstrap/app.php` 显式 `withCommands([...])` 注册。
+- **教训**：tasks.md 的路径是设计建议，落地前先确认框架的发现机制；「类写完了但命令不存在」优先查注册路径而不是语法。
+
+## 45. bcmath 截断与契约表展示值不一致：win_rate 2/3 是 66.66666666 不是 66.66666667（spec 008 WS2/WS7，2026-10-21）
+
+- **现象**：POC C 组按契约表断言 `winRatePct = 66.66666667`，实际得到 `66.66666666`，该条断言红（`PerformanceCalculatorTest` 用的是截断值，一直是绿的，反而暴露了文档口径不一致）。
+- **根因**：实现走 `bcmul(bcdiv($wins, $count, 12), '100', 8)` —— bcmath 全链路**截断**（非四舍五入）；契约表里的 `66.66666667` 是人读的四舍五入展示值。
+- **处理**：断言与落库统一以截断口径 `66.66666666` 为准，并在 [绩效契约](specs/008-backtest-engine/contracts/performance-metrics-contract.md) 注明「展示值四舍五入、存储值截断」。
+- **位置**：[PerformanceCalculator.php](../app/Domain/Backtest/Services/PerformanceCalculator.php#L157-L171)
+- **教训**：constitution II 的 bcmath 约定意味着所有百分比都是截断值；凡文档写「黄金向量」时，必须显式区分展示口径与落账口径，否则测试与文档永远对不上。
+
+## 46. 回测净值未扣手续费：费率翻倍收益不降（spec 008 US4，2026-10-21）
+
+- **现象**：`BacktestAssumptionsTest::test_higher_fee_rate_increases_total_fee_and_lowers_return` 红——`total_fee` 随费率上升，但 `final_equity` / 收益率纹丝不动。
+- **根因**：EquityCurveBuilder 只聚合 realizedPnl + unrealized，MatchingEngine 算出的 fee 仅写进 `backtest_simulated_trades` 明细与报告汇总，未参与净值计算。
+- **处理**：EquityCurveBuilder 增加 `$cumulativeFee` + `addFee()`，`mark()` 中 `bcsub($equity, $cumulativeFee, 12)`；BacktestRunner 每笔 `fill()` 后注入 fee，`reset()` 清零。
+- **位置**：[EquityCurveBuilder.php](../app/Domain/Backtest/Services/EquityCurveBuilder.php#L28-L49)
+- **教训**：「撮合假设可配置」不是把参数写进报告就完事，费率/滑点必须端到端穿透到净值；用「费率翻倍 → 收益必须下降」这类单调性断言才能抓住"统计有、净值无"的半接线状态。
+
+## 47. 构造零方差 Sharpe 向量不能用递增净值：首日 0 收益样本让方差恒 > 0（spec 008 WS7，2026-10-21）
+
+- **现象**：POC C 组零方差向量 `[1000, 1100, 1210]` 期望 `sharpeRatio = null`，实得非 null。
+- **根因**：日收益序列以 `initialCapital` 为 prev 计算首点，`[1000, 1100, 1210]` 产出 `0%, 10%, 10%` —— 首日 0 收益让 float 方差非零，`stddev > 0` 故 Sharpe 有值（`[1000, 1000, 1100]` 同理）。
+- **处理**：零方差向量改为恒定净值 `[1000, 1000, 1000]`（三个收益样本全 0），与 `PerformanceCalculatorTest::test_golden_vector_zero_variance_sharpe_null` 对齐。
+- **位置**：[PerformanceCalculator.php](../app/Domain/Backtest/Services/PerformanceCalculator.php#L128-L149)
+- **教训**：净值曲线的首个数据点若等于初始资金，必然引入一个 0 收益样本；构造边界向量时先手算收益序列，不要只看净值是否"单调"。

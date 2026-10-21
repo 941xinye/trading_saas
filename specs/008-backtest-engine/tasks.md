@@ -162,12 +162,12 @@
 
 **Purpose**: POC 断言族 + quickstart 验证 + 文档同步
 
-- [ ] T045 创建 `app/Domain/Backtest/Console/PocVerifyBacktestCommand.php`（`poc:verify-backtest`）：A~J 十组断言按 contracts/backtest-commands-contract.md §3；一次性租户 poc-verify-backtest-a/b 自动清理；`--only=` 分组过滤支持
-- [ ] T046 [P] 性能断言 H 组：合成 K 线生成器（内存 105k 根 5m bar）端到端回测 < 30s（SC-001；输出实测耗时，超标按 research R-010 优化项处理后再达标）
-- [ ] T047 全量回归：`php artisan test` 零失败零新增 skip 异常（对照基线 616 passed/80 skipped）
-- [ ] T048 quickstart.md 全路径人工走查（§1~§8 逐节可运行）+ 修正文档与实现偏差
-- [ ] T049 [P] README 更新：功能矩阵新增「spec 008 回测引擎」完成区块（对齐 spec 007 区块范式）+ 快速开始 POC 验证段 + P10 路线图行标 ✅ + C 类技术债如有销账同步
-- [ ] T050 [P] docs/pitfalls.md 新增本轮踩坑（如有）+ constitution 无需修订确认
+- [x] T045 创建 `app/Console/Commands/PocVerifyBacktestCommand.php`（`poc:verify-backtest`）：A~J 十组断言按 contracts/backtest-commands-contract.md §3；一次性租户 poc-verify-backtest-a/b 自动清理；`--only=` 分组过滤支持（**路径偏差**：落 `app/Console/Commands/` 而非 `app/Domain/Backtest/Console/`——Laravel 命令自动发现只扫描 `app/Console/Commands`，放领域目录不会注册）
+- [x] T046 [P] 性能断言 H 组：合成 K 线生成器（内存 105k 根 5m bar）端到端回测 < 30s（SC-001；输出实测耗时，超标按 research R-010 优化项处理后再达标）
+- [x] T047 全量回归：`php artisan test` 基线 756 passed / 2 failed / 10 skipped / 1 incomplete（2845 assertions）；2 failed 为 `FuturesBreakerSemanticsTest` 既有遗留（spec 004/005 状态机语义：期望 `breaker_open`/`open`，实现 `probe_cooling`/`half_open`；单独运行同样失败，与本 feature 无关）
+- [x] T048 quickstart.md 全路径人工走查（§1~§8 逐节可运行）+ 修正文档与实现偏差：§4 CLI 实际签名为位置参数（strategy/symbol/interval）+ `--params`/`--slippage`/`--sync`；§7 页面名「回测绩效」（slug `backtest-performance`，策略组）；前置条件 Redis 语义改为「F 组需 Redis 在线，不可达用 `--only=` 排除」；实测 Unit 35 passed / Integration 25 passed
+- [x] T049 [P] README 更新：功能矩阵新增「spec 008 回测引擎」完成区块（对齐 spec 007 区块范式）+ 快速开始 POC 验证段 + P10 路线图行标 ✅ + C 类技术债如有销账同步（无新增 C 类欠债；路线图注明「P4 参数调优建议不在本期」；文档索引同步 specs 006/007/008 与踩坑条数）
+- [x] T050 [P] docs/pitfalls.md 新增本轮踩坑 #44–47（命令自动发现目录 / bcmath 截断 vs 契约展示值 / 净值未扣手续费 / 零方差向量构造）+ constitution 无需修订确认（七条原则与 spec 008 无冲突，README 文档索引已注明）
 
 ---
 

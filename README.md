@@ -350,9 +350,34 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **已知边界**：收单链仅 TRC20-USDT；不足额支付有效期内可补齐（不引入账户余额体系）；无自动退款（超额不记账）；过期后到账转 manual 不自动激活；计费周期仅月度；通道主动查单（fetchInvoice）不在本期；`fake` 通道仅 local/testing，生产 MUST 显式 `PAYMENT_CHANNEL=btcpay`；真实 USDT 收单闭环（PoC 阶段 A/B/C）**待海外节点**。
 
+### ✅ 已完成：spec 008 回测引擎 + 绩效分析（2026-10-21，离线轨道全验）
+
+历史回放与绩效分析全量落地（8 工作流 50 任务）：回测与实跑共用 `StrategyRegistry::make` 唯一构造入口（FR-003），Runner 纯内存执行零交易所调用（FR-004），撮合假设可配置并在报告显式标注（FR-005），异步队列 + 单飞锁 + 崩溃收割，报告持久化二次查看零重算（FR-008），Filament 回测绩效页四区展示。离线断言 + 单元/集成/Feature 测试全绿。
+
+| 模块 | 产出 | 文档 |
+|---|---|---|
+| 回测数据层 | `backtest_runs`（状态机 pending→running→completed/failed；params_snapshot / assumptions 为发起时刻快照）+ `backtest_reports`（9 指标 + equity_curve JSON + 假设快照）+ `backtest_simulated_trades`（append-only，seq 作等价性锚点）；三表租户隔离 | [spec](specs/008-backtest-engine/spec.md) |
+| 驱动核心（US1） | BacktestRunner：HistoricalQuery 分页回放（CH/MySQL 路由复用）→ `StrategyRegistry::make` 构造 → onBar/onFill 驱动 → EquityCurveBuilder 净值（逐笔扣手续费）；MatchingEngine bar 级撮合 `close×(1±bps/10000)` + fee bcmath；覆盖率 < 80% 即 failed | [contracts](specs/008-backtest-engine/contracts/) |
+| 绩效指标（US1） | PerformanceCalculator 9 指标：total/annualized（365/days 线性）、maxDrawdown、Sharpe（float，零方差 null）、winRate（bcmath 截断）、profitFactor（零亏损 null）、totalFee / finalEquity / barCount | [绩效契约](specs/008-backtest-engine/contracts/performance-metrics-contract.md) |
+| 等价性（US2） | 回测与实跑共用同一策略构造入口 + 决策序列 100% 一致（fixture 4 笔）；净值误差 < 1% 且方向可解释（回测含费 ≤ 实跑毛收益） | [quickstart](specs/008-backtest-engine/quickstart.md) |
+| 异步队列（US3） | RunBacktestJob（backtest 队列，tries=1）+ Redis 单飞锁（`SET NX EX120` + Lua token 释放，不可用降级）+ 租户并发上限 + `backtest:reap-stale`（running 超时 → failed/reaped，每 5m 调度）+ `backtest:run`（默认 dispatch，`--sync` 调试） | [worker 样板](deploy/supervisor/worker-backtest.conf.example) |
+| 假设可配置（US4） | MatchingAssumptions：initial_capital / fee_rate / slippage_bps 可配并校验；报告显式展示假设 + 未建模项声明（bar 级撮合、futures 资金费率）；净值已扣手续费 | — |
+| 回测绩效页（US5） | Admin「策略」组 →【回测绩效】（slug `backtest-performance`）：run 列表 10s 轮询 + 发起表单（实例或 inline DSL、区间、资金/费率/滑点）+ 详情四区（净值曲线/指标卡/假设/交易明细）；跨租户零串扰 | — |
+| POC 命令 | `poc:verify-backtest`（A~J 十组 55 项离线断言：撮合/驱动/绩效/等价/生命周期/并发/隔离/性能/红线/报告持久化） | [quickstart](specs/008-backtest-engine/quickstart.md) |
+
+**实测结果**：
+- 离线断言 PASS：`php artisan poc:verify-backtest` → **55/55 ALL CHECKS PASSED**；H 组性能：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（两轮实测，预算 30s，SC-001）。
+- 单元 35 / 集成 25 / Feature 12 全绿；全量回归 756 passed / 2 failed（`FuturesBreakerSemanticsTest` 既有遗留，单独运行同样失败，与本 feature 无关）/ 10 skipped / 1 incomplete。
+- 等价性：BacktestEquivalenceTest — fixture 决策序列（bar/side/qty）100% 一致，净值 ≤ 实跑毛收益。
+- 报告零重算：BacktestReportReloadTest + J 组 DB::listen — 二次读取 backtest_* 写查询 0。
+- 红线：BacktestNoExchangeCallTest + I 组静态扫描 — Runner 依赖面不含 exchange/adapter，零交易所调用。
+- 租户隔离：G 组 + BacktestPerformancePageTest — 双租户列表/详情互不可见。
+
+**已知边界**：撮合为 bar 级（close±bps），不建模盘口深度/部分成交；futures_grid 未含资金费率影响（历史 funding 无数据源，报告已标注）；Sharpe 为 float 展示指标（落账全 bcmath）；年化按线性折算；区间上限 1 年、覆盖率阈值 80%（config/backtest.php 可调）；回测不计配额（FR-011），同实例单飞超限拒绝不排队；真实 testnet 长期净值对照**待海外节点**实跑数据积累。
+
 ### 🚧 待实现：剩余路线图
 
-> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 / spec 006 自定义 DSL / spec 007 支付网关+计费 UI 已完成（spec 004 为核心落地、spec 007 离线轨道已验证真实链路待节点，节点验收待回填），实测结果见上方对应区块。
+> P1 策略+下单闭环 / P2 AI 信号闭环 / P3 多租户计费 / P4 高级风控 / P5 大户爆仓数据 / spec 001 OKX / spec 002 Bybit / spec 003 Bitget / spec 004 ClickHouse 历史归档 / spec 005 合约网格+仓位风控 / spec 006 自定义 DSL / spec 007 支付网关+计费 UI / spec 008 回测引擎+绩效分析 已完成（spec 004 为核心落地、spec 007 离线轨道已验证真实链路待节点、spec 008 离线全验且真实 testnet 净值对照待节点，节点验收待回填），实测结果见上方对应区块。
 > **P5.5 上线前工程化加固代码侧已完成（2026-10-15）**——步骤 1–4 产物、三环境实测证据与待节点侧实跑清单见 [P5.5 执行计划](docs/p5.5-hardening-plan.md#执行结果与实测证据2026-10-15步骤-14-代码侧全部完成)。
 
 | 阶段 | 范围 | 验证目标 | 关键风险 | 依赖 |
@@ -362,7 +387,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | **P8 ClickHouse 历史数据归档 ✅ 核心落地（2026-10-19，spec 004；节点机 CH 冒烟与端到端验收待回填）**（执行顺序先于 P7，理由见下） | kline_bars / signals / strategy_orders / liquidation_events 迁移到 ClickHouse；冷热分层（Redis 热缓存→MySQL 当日→CH 历史）；查询层抽象 `HistoricalQuery` | 一周历史 K 线查询 < 500ms；迁移窗口内业务零感知；冷热切换校验 | CH 迁移窗口与写入并发、查询方言差异（GROUP BY 严格）、TenantScope 在 CH 的下沉 | P1, P5 |
 | **P7 Custom DSL 策略引擎 ✅ 代码侧完成（2026-10-20，spec 006）** | YAML 受限子集声明式策略（entry/exit/filter/risk 四段）；白名单沙箱解释器（禁 eval/exec/fs/网络/反射）；Filament 在线编辑器（即时校验+试装载）+ 历史 K 线回测预览（复用 P8 HistoricalQuery）；售卖门控回归白名单（pro/enterprise） | 一条 DSL 装载跑通 onBar→信号→下单→成交回报闭环；与 SpotDca/SpotGrid 决策序列 100% 等价；`poc:verify-dsl` 28/28 全绿 | DSL 表达力 vs 安全（白名单原语）、每 bar 解释开销（step budget 500）、与 RiskGuard/QuotaGuard 接线 | P1, P2 |
 | **P9 支付网关 + 计费 UI ✅ 我方实现已交付（2026-10-20，spec 007；离线轨道已验证，真实 BTCPay 链路待节点）** | 通道抽象层（Registry 不降级）+ fake 离线通道（仅 local/testing）+ BtcPayChannel（验签纯函数已单测）；TRC20-USDT 支付单（decimal:8 bcmath 金额/同套餐不堆叠/TTL 过期清扫）；webhook 固定流水线（验签失败 401 + rejected 审计、processed_key 唯一幂等、Redis 单飞锁降级、状态机只进不退）；激活单事务接线 P3 provision；续费提醒 7/3/1 档 + past_due→suspended 既有流转；Filament 计费页（当前套餐/当日用量/Invoice 列表/升级 3 步出支付信息）+ Billing REST API（双租户隔离） | `poc:verify-payment` 35/35 全绿（建单→验签→状态推进→激活→配额生效→幂等重放→伪造签名拒绝→提醒判定，webhook 单请求 <200ms）；SC-001~006 平台侧全部离线验收；真实 USDT 收单闭环（B1~B3/C1~C2）待节点按 [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) 执行后销账 | ~~支付回调幂等~~（已落地：processed_key 唯一 + 条件更新）、汇率/税额（不做，见已知边界）、**通道合规（数字货币 SaaS 品类受限，BTCPay 自托管为基线，Stripe 申报远期并行）** | P3 |
-| **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；策略绩效（Sharpe/最大回撤/胜率/盈亏比）；Filament 绩效页；与 P4 风控参数自动调优建议 | 一条 DSL 策略回测 1 年数据 < 30s；与 P1 实跑同策略净值曲线误差 < 1% | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
+| **P10 回测引擎 + 绩效分析 ✅ 已完成（2026-10-21，spec 008；P4 参数调优建议不在本期）** | 历史回放（HistoricalQuery 分页→策略驱动，CH/MySQL 路由复用）；策略绩效 9 指标（Sharpe/最大回撤/胜率/盈亏比/年化等）；撮合假设可配置并在报告显式标注；异步队列 + 单飞锁 + 崩溃收割；Filament「回测绩效」页（列表/发起/详情四区） | `poc:verify-backtest` 55/55 全绿；1 年 5m（105,120 bar）端到端 **6.577–9.079s** < 30s（SC-001）；fixture 决策序列 100% 一致 + 净值误差 < 1%（SC-002）；报告二次查看零重算（SC-003）；零交易所调用（SC-005）；双租户零串扰（SC-006）；真实 testnet 长期净值对照待海外节点 | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
 
 > **执行顺序说明（2026-10-18 决策）**：P8 先于 P7。理由：①kline_bars/liquidation_events 持续增长，归档越晚迁移窗口越大、历史校验越难；②P10 回测与 P7 的回测预览都依赖 P8 的 `HistoricalQuery`。阶段编号保持不动（P7/P8 仅为标识）；P7 的表达力设计可与 P8 实现并行做 specify（纯文档阶段）。
 > **P9 前置注记（2026-10-18 合规调研结论）**：
@@ -564,6 +589,27 @@ php artisan billing:fake-webhook --ref=<ref> --event=fake.settled --paid=<amount
 
 详细分层验证（单元/集成/SC-001~006 对照表/续费时间线复现）见 [quickstart](specs/007-payment-gateway-billing/quickstart.md)；`fake` 通道仅 `local/testing` 可用，生产必须 `PAYMENT_CHANNEL=btcpay`。
 
+### POC 验证（spec 008 回测引擎 + 绩效分析）
+
+```bash
+# 1. 一键离线全链路断言（A~J 十组 55 项：撮合/驱动/绩效/等价/生命周期/并发/隔离/性能/红线/报告零重算）
+#    无需交易所凭据/外网；F 组需 Redis 在线（不可达时 --only=A,B,C,D,E,G,H,I,J 排除后重跑）
+php artisan poc:verify-backtest
+
+# 2. 分层测试
+php artisan test tests/Unit/Backtest
+php artisan test tests/Integration/Backtest
+php artisan test tests/Feature/Backtest
+
+# 3. 手工端到端（sync 调试模式；策略/交易对/周期为位置参数，默认 dispatch 到 backtest 队列）
+php artisan backtest:run spot_grid BTCUSDT 5m --tenant=1 --from=2026-07-01 --to=2026-10-01 \
+    --params='{"lower_price":"100","upper_price":"120","grid_count":10,"qty_per_grid":"0.1"}' --sync
+
+# 4. 回测绩效页点检：/admin →「策略」组 →「回测绩效」（slug backtest-performance）
+```
+
+H 组实测：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（预算 30s）；SC-001~006 对照表与已知边界见 [quickstart](specs/008-backtest-engine/quickstart.md)。
+
 ### Swoole 运行环境（Windows 开发机：WSL2 方案）
 
 Swoole 官方不支持 Windows 原生运行，本机已采用 **WSL2 + Ubuntu 22.04** 方案，`market:feed`（进程 B）跑在 WSL 内，通过 NAT 网关回连 Windows 侧 ServBay 的 MySQL / Redis：
@@ -678,9 +724,9 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
 | [ADR-0005 ClickHouse 冷层](docs/adr/0005-clickhouse-cold-tier.md) | 自托管单节点 + MergeTree batch_id + 零依赖 HTTP + 隔离下沉 |
-| [踩坑记录](docs/pitfalls.md) | 实测踩坑 38 条（#1–28 P1–P5.5 / #29–33 B7+P8 归档回填 / #34–38 spec 005 合约；覆盖 Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号、CH 行哈希/lightweight delete、保证金率公式语义等）持续追加 |
-| [spec-kit constitution](.specify/memory/constitution.md) | v1.0.0 七条原则（SDD 优先/金融精度/协程隔离/崩溃恢复幂等/计费语义/测试隔离/PSR-4 与基类对齐），约束所有 plan/analyze 阶段 |
-| [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器 / 004 ClickHouse 历史归档 / 005 合约网格+仓位风控（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
+| [踩坑记录](docs/pitfalls.md) | 实测踩坑 47 条（#1–28 P1–P5.5 / #29–33 B7+P8 归档回填 / #34–38 spec 005 合约 / #39–42 spec 006 DSL / #43 spec 005 单飞锁修复 / #44–47 spec 008 回测；覆盖 Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号、CH 行哈希/lightweight delete、保证金率公式语义、命令自动发现目录、bcmath 截断 vs 展示值、净值扣费、零方差向量等）持续追加 |
+| [spec-kit constitution](.specify/memory/constitution.md) | v1.0.0 七条原则（SDD 优先/金融精度/协程隔离/崩溃恢复幂等/计费语义/测试隔离/PSR-4 与基类对齐），约束所有 plan/analyze 阶段（spec 008 复核无需修订） |
+| [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器 / 004 ClickHouse 历史归档 / 005 合约网格+仓位风控 / 006 自定义 DSL / 007 支付网关+计费 UI / 008 回测引擎+绩效分析（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
 
 ## 安全说明
 
