@@ -146,13 +146,13 @@
 
 ### Tests for User Story 5
 
-- [ ] T041 [P] [US5] Feature 测试 `tests/Feature/Backtest/BacktestPerformancePageTest.php`：页面渲染、列表仅本租户数据（双租户 fixture）、详情四区（曲线/指标卡/假设区/交易明细）齐全、发起表单校验（区间上限/白名单）
-- [ ] T042 [P] [US5] Feature 测试 `tests/Feature/Backtest/BacktestReportReloadTest.php`：完成报告二次查看查询计数断言（零重算，SC-003；直接读 reports/trades 表）
+- [x] T041 [P] [US5] Feature 测试 `tests/Feature/Backtest/BacktestPerformancePageTest.php`：页面渲染、列表仅本租户数据（双租户 fixture）、详情四区（曲线/指标卡/假设区/交易明细）齐全、发起表单校验（区间上限/白名单）
+- [x] T042 [P] [US5] Feature 测试 `tests/Feature/Backtest/BacktestReportReloadTest.php`：完成报告二次查看查询计数断言（零重算，SC-003；直接读 reports/trades 表）
 
 ### Implementation for User Story 5
 
-- [ ] T043 [US5] 创建 `app/Filament/Tenant/Pages/BacktestPerformancePage.php`：列表（状态/策略/区间/收益率/进度 10s 轮询）+ 发起表单（实例或 inline DSL 选择、区间、假设参数）+ 详情视图；挂 Tenant 面板导航（对齐计费页先例；覆写父类属性前核对形态，坑 20）
-- [ ] T044 [P] [US5] 创建 `app/Filament/Tenant/Widgets/EquityCurveWidget.php`：净值曲线图（Filament Chart 组件，equity_curve JSON 直接喂数据；$view 形态核对）
+- [x] T043 [US5] 创建 `app/Filament/Admin/Pages/BacktestPerformancePage.php`（仓库无独立 Tenant 面板，租户后台即 Admin，对齐计费页先例）：列表（状态/策略/区间/收益率/进度 10s 轮询）+ 发起表单（实例或 inline DSL 选择、区间、假设参数）+ 详情视图；挂 Admin 导航
+- [x] T044 [P] [US5] 创建 `app/Filament/Admin/Widgets/EquityCurveWidget.php`：净值曲线图（Filament Chart 组件，equity_curve JSON 直接喂数据）
 
 **Checkpoint**: US5 完整——全部 US 交付
 
