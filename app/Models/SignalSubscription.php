@@ -6,6 +6,7 @@ namespace App\Models;
 
 use App\Domain\Tenancy\BelongsToTenant;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -25,6 +26,11 @@ class SignalSubscription extends Model
         'rule_fallback_enabled',
         'channels',
         'active',
+        'auto_execute',
+        'execution_instance_id',
+        'execution_notional',
+        'execution_min_confidence',
+        'execution_daily_limit',
     ];
 
     protected $casts = [
@@ -33,10 +39,19 @@ class SignalSubscription extends Model
         'channels' => 'array',
         'rule_fallback_enabled' => 'boolean',
         'active' => 'boolean',
+        'auto_execute' => 'boolean',
+        'execution_notional' => 'decimal:8',
+        'execution_min_confidence' => 'integer',
+        'execution_daily_limit' => 'integer',
     ];
 
     public function signals(): HasMany
     {
         return $this->hasMany(Signal::class);
+    }
+
+    public function executionInstance(): BelongsTo
+    {
+        return $this->belongsTo(StrategyInstance::class, 'execution_instance_id');
     }
 }

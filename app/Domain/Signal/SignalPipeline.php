@@ -8,8 +8,8 @@ use App\Domain\Billing\EntitlementException;
 use App\Domain\Billing\Metering\QuotaExceededException;
 use App\Domain\Billing\QuotaGuard;
 use App\Domain\Exchange\Contracts\ExchangeKline;
-use App\Domain\Signal\Contracts\AiUnavailableException;
 use App\Domain\Signal\Contracts\AIPrompter;
+use App\Domain\Signal\Contracts\AiUnavailableException;
 use App\Domain\Signal\Contracts\Signal;
 use App\Domain\Signal\Prompters\DeepSeekAdapter;
 use App\Domain\Signal\Prompters\LocalOllamaAdapter;
@@ -25,13 +25,14 @@ use Throwable;
  *
  * 流程（架构 §5.3）：
  *   历史 bar → 指标计算 → AI 分析 →（AI 不可用）规则引擎兜底
- *   → 1% 价差守卫 → signals 落库 → SignalDispatcher 通知
+ *   → 1% 价差守卫 → signals 落库 → SignalDispatcher 通知 → SignalAutoTrader 自动跟单入队
  *
  * 约定：
  *  - neutral 只记日志不落库（exit_price NOT NULL 且无通知价值）
  *  - 价差守卫丢弃只记日志
  *  - 规则引擎被订阅关闭时（rule_fallback_enabled=0），AI 失败即放弃本轮信号
- *  - P2 只分析与通知，不触发下单
+ *  - 分析链路本身不直接下单：自动跟单需订阅开启 auto_execute，且下单在
+ *    orders 队列的 AutoExecuteSignalJob 内经 SignalExecutionService 全量校验后执行
  */
 class SignalPipeline
 {
@@ -48,15 +49,15 @@ class SignalPipeline
         private readonly RuleEngineFallback $fallback,
         private readonly SignalDispatcher $dispatcher,
         private readonly QuotaGuard $quotaGuard,
-    ) {
-    }
+        private readonly SignalAutoTrader $autoTrader,
+    ) {}
 
     /**
      * 执行一轮信号分析。
      *
-     * @param object          $subscription signal_subscriptions 行（DB::table 裸对象，json 已解码）
-     * @param ExchangeKline   $latestBar    触发本轮分析的已闭 bar
-     * @param ExchangeKline[] $historicalBars 升序历史 bar（建议 ≥120 根，含最新）
+     * @param  object  $subscription  signal_subscriptions 行（DB::table 裸对象，json 已解码）
+     * @param  ExchangeKline  $latestBar  触发本轮分析的已闭 bar
+     * @param  ExchangeKline[]  $historicalBars  升序历史 bar（建议 ≥120 根，含最新）
      */
     public function run(object $subscription, ExchangeKline $latestBar, array $historicalBars): ?Signal
     {
@@ -79,7 +80,7 @@ class SignalPipeline
         try {
             $this->quotaGuard->assertEntitled($tenantId);
         } catch (EntitlementException $e) {
-            $aiBlockedReason = 'entitlement_' . $e->getMessage();
+            $aiBlockedReason = 'entitlement_'.$e->getMessage();
             Log::warning('租户权益失效，跳过 AI 走规则兜底', [
                 'tenant_id' => $tenantId,
                 'subscription_id' => $subscriptionId,
@@ -188,6 +189,16 @@ class SignalPipeline
             $this->dispatcher->dispatch($persisted, $channels);
         } catch (Throwable $e) {
             Log::error('信号通知分发异常（不影响信号落库）', [
+                'signal_id' => $signalId,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // ---- 自动跟单入队（订阅开启时；失败不影响信号落库） ----
+        try {
+            $this->autoTrader->maybeQueue($persisted, $subscription);
+        } catch (Throwable $e) {
+            Log::error('信号自动跟单入队异常（不影响信号落库）', [
                 'signal_id' => $signalId,
                 'error' => $e->getMessage(),
             ]);
