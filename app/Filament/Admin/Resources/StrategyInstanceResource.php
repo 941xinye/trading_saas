@@ -132,7 +132,7 @@ class StrategyInstanceResource extends Resource
                         'gray' => 'stopped',
                         'warning' => 'starting',
                         'success' => 'running',
-                        'danger' => ['paused_by_breaker', 'error'],
+                        'danger' => ['paused_by_breaker', 'paused_by_position_risk', 'paused_by_reconcile', 'error'],
                     ])
                     ->label('状态'),
                 TextColumn::make('allocated_capital')->label('资金'),
@@ -143,10 +143,12 @@ class StrategyInstanceResource extends Resource
                 Action::make('start')
                     ->label('启动')
                     ->icon('heroicon-o-play')
-                    ->visible(fn (StrategyInstance $record): bool => $record->status === 'stopped')
+                    ->visible(fn (StrategyInstance $record): bool => in_array($record->status, ['stopped', 'error'], true))
                     ->action(function (StrategyInstance $record): void {
-                        // 骨架占位：POC 阶段调用 StrategyRunner::start($record)
+                        // 置 starting，market:feed 保活协程 5s 内热拉起并推进 running
                         $record->status = 'starting';
+                        $record->started_at = now();
+                        $record->stopped_at = null;
                         $record->save();
                     })
                     ->requiresConfirmation(),
@@ -154,10 +156,11 @@ class StrategyInstanceResource extends Resource
                     ->label('停止')
                     ->icon('heroicon-o-stop')
                     ->color('danger')
-                    ->visible(fn (StrategyInstance $record): bool => in_array($record->status, ['running', 'starting', 'paused_by_breaker'], true))
+                    ->visible(fn (StrategyInstance $record): bool => $record->isLive())
                     ->action(function (StrategyInstance $record): void {
-                        // 骨架占位：POC 阶段调用 StrategyRunner::stop($record)
+                        // 置 stopped，实例协程监听后自停并保留 Redis 状态供恢复
                         $record->status = 'stopped';
+                        $record->stopped_at = now();
                         $record->save();
                     })
                     ->requiresConfirmation(),

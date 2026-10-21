@@ -23,8 +23,8 @@ use UnitEnum;
  * ExchangeAccount 模型挂 BelongsToTenant trait，Admin 面板的 BootstrapTenancy 中间件
  * 初始化 TenantContext 后，TenantScope 自动按当前租户过滤。
  *
- * 敏感字段（encrypted_api_key / encrypted_api_secret / passphrase_encrypted）
- * 用 password() 类型字段；保存时由 Controller 调用 AesGcmCrypt 加密。
+ * 敏感字段（api_key / api_secret / passphrase）为虚拟表单字段，不直接写模型；
+ * 创建/编辑页均走 ExchangeAccountService，用租户 DEK 加密后落 encrypted_* 列。
  */
 class ExchangeAccountResource extends Resource
 {
@@ -67,15 +67,16 @@ class ExchangeAccountResource extends Resource
                 TextInput::make('api_key')
                     ->password()
                     ->revealable()
-                    // 骨架阶段：占位输入。POC 阶段：保存时加密为 encrypted_api_key。
                     ->required(fn (string $operation): bool => $operation === 'create')
                     ->dehydrated(fn (?string $state): bool => filled($state))
+                    ->helperText('编辑时留空表示保持原密钥不变；保存后仅存密文，不回显。')
                     ->label('API Key'),
                 TextInput::make('api_secret')
                     ->password()
                     ->revealable()
                     ->required(fn (string $operation): bool => $operation === 'create')
                     ->dehydrated(fn (?string $state): bool => filled($state))
+                    ->helperText('编辑时留空表示保持原密钥不变；保存后仅存密文，不回显。')
                     ->label('API Secret'),
                 TextInput::make('passphrase')
                     ->password()
@@ -86,7 +87,8 @@ class ExchangeAccountResource extends Resource
                 Select::make('status')
                     ->options([
                         'active' => 'Active',
-                        'disabled' => 'Disabled',
+                        'revoked' => 'Revoked',
+                        'expired' => 'Expired',
                     ])
                     ->default('active')
                     ->required()
@@ -108,7 +110,8 @@ class ExchangeAccountResource extends Resource
                     ->badge()
                     ->colors([
                         'success' => 'active',
-                        'gray' => 'disabled',
+                        'danger' => 'revoked',
+                        'gray' => 'expired',
                     ])
                     ->label('状态'),
                 TextColumn::make('last_synced_at')->dateTime('Y-m-d H:i')->label('最近同步'),

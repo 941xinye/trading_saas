@@ -17,7 +17,7 @@ use Illuminate\Http\Resources\Json\JsonResource;
  *  - alert_feed：熔断事件 + 健康检查 + 失败订单
  *  - liquidation_map：大户爆仓聚类
  *
- * 骨架阶段：所有字段允许 null。POC 阶段由 DashboardAggregator 填充。
+ * 数据由 DashboardAggregator 聚合；外部行情源缺失的字段允许 null。
  */
 class DashboardResource extends JsonResource
 {
@@ -32,7 +32,6 @@ class DashboardResource extends JsonResource
             'cached_at' => $this['cached_at'] ?? null,
             'meta' => [
                 'version' => 'v1',
-                'skeleton' => true,
             ],
         ];
     }

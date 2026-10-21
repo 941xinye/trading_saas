@@ -62,6 +62,16 @@ class StrategyRunner
     ) {}
 
     /**
+     * 当前进程内正在运行的实例 ID（供进程 B 热启停比对）。
+     *
+     * @return int[]
+     */
+    public function runningInstanceIds(): array
+    {
+        return array_keys($this->coroutines);
+    }
+
+    /**
      * 启动指定实例集合的协程调度。
      *
      * @param  int[]  $instanceIds  strategy_instances.id 列表
@@ -222,8 +232,15 @@ class StrategyRunner
             $instanceId,
         );
 
+        // 暂停态在进程重启后必须保留：只有 starting/stopped 等非暂停态推进为 running。
+        // paused_by_breaker 由 Redis 熔断态拦开仓；paused_by_position_risk / paused_by_reconcile
+        // 由 onBar 决策链拦开仓（平仓始终放行）。
+        $pausedStatuses = ['paused_by_breaker', 'paused_by_position_risk', 'paused_by_reconcile'];
+        $currentStatus = (string) $instance->status;
+        $nextStatus = in_array($currentStatus, $pausedStatuses, true) ? $currentStatus : 'running';
+
         DB::table('strategy_instances')->where('id', $instanceId)->update([
-            'status' => 'running',
+            'status' => $nextStatus,
             'started_at' => $instance->started_at ?? now(),
             'updated_at' => now(),
         ]);
@@ -259,9 +276,10 @@ class StrategyRunner
 
                     $ctx = new StrategyContext($instanceId, $strategy->getState()->params, null, null, $recentBars, null);
 
-                    // paused_by_position_risk：禁止开仓，允许平仓
+                    // 暂停态禁止开仓、允许平仓：paused_by_position_risk（仓位风控）
+                    // 与 paused_by_reconcile（账实对账 critical）都在决策入口拦截。
                     $status = (string) DB::table('strategy_instances')->where('id', $instanceId)->value('status');
-                    $pausedByRisk = $status === 'paused_by_position_risk';
+                    $pausedByRisk = in_array($status, ['paused_by_position_risk', 'paused_by_reconcile'], true);
 
                     // shouldOpen/shouldClose 均消费内部 pending 信号，只能调用一次
                     $open = $pausedByRisk ? null : $strategy->shouldOpen($ctx);

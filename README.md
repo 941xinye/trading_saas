@@ -1,4 +1,4 @@
-# Trading SaaS Platform
+﻿# Trading SaaS Platform
 
 币圈交易 SaaS 平台 —— 多租户策略交易 + AI 信号 + 实时风控 + 熔断保护。
 
@@ -50,24 +50,27 @@
 app/
 ├── Domain/                     # 领域模块（核心）
 │   ├── Tenancy/                # 多租户基础设施
-│   ├── Exchange/               # 交易所适配器（ExchangeAdapter 接口 + DTO）
-│   ├── Strategy/                # 策略引擎（SpotGrid/SpotDca/FuturesGrid 已实跑；其余 4 策略为骨架；Custom DSL 占位）
+│   ├── Exchange/               # 交易所适配器（Binance/OKX/Bybit/Bitget 现货 + Binance 合约 + 账户加密写入口）
+│   ├── Strategy/                # 策略引擎（SpotGrid/SpotDca/FuturesGrid 实装；Custom DSL 沙箱解释器）
 │   ├── Signal/                  # AI 信号（AIPrompter 接口 + RuleEngineFallback 兜底）
 │   ├── Risk/                    # 熔断风控（CircuitBreaker 状态机 + 4 维度 Rule）+ 仓位级风控（PositionRiskMonitor 三档 + 强平价计算器）
 │   ├── Billing/                 # 订阅计费（两阶段计量）
-│   ├── Notification/            # 通知（NotificationPayload 契约 + Log/Telegram/企微/邮件渠道信号/风控双链共用 + 冷却去重；企微/邮件待实测）
+│   ├── Payment/                 # 支付网关（通道抽象 + webhook 幂等 + 激活事务）
+│   ├── Reconciliation/          # 账实对账（差异检测 + 暂停/恢复）
+│   ├── Notification/            # 通知（Log/Telegram/企微/邮件渠道，信号/风控双链共用 + 冷却去重）
 │   ├── Liquidation/             # 大户爆仓聚类（Clusterer/MapService/FeedRunner/BucketPolicy）
+│   ├── Backtest/                # 回测引擎（回放驱动 / 撮合 / 绩效指标）+ 参数寻优（网格 / walk-forward）
 │   └── Archive/                 # 历史归档（P8：ArchivePipeline 状态机 / HistoricalQueryService 冷热路由 / ClickHouseStore HTTP 直连 / 四类型策略 + RowNormalizer 行哈希）
-├── Http/                        # 中间件 + Controllers + Resources
-├── Filament/{Admin,Platform}/   # Filament 两套面板
+├── Http/                        # 中间件 + Controllers + Resources（API 写接口共用领域服务）
+├── Filament/{Admin,Platform}/   # Filament 两套面板（含回测绩效页/计费页）
 ├── Jobs/                        # Queue Job（orders/ai/notifications/aggregation）
 ├── Events/                      # 领域事件
-├── Console/Commands/            # 18 个 Artisan 命令（5 个 poc:verify + 5 个 poc 装配/辅助 + 8 个业务/运维）
-├── Models/                      # 18 个 Eloquent（租户级挂 BelongsToTenant）
+├── Console/Commands/            # 39 个 Artisan 命令（market:feed / archive:* / backtest:* / payment:* / reconcile:* / risk:* / 5 个 poc:verify 等）
+├── Models/                      # 23 个 Eloquent（租户级挂 BelongsToTenant）
 └── Support/AesGcmCrypt.php     # AES-256-GCM 封装
-config/                          # 8 个自定义 config（含 liquidation）
-database/migrations/            # 21 张表
-routes/{api.php, channels.php}  # API 路由 + Reverb 频道授权
+config/                          # 27 个 config（含 exchange/strategy/ai/risk/plans/payment/archive/backtest/optimization/reconcile/liquidation）
+database/migrations/            # 36 张表
+routes/{api.php, channels.php, web.php}  # API 路由 + Reverb 频道授权 + Filament
 ```
 
 ## 功能矩阵 & 路线图
@@ -101,7 +104,7 @@ WSL2（PHP 8.4 + Swoole 6.2.3）环境实测验证通过。
 |---|---|---|
 | BinanceSpotAdapter | REST 签名请求（HMAC-SHA256）+ WS K线订阅 + 断线重连 + testnet 端点自动切换 | [架构 §5.1](.trae/documents/币圈交易SaaS平台架构方案.md#51-exchangeadapter-interface) |
 | 网格策略 | SpotGridStrategy onBar 网格挂单逻辑（±2% 10 格默认参数） | — |
-| 协程调度 | StrategyRunner 协程池派发 onTick/onBar + 崩溃退出重启恢复 | [ADR-0001](docs/adr/0001-dual-process-model.md) |
+| 协程调度 | StrategyRunner 协程池派发 onTick/onBar + 崩溃退出重启恢复；后台 start 后 5s 内热拉起，stop 由实例协程监听 stopped 自停（无需重启进程 B） | [ADR-0001](docs/adr/0001-dual-process-model.md) |
 | 订单执行 | OrderExecutor clientOrderId 幂等模板 `{tenant}_{instance}_{ts}_{rand}` | — |
 | 风控熔断 | RiskGuard + CircuitBreaker（Redis Hash 状态）+ 4 维度 Rule；熔断只停开新仓 | [ADR-0004](docs/adr/0004-circuit-breaker-state-machine.md) |
 | 租户密钥 | TenantKeyResolver DEK 懒生成 + AES-256-GCM 加密账户落库 | [ADR-0003](docs/adr/0003-aes-256-gcm-api-key-encryption.md) |
@@ -367,13 +370,63 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **实测结果**：
 - 离线断言 PASS：`php artisan poc:verify-backtest` → **55/55 ALL CHECKS PASSED**；H 组性能：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（两轮实测，预算 30s，SC-001）。
-- 单元 35 / 集成 25 / Feature 12 全绿；全量回归 756 passed / 2 failed（`FuturesBreakerSemanticsTest` 既有遗留，单独运行同样失败，与本 feature 无关）/ 10 skipped / 1 incomplete。
+- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **788 passed / 10 skipped / 1 incomplete / 3031 assertions**（2026-10-21 复测，含 P11 参数寻优；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
 - 等价性：BacktestEquivalenceTest — fixture 决策序列（bar/side/qty）100% 一致，净值 ≤ 实跑毛收益。
 - 报告零重算：BacktestReportReloadTest + J 组 DB::listen — 二次读取 backtest_* 写查询 0。
 - 红线：BacktestNoExchangeCallTest + I 组静态扫描 — Runner 依赖面不含 exchange/adapter，零交易所调用。
 - 租户隔离：G 组 + BacktestPerformancePageTest — 双租户列表/详情互不可见。
 
 **已知边界**：撮合为 bar 级（close±bps），不建模盘口深度/部分成交；futures_grid 未含资金费率影响（历史 funding 无数据源，报告已标注）；Sharpe 为 float 展示指标（落账全 bcmath）；年化按线性折算；区间上限 1 年、覆盖率阈值 80%（config/backtest.php 可调）；回测不计配额（FR-011），同实例单飞超限拒绝不排队；真实 testnet 长期净值对照**待海外节点**实跑数据积累。
+
+### ✅ 已补齐：控制面热启停 + API 写接口（2026-10-21）
+
+- **遗留红灯销账**：`FuturesBreakerSemanticsTest` 2 项失败根因为熔断 Redis Hash 未在用例间清理（HALF_OPEN 串场），补 setUp/tearDown 清理后全量 **765 passed / 0 failed**。
+- **策略生命周期热生效**：`market:feed` 保活协程每 5s 比对 DB 期望状态与进程内协程，后台/Filament/API 点「启动」（status=starting）5s 内热拉起并推进 running；停止由实例协程监听 stopped 自停；启动扫描覆盖 `starting/running/paused_by_breaker/paused_by_position_risk/paused_by_reconcile`，重启保留暂停态，`paused_by_reconcile` 同样禁止开仓。
+- **REST API 去 202 骨架**：交易所账户 store/update/destroy 走 `ExchangeAccountService`（租户 DEK + AES-256-GCM 加密，响应不回明文，被实例引用时 409）；策略实例 store/update/destroy/start/stop（运行中改配/删除 409、跨租户 404）；Dashboard 五面板聚合（market_heat/balance/signal_feed/alert_feed/liquidation_map，全部库内/Redis 数据）。
+- **Filament 账户页接服务**：创建/编辑页改走 `ExchangeAccountService`（虚拟密钥字段加密落库，编辑留空保留原密文），被策略实例引用的账户隐藏删除入口，`status` 选项对齐 DB 枚举 `active/revoked/expired`。
+- **新增测试**：`MarketFeedDryRunTest`（活状态扫描口径 + dry-run 不依赖 swoole）、`StrategyApiTest`（加密落库/状态机/409/404/聚合结构）、`ExchangeAccountPageTest`（Filament 创建加密/编辑留空保原密文）。
+
+### ✅ 已完成：P11 参数寻优（2026-10-21，网格搜索 + walk-forward）
+
+在 P10 回测引擎之上补齐参数调优（原 P4 调优范围）：网格展开 → 逐组合复用 `BacktestRunner` 回放 → 按目标选优；walk-forward 把区间切为 folds+1 段，训练段选参、样本外评分，跨折取均值抑制过拟合。同步执行、零交易所调用，结果落 `parameter_optimizations` + `parameter_optimization_trials`，`--dry-run` 零写入。
+
+| 模块 | 产出 |
+|---|---|
+| 网格展开 | `ParameterGrid`：显式值列表或 `min/max/step` 双语法 + 策略参数白名单 + 笛卡尔积上限 200（`config/optimization.php`） |
+| 寻优执行 | `ParameterOptimizer`：grid 全区间选优；walk_forward 分折训练/样本外并以 OOS 均值排名；单组合失败落 failed trial，不中断整体 |
+| 目标口径 | `total_return_pct` / `sharpe_ratio` / `max_drawdown_pct` / `profit_factor`；回撤越小越好，其余越大越好；`min_trades` 过滤 |
+| 持久化 | 任务表（状态机 / 进度 / best_params / best_score / report / 请求快照）+ trials 表（append-only：fold_index / in_sample / score / metrics），双表租户隔离 |
+| 异步执行 | `RunOptimizationJob`（backtest 队列，tries=1）：按 id 还原请求快照 → 恢复租户上下文 → 写入 trials 与进度；`OptimizationService` 拆为 create / execute / dispatch（命令仍可同步 `run`） |
+| REST API | `GET/POST /api/v1/parameter-optimizations`（创建 202 入队）+ `GET .../{id}` + `GET .../{id}/trials`（分页）；网格非法在构造期拒绝（422，不落 failed 任务） |
+| Filament 页 | Admin「策略」组 →【参数寻优】（slug `parameter-optimization`）：列表 10s 轮询 + 发起表单（JSON 网格/固定参数/目标）+ 详情（最优参数 / Top N / 分折明细 / 逐次试跑） |
+| 命令 | `backtest:optimize`（`--grid` JSON 或 `@file`、`--mode`、`--folds`、`--objective`、`--top`、`--dry-run`） |
+
+```bash
+php artisan backtest:optimize spot_grid BTCUSDT 1m \
+  --from="2023-11-14 00:00:00" --to="2023-11-14 00:30:00" --tenant=1 \
+  --params='{"lower_price":"90","upper_price":"110","investment_amount":"1000"}' \
+  --grid='{"grid_count":[5,10,20]}' --objective=total_return_pct --top=3
+
+# walk-forward：2 折 = 3 段，训练段选参、样本外评分
+php artisan backtest:optimize spot_grid BTCUSDT 1m \
+  --from="2023-11-14 00:00:00" --to="2023-11-14 00:30:00" --tenant=1 \
+  --params='{"lower_price":"90","upper_price":"110","investment_amount":"1000"}' \
+  --grid='{"grid_count":[5,10]}' --mode=walk_forward --folds=2
+```
+
+**实测输出**（30min 1m fixture，grid 3 组合）：
+```
+mode=grid objective=total_return_pct combos=3 trials=3 failed=0
+best score=1.01820060 params={"lower_price":"90","upper_price":"110","investment_amount":"1000","grid_count":5}
+#1 score=1.01820060 return=1.01820060 dd=0 trades=6 params={"...":"...","grid_count":5}
+#2 score=0.50910030 return=0.50910030 dd=0 trades=6 params={"...":"...","grid_count":10}
+#3 score=0.25455015 return=0.25455015 dd=0 trades=6 params={"...":"...","grid_count":20}
+```
+walk-forward（folds=2、2 组合、8 trials）两折均选中 `grid_count=5`，OOS 均值 **0.33940020**。
+
+**测试**：新增 23 项（网格展开/白名单/上限、排名方向、失败隔离、walk-forward 汇总、命令落库 / dry-run / 租户隔离、API 创建/详情/trials/隔离/422、Filament 页发起与详情渲染）；全量 **788 passed / 10 skipped / 1 incomplete / 3031 assertions / 0 failed**。
+
+**已知边界**：UI/API 走 backtest 队列异步执行，CLI 仍为同步；仅内置策略参数可寻优（DSL 脚本不在本期）；walk-forward 为等长分段（非滚动锚定）；单次组合上限 200。
 
 ### 🚧 待实现：剩余路线图
 
@@ -388,6 +441,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | **P7 Custom DSL 策略引擎 ✅ 代码侧完成（2026-10-20，spec 006）** | YAML 受限子集声明式策略（entry/exit/filter/risk 四段）；白名单沙箱解释器（禁 eval/exec/fs/网络/反射）；Filament 在线编辑器（即时校验+试装载）+ 历史 K 线回测预览（复用 P8 HistoricalQuery）；售卖门控回归白名单（pro/enterprise） | 一条 DSL 装载跑通 onBar→信号→下单→成交回报闭环；与 SpotDca/SpotGrid 决策序列 100% 等价；`poc:verify-dsl` 28/28 全绿 | DSL 表达力 vs 安全（白名单原语）、每 bar 解释开销（step budget 500）、与 RiskGuard/QuotaGuard 接线 | P1, P2 |
 | **P9 支付网关 + 计费 UI ✅ 我方实现已交付（2026-10-20，spec 007；离线轨道已验证，真实 BTCPay 链路待节点）** | 通道抽象层（Registry 不降级）+ fake 离线通道（仅 local/testing）+ BtcPayChannel（验签纯函数已单测）；TRC20-USDT 支付单（decimal:8 bcmath 金额/同套餐不堆叠/TTL 过期清扫）；webhook 固定流水线（验签失败 401 + rejected 审计、processed_key 唯一幂等、Redis 单飞锁降级、状态机只进不退）；激活单事务接线 P3 provision；续费提醒 7/3/1 档 + past_due→suspended 既有流转；Filament 计费页（当前套餐/当日用量/Invoice 列表/升级 3 步出支付信息）+ Billing REST API（双租户隔离） | `poc:verify-payment` 35/35 全绿（建单→验签→状态推进→激活→配额生效→幂等重放→伪造签名拒绝→提醒判定，webhook 单请求 <200ms）；SC-001~006 平台侧全部离线验收；真实 USDT 收单闭环（B1~B3/C1~C2）待节点按 [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) 执行后销账 | ~~支付回调幂等~~（已落地：processed_key 唯一 + 条件更新）、汇率/税额（不做，见已知边界）、**通道合规（数字货币 SaaS 品类受限，BTCPay 自托管为基线，Stripe 申报远期并行）** | P3 |
 | **P10 回测引擎 + 绩效分析 ✅ 已完成（2026-10-21，spec 008；P4 参数调优建议不在本期）** | 历史回放（HistoricalQuery 分页→策略驱动，CH/MySQL 路由复用）；策略绩效 9 指标（Sharpe/最大回撤/胜率/盈亏比/年化等）；撮合假设可配置并在报告显式标注；异步队列 + 单飞锁 + 崩溃收割；Filament「回测绩效」页（列表/发起/详情四区） | `poc:verify-backtest` 55/55 全绿；1 年 5m（105,120 bar）端到端 **6.577–9.079s** < 30s（SC-001）；fixture 决策序列 100% 一致 + 净值误差 < 1%（SC-002）；报告二次查看零重算（SC-003）；零交易所调用（SC-005）；双租户零串扰（SC-006）；真实 testnet 长期净值对照待海外节点 | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
+| **P11 参数寻优 ✅ 已完成（2026-10-21，P10 延伸）** | 参数网格展开（显式值 / min-max-step + 策略白名单 + 200 组上限）；grid 全区间逐组合选优；walk-forward 分折训练/样本外 OOS 均值排名；REST API（创建 202 入队 / 详情 / trials）+ Filament 参数寻优页 + `backtest:optimize` 命令；双表持久化（含请求快照）、租户隔离 | 23 项新增测试全绿；30min 1m fixture grid 3 组合实测选优与 walk-forward 分折输出符合预期；全量回归 788 passed / 0 failed | 过拟合（walk-forward 缓解但非消除）、组合数增长带来的队列耗时 | P10 |
 
 > **执行顺序说明（2026-10-18 决策）**：P8 先于 P7。理由：①kline_bars/liquidation_events 持续增长，归档越晚迁移窗口越大、历史校验越难；②P10 回测与 P7 的回测预览都依赖 P8 的 `HistoricalQuery`。阶段编号保持不动（P7/P8 仅为标识）；P7 的表达力设计可与 P8 实现并行做 specify（纯文档阶段）。
 > **P9 前置注记（2026-10-18 合规调研结论）**：
@@ -606,6 +660,21 @@ php artisan backtest:run spot_grid BTCUSDT 5m --tenant=1 --from=2026-07-01 --to=
     --params='{"lower_price":"100","upper_price":"120","grid_count":10,"qty_per_grid":"0.1"}' --sync
 
 # 4. 回测绩效页点检：/admin →「策略」组 →「回测绩效」（slug backtest-performance）
+
+# 5. 参数寻优（grid / walk-forward；--dry-run 只打印不落库）
+php artisan backtest:optimize spot_grid BTCUSDT 1m --tenant=1 \
+    --from="2026-07-01 00:00:00" --to="2026-10-01 00:00:00" \
+    --params='{"lower_price":"100","upper_price":"120","investment_amount":"1000"}' \
+    --grid='{"grid_count":[5,10,20]}' --objective=total_return_pct --top=3
+
+# 6. 参数寻优页 / API（异步 backtest 队列）
+#    /admin →「策略」组 →「参数寻优」（slug parameter-optimization）
+curl -X POST /api/v1/parameter-optimizations -H "Authorization: Bearer <token>" \
+  -d '{"strategy_code":"spot_grid","symbol":"BTCUSDT","interval":"1m",
+       "from_utc":"2026-07-01 00:00:00","to_utc":"2026-10-01 00:00:00",
+       "grid":{"grid_count":[5,10,20]},
+       "base_params":{"lower_price":"100","upper_price":"120","investment_amount":"1000"}}'
+# → 202；GET /api/v1/parameter-optimizations/{id} 查结果，.../{id}/trials 查逐次试跑
 ```
 
 H 组实测：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（预算 30s）；SC-001~006 对照表与已知边界见 [quickstart](specs/008-backtest-engine/quickstart.md)。
@@ -678,7 +747,7 @@ php artisan test --group=mysql         # 只跑 @group mysql（需真实 MySQL�
 php artisan test tests/Unit            # 纯逻辑组：不启动 Laravel/不连任何服务，断网可跑
 ```
 
-当前规模（P5.5 步骤 1–4 完成后，2026-10-15 本机实测）：Redis 在线 **157 passed / 3 skipped（mysql）/ 588 assertions**；Redis+MySQL 全停 **107 passed / 53 skipped**；MySQL 8.4 底库（排除 redis 组）**110 passed**。154 项旧 POC 断言迁移映射见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)。
+当前规模（2026-10-21 本机实测，Redis 在线）：**781 passed / 10 skipped / 1 incomplete / 2982 assertions，约 2.5 分钟**（default 组必跑，redis 组真实执行，mysql 组自动 skip）。P5.5 基线（2026-10-15）：157 passed / 3 skipped / 588 assertions；154 项旧 POC 断言迁移映射见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)。
 
 分组约定：
 

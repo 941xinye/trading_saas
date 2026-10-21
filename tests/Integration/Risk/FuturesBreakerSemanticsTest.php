@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace Tests\Integration\Risk;
 
+use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Risk\Breaker\BreakerStateMachine;
 use App\Domain\Risk\Breaker\CircuitBreaker;
 use App\Domain\Risk\RiskGuard;
 use App\Domain\Risk\Rules\MaxLossPerTradeRule;
+use Illuminate\Support\Facades\Redis;
 use PHPUnit\Framework\Attributes\Group;
 use Tests\Concerns\ChecksRedisAvailability;
 use Tests\TestCase;
+use Throwable;
 
 /**
  * 合约场景熔断语义测试（spec 005 T036）。
@@ -21,6 +24,9 @@ use Tests\TestCase;
  *     —— 熔断不影响仓位风控平仓，仓位风控不停熔断恢复
  *
  * @group redis（CircuitBreaker 用 Redis 存状态，不可用时自动 skip）
+ *
+ * 隔离约定：固定高位租户 990060 / 实例 990260；setUp 与 tearDown 均清理
+ * `tenant:{tid}:breaker:{iid}`，避免上一用例留下的 HALF_OPEN 串场（坑 #25）。
  */
 #[Group('redis')]
 class FuturesBreakerSemanticsTest extends TestCase
@@ -34,6 +40,21 @@ class FuturesBreakerSemanticsTest extends TestCase
         parent::setUp();
         $this->requireRedis();
         $this->redisAvailable = true;
+        $this->clearRedis();
+    }
+
+    protected function tearDown(): void
+    {
+        // 顺序：先做可能失败的外部清理（受守卫保护），最后 parent::tearDown() 回滚事务（坑 #24）
+        if ($this->redisAvailable) {
+            try {
+                $this->clearRedis();
+            } catch (Throwable) {
+                // 清理失败不掩盖测试结果本身
+            }
+        }
+
+        parent::tearDown();
     }
 
     private const TENANT_ID = 990060;
@@ -114,9 +135,19 @@ class FuturesBreakerSemanticsTest extends TestCase
     // 辅助
     // ------------------------------------------------------------------
 
-    private function makeOrder(string $side, string $qty, string $price): \App\Domain\Exchange\Contracts\ExchangeOrder
+    /**
+     * 清除本用例的熔断 Redis Hash，避免用例之间 HALF_OPEN 状态串场（坑 #25）。
+     */
+    private function clearRedis(): void
     {
-        return new \App\Domain\Exchange\Contracts\ExchangeOrder(
+        Redis::connection('default')->del(
+            'tenant:'.self::TENANT_ID.':breaker:'.self::INSTANCE_ID,
+        );
+    }
+
+    private function makeOrder(string $side, string $qty, string $price): ExchangeOrder
+    {
+        return new ExchangeOrder(
             exchangeOrderId: '1',
             clientOrderId: 'cid',
             symbol: 'BTCUSDT',

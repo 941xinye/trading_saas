@@ -7,6 +7,7 @@ namespace App\Console\Commands;
 use App\Domain\Liquidation\LiquidationFeedRunner;
 use App\Domain\Signal\SignalFeedRunner;
 use App\Domain\Strategy\StrategyRunner;
+use App\Models\StrategyInstance;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -24,10 +25,22 @@ use Throwable;
  * P1 范围：扫描 status in (running, paused_by_breaker) 的实例 → 每实例
  * StrategyRunner 协程（WS 订阅 + 决策链 + 下单闭环，Binance testnet）。
  *
- * 启动依赖：必须加载 swoole 扩展。
+ * 热启停（2026-10-21）：保活协程每 5s 比对 DB 期望状态与进程内协程，
+ * 后台点「启动」（status=starting）无需重启进程即可拉起；停止由实例协程
+ * 自身监听 status=stopped 完成。暂停态（breaker/position_risk/reconcile）
+ * 启动时保留，不被覆写为 running。
+ *
+ * 启动依赖：必须加载 swoole 扩展（--dry-run 除外）。
  */
 class MarketFeedCommand extends Command
 {
+    /**
+     * 期望有协程在跑的实例状态集合（与 API 状态校验共用同一常量）。
+     *
+     * @var string[]
+     */
+    private const LIVE_STATUSES = StrategyInstance::LIVE_STATUSES;
+
     /**
      * 命令签名。
      * --dry-run: 仅打印将启动的协程组件清单，不真正连交易所。
@@ -41,24 +54,21 @@ class MarketFeedCommand extends Command
 
     public function handle(): int
     {
-        if (! extension_loaded('swoole')) {
-            $this->error('Swoole extension not loaded. Install via ServBay or pecl install swoole.');
-
-            return self::FAILURE;
-        }
-
         if ($this->option('dry-run')) {
-            $ids = DB::table('strategy_instances')
-                ->whereIn('status', ['running', 'paused_by_breaker'])
-                ->pluck('id')
-                ->all();
+            $ids = $this->liveInstanceIds();
 
             $this->info('Dry-run mode: would start Swoole coroutine container with:');
             $this->info('  - Exchange WS subscribers');
             $this->info('  - K-line aggregators');
-            $this->info('  - Strategy runners for instances: ' . ($ids === [] ? '(none)' : implode(', ', $ids)));
+            $this->info('  - Strategy runners for instances: '.($ids === [] ? '(none)' : implode(', ', $ids)));
 
             return self::SUCCESS;
+        }
+
+        if (! extension_loaded('swoole')) {
+            $this->error('Swoole extension not loaded. Install via ServBay or pecl install swoole.');
+
+            return self::FAILURE;
         }
 
         $this->info('MarketFeedWorker (process B) starting...');
@@ -87,16 +97,13 @@ class MarketFeedCommand extends Command
             Coroutine\run(function (): void {
                 $runner = app(StrategyRunner::class);
 
-                $ids = DB::table('strategy_instances')
-                    ->whereIn('status', ['running', 'paused_by_breaker'])
-                    ->pluck('id')
-                    ->all();
+                $ids = $this->liveInstanceIds();
 
                 if ($ids === []) {
-                    $this->info('No strategy instances to schedule (status in running/paused_by_breaker).');
+                    $this->info('No strategy instances to schedule (status in '.implode('/', self::LIVE_STATUSES).').');
                     $this->line('Run `php artisan poc:testnet-setup` to create a POC instance.');
                 } else {
-                    $this->info('Scheduling strategy instances: ' . implode(', ', $ids));
+                    $this->info('Scheduling strategy instances: '.implode(', ', $ids));
                 }
 
                 $runner->start($ids);
@@ -110,18 +117,46 @@ class MarketFeedCommand extends Command
                 $this->info('Starting liquidation feed runner (Binance fstream forceOrder@arr)...');
                 app(LiquidationFeedRunner::class)->start();
 
-                // 主协程保活；实例级动态启停 P2 接入（当前重启进程生效）
+                // 主协程保活 + 实例热启动（后台 start → status=starting 无需重启进程）。
+                // 停止由实例协程自身监听 status=stopped 完成，这里只负责补齐新增实例。
                 while (true) {
                     Coroutine::sleep(5);
+
+                    try {
+                        $running = $runner->runningInstanceIds();
+                        $toStart = array_values(array_diff($this->liveInstanceIds(), $running));
+                        if ($toStart !== []) {
+                            $this->info('Hot-start strategy instances: '.implode(', ', $toStart));
+                            $runner->start($toStart);
+                        }
+                    } catch (Throwable $e) {
+                        // 单次同步失败不影响行情/策略协程继续运行
+                        Log::warning('MarketFeed instance sync failed', ['error' => $e->getMessage()]);
+                    }
                 }
             });
         } catch (Throwable $e) {
             Log::error('MarketFeedWorker crashed', ['error' => $e->getMessage()]);
-            $this->error('MarketFeedWorker crashed: ' . $e->getMessage());
+            $this->error('MarketFeedWorker crashed: '.$e->getMessage());
 
             return self::FAILURE;
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * 期望有协程在跑的实例 ID（启动扫描与热启动共用同一口径）。
+     *
+     * @return int[]
+     */
+    private function liveInstanceIds(): array
+    {
+        return DB::table('strategy_instances')
+            ->whereIn('status', self::LIVE_STATUSES)
+            ->orderBy('id')
+            ->pluck('id')
+            ->map(static fn ($id): int => (int) $id)
+            ->all();
     }
 }

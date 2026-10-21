@@ -12,7 +12,7 @@
 | API Key 加密 | AES-256-GCM（sodium） | 认证加密（AEAD），区别于 Laravel 默认的 CBC+HMAC；KEK→DEK→API Key 三段密钥层级 |
 | 熔断状态机 | CLOSED→OPEN→HALF_OPEN→CLOSED | 策略级四维度（单笔/日内/回撤/连亏），只暂停开新仓不平已有持仓 |
 | AI 降级 | LLM 失败→RuleEngineFallback（MA/RSI/MACD/Bollinger） | 信号链路必须持续，AI 不可用时兜底出确定性信号 |
-| 行情存储 | 实时 tick → Redis Sorted Set / 历史 K线 → MySQL（当前）→ ClickHouse（P8 规划，尚未引入） | 写入频率分层：ms 级用 Redis，历史归档用列存 |
+| 行情存储 | 实时 tick → Redis；历史 K 线/信号/订单/爆仓 → MySQL 热层 + ClickHouse 冷层（spec 004 已落地，按 applied_watermark 三段路由） | 写入频率分层：ms 级用 Redis；历史归档用列存，保留期内仍可纯热查询 |
 | WS 推送 | Laravel Reverb（用户推送）+ 独立 Swoole 协程（交易所行情） | Reverb 复用广播认证体系；交易所行情不入 Reverb |
 
 ## 目录结构
@@ -21,25 +21,29 @@
 app/
 ├── Domain/                     ← 领域模块（核心）
 │   ├── Tenancy/                ← 多租户基础设施
-│   ├── Exchange/               ← 交易所适配器
-│   ├── Strategy/                ← 策略引擎（SpotGrid 已实跑；SpotDca/合约 4 策略为骨架；Custom DSL 占位）
-│   ├── Signal/                  ← AI 信号订阅与分发
-│   ├── Risk/                    ← 熔断与风控（四维度）
-│   ├── Billing/                 ← 订阅计费（两阶段计量）
-│   ├── Notification/            ← 信号通知（Log/Telegram 渠道；企微/邮件仅风控占位）
-│   └── Liquidation/             ← 大户爆仓聚类（Clusterer/MapService/FeedRunner）
+│   ├── Exchange/               ← 交易所适配器（Binance/OKX/Bybit/Bitget 现货 + Binance 合约）
+│   ├── Strategy/               ← 策略引擎（SpotGrid/SpotDca/FuturesGrid 实装；Custom DSL 沙箱解释器）
+│   ├── Signal/                 ← AI 信号订阅与分发
+│   ├── Risk/                   ← 熔断与风控（四维度 + 仓位风控）
+│   ├── Billing/                ← 订阅计费（两阶段计量）
+│   ├── Payment/                ← 支付网关（通道抽象 + webhook 幂等 + 激活）
+│   ├── Reconciliation/         ← 账实对账（差异检测 + 暂停/恢复）
+│   ├── Archive/                ← ClickHouse 冷热归档（批次管线 + HistoricalQuery）
+│   ├── Backtest/               ← 回测引擎（回放驱动 + 撮合 + 绩效指标）+ Optimization/（参数网格 + walk-forward 寻优）
+│   ├── Notification/           ← 多渠道通知（Log/Telegram/企微/邮件）
+│   └── Liquidation/            ← 大户爆仓聚类（Clusterer/MapService/FeedRunner）
 ├── Http/
 │   ├── Middleware/BootstrapTenancy.php
 │   ├── Controllers/Api/V1/
 │   └── Resources/
-├── Filament/{Admin,Platform}/   ← 两套 Filament 面板
-├── Jobs/ {PlaceOrder, CancelOrder, CloseBar, AiAnalyze, DispatchNotification, RiskNotification}
+├── Filament/{Admin,Platform}/   ← 两套 Filament 面板（含回测绩效页、计费页）
+├── Jobs/ {AiAnalyze, DispatchNotification, RiskNotification, RenewalReminder, PlaceOrder*, CancelOrder*, CloseBar*}  ← * 为 P1 骨架
 ├── Events/ {BarClosed, SignalGenerated, OrderFilled, BreakerTripped, BreakerAlert}
-├── Console/Commands/            ← 18 个命令（market:feed / 5×poc:verify / 5×poc 装配辅助 / risk:status+recover 等）
-├── Models/                      ← 18 个 Eloquent（租户级表挂 BelongsToTenant）
+├── Console/Commands/            ← 39 个命令（market:feed / archive:* / backtest:* / payment:* / reconcile:* / risk:* / 5×poc:verify 等）
+├── Models/                      ← 23 个 Eloquent（租户级表挂 BelongsToTenant）
 └── Support/AesGcmCrypt.php     ← AES-256-GCM 封装
-config/ {exchange, strategy, ai, risk, plans, notifications, tenancy, liquidation, octane, reverb, filament}.php
-database/migrations/            ← 21 张表
+config/ {exchange, strategy, ai, risk, plans, notifications, tenancy, liquidation, payment, archive, backtest, optimization, reconcile, octane, reverb, filament}.php
+database/migrations/            ← 36 张表
 routes/ {api.php, channels.php, web.php}
 ```
 
@@ -54,12 +58,25 @@ routes/ {api.php, channels.php, web.php}
 | **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 + DEK 轮换 | 两租户同跑策略，数据严格隔离；配额扣减；订阅状态机 | ✅ 双验证 PASS（2026-10-14）：62/62 离线断言（含 10 进程抢 3 配额并发）+ 双租户同 WS 实跑 meter 独立 |
 | **P4 高级风控** | 4 维度 Rule 全实现 + 熔断状态机 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏→熔断→通知→冷却→HALF_OPEN→探测单→CLOSED/重置 | ✅ 全链路 PASS（2026-10-14）：35/35 离线断言（4 维度触发/HALF_OPEN 双路径/事件分发/4 渠道通知/跨日重置/崩溃恢复/去重/命令幂等）+ risk:status/risk:recover 命令验证 |
 | **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板展示 | 实时显示 BTC/ETH 大户爆仓密集区 | ✅ 离线 PASS（2026-10-14）：15/15 断言（DTO/聚类/Redis ZSET+HASH/三档窗口隔离/eviction/MapService）；真实 fstream 实跑阻塞于 WSL 对 Binance 主网网络不可达，命令保留待补测 |
-| **P5.5 上线前工程化加固** | 账实对账 + SpotDca 落地 + 测试迁入 PHPUnit/CI + supervisor/每日调度/海外节点 | 见 [P5.5 执行计划](p5.5-hardening-plan.md) 各子项验收标准 | 🚧 进行中：步骤 0（测试基建：分组/12 项样板断言/Actions 双 job）已于 2026-10-15 完成；步骤 1–4 待实现 |
-| **P6 多交易所 Adapter 扩展** | OKX/Bybit/Bitget 现货+合约 Adapter；统一错误码翻译表 | 三家 testnet 各跑通 1 笔市价单 + 1 路 WS 1m closed bar | 待实现（依赖 P1） |
-| **P7 Custom DSL 策略引擎** | YAML 声明式 entry/exit/filter/risk 四段 + 沙箱解释器 + Filament 编辑器 | 一条 DSL 装载后跑通 onBar→信号→下单；与 PHP 内置策略等价 | 待实现（依赖 P1, P2） |
-| **P8 ClickHouse 历史归档** | kline_bars/signals/orders/liquidation_events 迁 CH；冷热分层；HistoricalQuery 抽象 | 一周历史 K 线查询 < 500ms；迁移期业务零感知 | ✅ 核心落地（2026-10-19，spec 004）：归档管线/统一查询/租户隔离/故障降级/可观测 383 tests 全绿；节点机 CH 冒烟与端到端验收待回填 |
-| **P9 支付网关 + 计费 UI** | Stripe + 支付宝/微信；Filament 计费页（套餐/Invoice/用量）；自动续费 | 完整一笔 下单→支付→激活→配额刷新；续费失败走 P3 past_due→suspended | 待实现（依赖 P3） |
-| **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；Sharpe/回撤/胜率；Filament 绩效页；风控参数自动调优 | DSL 回测 1 年 < 30s；与 P1 实跑净值曲线误差 < 1% | 待实现（依赖 P1, P7, P8） |
+| **P5.5 上线前工程化加固** | 账实对账 + SpotDca 落地 + 测试迁入 PHPUnit/CI + supervisor/每日调度/海外节点 | 见 [P5.5 执行计划](p5.5-hardening-plan.md) 各子项验收标准 | ✅ 代码侧完成（2026-10-15，步骤 0–4）：PHPUnit 分组/CI 双 job/supervisor/每日调度/对账/SpotDca 全部落地；节点机实跑验收见 [Runbook](overseas-node-runbook.md) |
+| **P6 多交易所 Adapter 扩展** | OKX/Bybit/Bitget 现货+合约 Adapter；统一错误码翻译表 | 三家 testnet 各跑通 1 笔市价单 + 1 路 WS 1m closed bar | ✅ 代码侧完成（2026-10-16~18，spec 001/002/003）：三家现货适配器 + 签名域统一；OKX demo/Bybit testnet/Bitget 主网小额单待节点回填 |
+| **P7 Custom DSL 策略引擎** | YAML 声明式 entry/exit/filter/risk 四段 + 沙箱解释器 + Filament 编辑器 | 一条 DSL 装载后跑通 onBar→信号→下单；与 PHP 内置策略等价 | ✅ 完成（2026-10-19，spec 006）：受限 YAML + 沙箱解释器 + 编辑器/预览 + 售卖门控 |
+| **P8 ClickHouse 历史归档** | kline_bars/signals/orders/liquidation_events 迁 CH；冷热分层；HistoricalQuery 抽象 | 一周历史 K 线查询 < 500ms；迁移期业务零感知 | ✅ 核心落地（2026-10-19，spec 004）：归档管线/统一查询/租户隔离/故障降级/可观测；节点机 CH 冒烟与端到端验收待回填 |
+| **P9 支付网关 + 计费 UI** | Stripe + 支付宝/微信；Filament 计费页（套餐/Invoice/用量）；自动续费 | 完整一笔 下单→支付→激活→配额刷新；续费失败走 P3 past_due→suspended | ✅ 我方实现完成（2026-10-20，spec 007）：通道抽象（BTCPay 首发）+ webhook 幂等 + 激活事务 + 续费提醒 + 计费页；真实收单待节点验收 |
+| **P10 回测引擎 + 绩效分析** | 历史回放（CH K 线→BarAggregator）；Sharpe/回撤/胜率；Filament 绩效页；风控参数自动调优 | DSL 回测 1 年 < 30s；与 P1 实跑净值曲线误差 < 1% | ✅ 完成（2026-10-21，spec 008）：回放驱动 + 9 指标 + 等价性 + 异步队列 + 绩效页；1 年 5m 实测 6.5–9.1s。参数寻优由 P11 承接 |
+| **P11 参数寻优** | 参数网格展开（显式值 / min-max-step + 白名单）；grid 全区间选优；walk-forward 分折训练/样本外 OOS 均值；寻优与 trials 双表持久化；REST API + Filament 参数寻优页（异步 backtest 队列） | 30min 1m fixture 3 组合选优与 2 折 walk-forward 输出符合预期；全量回归 0 failed | ✅ 完成（2026-10-21）：`backtest:optimize` + `--dry-run` + `/api/v1/parameter-optimizations`；config/optimization.php 可调上限/折数/目标 |
+
+> 逐项能力、交付日期与文档对照见 [README 功能矩阵](../README.md#功能矩阵--路线图)。
+
+## P6/P7/P9/P10/P11 交付索引
+
+| 阶段 | 落地要点 | 文档 |
+|---|---|---|
+| P6 多所现货 | 三家适配器共享 `ExchangeSigning` 签名域；错误码统一翻译 + 限频退避 | [001 OKX](../specs/001-okx-spot-adapter/spec.md) / [002 Bybit](../specs/002-bybit-spot-adapter/spec.md) / [003 Bitget](../specs/003-bitget-spot-adapter/spec.md) |
+| P7 Custom DSL | 受限 YAML 四段（entry/exit/filter/risk）+ 沙箱解释器 + Filament 编辑器 + 预览（不含手续费滑点）+ 售卖门控 | [006 DSL](../specs/006-custom-dsl-strategy/spec.md) |
+| P9 支付 | `PaymentGatewayInterface` 通道抽象（BTCPay 首发）+ webhook 幂等 + 激活事务 + 续费提醒 + 计费页/API | [007 支付网关](../specs/007-payment-gateway-billing/spec.md) / [BTCPay PoC](p9-btcpay-poc-plan.md) |
+| P10 回测 | `BacktestRunner` 回放驱动（不依赖交易所）+ bar 级撮合 + 9 指标 + 报告持久化零重算 + 绩效页 | [008 回测引擎](../specs/008-backtest-engine/spec.md) |
+| P11 参数寻优 | `ParameterGrid`（白名单 + 上限）+ `ParameterOptimizer`（grid / walk-forward OOS 均值）+ `RunOptimizationJob`（backtest 队列）+ REST API / Filament 参数寻优页 + 双表持久化 | [README 功能矩阵](../README.md#功能矩阵--路线图) |
 
 ## P8 ClickHouse 历史归档（spec 004，2026-10-19 核心落地）
 

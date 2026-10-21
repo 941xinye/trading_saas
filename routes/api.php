@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\V1\BillingWebhookController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\ExchangeAccountController;
 use App\Http\Controllers\Api\V1\LiquidationController;
+use App\Http\Controllers\Api\V1\OptimizationController;
 use App\Http\Controllers\Api\V1\RiskRuleController;
 use App\Http\Controllers\Api\V1\SignalController;
 use App\Http\Controllers\Api\V1\SignalSubscriptionController;
@@ -47,6 +48,13 @@ Route::middleware(['auth:sanctum', 'tenant'])
         // 风控规则
         Route::apiResource('risk-rules', RiskRuleController::class)
             ->parameters(['risk-rules' => 'rule']);
+
+        // P11：参数寻优（创建即入 backtest 队列，202；列表/详情/trials 只读）
+        Route::apiResource('parameter-optimizations', OptimizationController::class)
+            ->parameters(['parameter-optimizations' => 'optimization'])
+            ->only(['index', 'store', 'show']);
+        Route::get('parameter-optimizations/{optimization}/trials', [OptimizationController::class, 'trials'])
+            ->name('parameter-optimizations.trials');
 
         // P5：大户爆仓密集区（市场级数据，无 tenant_id 隔离）
         Route::get('liquidation/map', [LiquidationController::class, 'map'])->name('liquidation.map');

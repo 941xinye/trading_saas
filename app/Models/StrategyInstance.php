@@ -16,6 +16,19 @@ class StrategyInstance extends Model
 {
     use BelongsToTenant;
 
+    /**
+     * 期望进程 B 有协程在跑的实例状态（启动扫描 / 热启停 / API 状态校验共用）。
+     *
+     * @var string[]
+     */
+    public const LIVE_STATUSES = [
+        'starting',
+        'running',
+        'paused_by_breaker',
+        'paused_by_position_risk',
+        'paused_by_reconcile',
+    ];
+
     protected $fillable = [
         'tenant_id',
         'strategy_id',
@@ -48,6 +61,11 @@ class StrategyInstance extends Model
         'started_at' => 'datetime',
         'stopped_at' => 'datetime',
     ];
+
+    public function isLive(): bool
+    {
+        return in_array((string) $this->status, self::LIVE_STATUSES, true);
+    }
 
     public function strategy(): BelongsTo
     {
