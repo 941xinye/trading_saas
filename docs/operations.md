@@ -263,6 +263,16 @@ gunzip < /backup/crypto_saas_YYYY-MM-DD.sql.gz | mysql -u root -p crypto_saas
 
 建议每日全量 + binlog 增量，保留 30 天。
 
+**恢复演练记录（2026-10-22，首次演练 PASS）**：本地 ServBay MySQL 8.x 实测
+`mysqldump --single-transaction --routines` 全量 → scratch 库还原 → 核对，
+表数 39=39、migrations 无差异、关键表行数全一致（strategy_orders 47、signals 62、
+tenants 2、strategy_instances 2、signal_subscriptions 3）。两个实操要点：
+
+1. **禁用 shell 重定向接 dump**：PowerShell `>` 会写 UTF-16 污染 SQL 文件，
+   必须用 `mysqldump --result-file=...`（Linux 下 `| gzip` 无此问题）。
+2. **核对口径**：`information_schema.tables` 比表数 + 关键业务表精确 `COUNT(*)`；
+   InnoDB 的 `table_rows` 是估算值，不能用于演练核对。
+
 ### 8.2 Redis
 
 ```bash
