@@ -1,0 +1,2161 @@
+openapi: 3.0.3
+info:
+  title: 数字货币交易 SaaS API
+  version: "1.0.0"
+  description: |
+    多租户数字货币交易 SaaS 平台 REST API v1。
+
+    ## 认证
+    - 除 /health、/metrics、/billing/webhook/{channel} 外，所有接口均需在 `Authorization` 头携带
+      Sanctum Personal Access Token：`Authorization: Bearer {token}`。
+    - 认证后由 `tenant` 中间件初始化租户上下文，所有查询按当前租户行级隔离（tenant_id）。
+    - 跨租户访问一律返回 404（不泄露资源存在性）。
+
+    ## 限流
+    - 全局 `throttle:api`（120 req/min）。
+    - `POST /v1/tokens` 额外 `throttle:10,1`。
+    - `POST /v1/billing/webhook/{channel}` `throttle:120,1`。
+
+    ## 状态码约定
+    - 200 成功；201 已创建；202 已受理（异步）；204 无内容。
+    - 401 未认证；403 无权限；404 资源不存在或跨租户；409 状态冲突（如实例运行中）。
+    - 422 请求参数校验失败（返回 Laravel 标准 errors 结构）。
+
+    ## 密钥安全
+    - 交易所 API 密钥落库前用租户 DEK 做 AES-256-GCM 加密。
+    - 读接口永不返回明文或密文（`api_key`/`api_secret`/`passphrase` 字段恒为 null）。
+servers:
+  - url: /api
+    description: 相对路径，由部署环境决定实际域名
+paths:
+  /v1/health:
+    get:
+      tags: [系统]
+      summary: 健康检查
+      description: |
+        公开端点，供负载均衡/监控系统调用。overall=down 返回 503，否则 200。
+        仅返回组件状态与延迟，不返回异常原文或连接信息。
+      responses:
+        "200":
+          description: 健康（status=ok 或 degraded）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResult"
+        "503":
+          description: 不健康（status=down）
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResult"
+  /v1/metrics:
+    get:
+      tags: [系统]
+      summary: Prometheus 指标
+      description: |
+        公开端点，输出 Prometheus exposition format（text/plain; version=0.0.4）。
+        涵盖：trading_orders_total、trading_signals_total、trading_queue_backlog、trading_breaker_open。
+      responses:
+        "200":
+          description: 指标文本
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP trading_orders_total Total trading orders by tenant, side, and status
+                  # TYPE trading_orders_total counter
+                  trading_orders_total{tenant_id="1",side="buy",status="success"} 12
+                  trading_orders_total{tenant_id="1",side="sell",status="failed"} 1
+  # =====================================================================
+  # 个人访问令牌
+  # =====================================================================
+  /v1/tokens:
+    get:
+      tags: [令牌]
+      summary: 当前用户的令牌列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ApiToken"
+    post:
+      tags: [令牌]
+      summary: 创建个人访问令牌
+      description: 明文 token 仅在创建响应中返回一次，之后无法再获取。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+                  example: cli-automation
+                expires_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: 过期时间，必须晚于当前时间
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: "#/components/schemas/ApiToken"
+                      - type: object
+                        properties:
+                          plain_text_token:
+                            type: string
+                            description: 明文 token，仅此一次返回
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/tokens/current:
+    delete:
+      tags: [令牌]
+      summary: 注销当前令牌
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: 已注销
+  /v1/tokens/{token}:
+    delete:
+      tags: [令牌]
+      summary: 注销指定令牌
+      description: 只能注销当前用户自己的 token，跨用户返回 404。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TokenId"
+      responses:
+        "204":
+          description: 已注销
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # =====================================================================
+  # Dashboard
+  # =====================================================================
+  /v1/dashboard:
+    get:
+      tags: [仪表盘]
+      summary: Dashboard 聚合数据
+      description: 单接口聚合 5 类面板数据：市场热度、余额汇总、信号流、告警流、大户爆仓聚类。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Dashboard"
+  # =====================================================================
+  # 交易所账户
+  # =====================================================================
+  /v1/exchange-accounts:
+    get:
+      tags: [交易所账户]
+      summary: 交易所账户列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ExchangeAccount"
+    post:
+      tags: [交易所账户]
+      summary: 创建交易所账户
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExchangeAccountStore"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ExchangeAccount"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/exchange-accounts/{account}:
+    parameters:
+      - $ref: "#/components/parameters/AccountId"
+    get:
+      tags: [交易所账户]
+      summary: 账户详情
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ExchangeAccount"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [交易所账户]
+      summary: 更新账户
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExchangeAccountUpdate"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ExchangeAccount"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [交易所账户]
+      summary: 删除账户
+      description: 若账户仍被策略实例引用，返回 409。
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: 已删除
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 账户仍被策略实例引用
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  # =====================================================================
+  # 策略实例
+  # =====================================================================
+  /v1/strategy-instances:
+    get:
+      tags: [策略实例]
+      summary: 策略实例列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/StrategyInstance"
+    post:
+      tags: [策略实例]
+      summary: 创建策略实例
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyInstanceStore"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/StrategyInstance"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/strategy-instances/{instance}:
+    parameters:
+      - $ref: "#/components/parameters/InstanceId"
+    get:
+      tags: [策略实例]
+      summary: 实例详情
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/StrategyInstance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [策略实例]
+      summary: 更新实例配置
+      description: 运行中（LIVE_STATUSES）禁止改配，返回 409。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrategyInstanceUpdate"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/StrategyInstance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 实例运行中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [策略实例]
+      summary: 删除实例
+      description: 运行中禁止删除，返回 409。
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: 已删除
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 实例运行中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /v1/strategy-instances/{instance}/start:
+    post:
+      tags: [策略实例]
+      summary: 启动实例
+      description: 置 starting，由进程 B 热拉起。已运行返回 409。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: 已置 starting
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/StrategyInstance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 实例已在运行或已处于启动流程中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /v1/strategy-instances/{instance}/stop:
+    post:
+      tags: [策略实例]
+      summary: 停止实例
+      description: 置 stopped，实例协程 5s 内自停并保留恢复状态。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: 已置 stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/StrategyInstance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/strategy-instances/{instance}/optimization-applications:
+    get:
+      tags: [策略实例]
+      summary: 实例的寻优应用历史
+      description: 反查实例当前参数来源，最近在前。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OptimizationApplication"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # =====================================================================
+  # 信号订阅
+  # =====================================================================
+  /v1/signal-subscriptions:
+    get:
+      tags: [信号订阅]
+      summary: 信号订阅列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/SignalSubscription"
+    post:
+      tags: [信号订阅]
+      summary: 创建信号订阅
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignalSubscriptionStore"
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SignalSubscription"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/signal-subscriptions/{subscription}:
+    parameters:
+      - $ref: "#/components/parameters/SubscriptionId"
+    get:
+      tags: [信号订阅]
+      summary: 订阅详情
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SignalSubscription"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [信号订阅]
+      summary: 更新订阅
+      description: 开启自动跟单时必须绑定执行实例。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignalSubscriptionUpdate"
+      responses:
+        "200":
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SignalSubscription"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [信号订阅]
+      summary: 删除订阅
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: 已删除
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # =====================================================================
+  # 信号
+  # =====================================================================
+  /v1/signals:
+    get:
+      tags: [信号]
+      summary: 信号列表
+      description: 按 triggered_at 倒序，分页。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/Signal"
+  /v1/signals/{signal}:
+    parameters:
+      - $ref: "#/components/parameters/SignalId"
+    get:
+      tags: [信号]
+      summary: 信号详情
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/Signal"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/signals/{signal}/execute:
+    post:
+      tags: [信号]
+      summary: 执行信号（人工一键下单）
+      description: |
+        复用 OrderExecutor 的权益/配额闸门与 client_order_id 幂等。
+        422：方向非法/信号过期/交易对不匹配/资金或凭据问题；
+        409：实例未运行/重复执行；404：跨租户信号或实例。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/SignalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instance_id]
+              properties:
+                instance_id:
+                  type: integer
+                  minimum: 1
+                  description: 执行该信号的策略实例 ID
+                notional:
+                  type: number
+                  format: float
+                  exclusiveMinimum: 0
+                  description: 下单名义金额，缺省使用 signal.execution.default_notional
+      responses:
+        "201":
+          description: 下单成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/SignalExecutionResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 实例未运行或重复执行
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "422":
+          description: 执行失败
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  # =====================================================================
+  # 风控规则
+  # =====================================================================
+  /v1/risk-rules:
+    get:
+      tags: [风控规则]
+      summary: 风控规则列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/RiskRule"
+    post:
+      tags: [风控规则]
+      summary: 创建风控规则
+      description: POC 阶段为骨架实现，返回 202。
+      security:
+        - bearerAuth: []
+      responses:
+        "202":
+          description: 已受理（骨架）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Skeleton. Wait for POC.
+                  resource:
+                    type: string
+                    example: risk-rules.store
+  /v1/risk-rules/{rule}:
+    parameters:
+      - $ref: "#/components/parameters/RuleId"
+    get:
+      tags: [风控规则]
+      summary: 风控规则详情
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RiskRule"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [风控规则]
+      summary: 更新风控规则
+      description: POC 阶段为骨架实现，返回 202。
+      security:
+        - bearerAuth: []
+      responses:
+        "202":
+          description: 已受理（骨架）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Skeleton. Wait for POC.
+                  resource:
+                    type: string
+                    example: risk-rules.update
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [风控规则]
+      summary: 删除风控规则
+      description: POC 阶段为骨架实现，返回 202。
+      security:
+        - bearerAuth: []
+      responses:
+        "202":
+          description: 已受理（骨架）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Skeleton. Wait for POC.
+                  resource:
+                    type: string
+                    example: risk-rules.destroy
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # =====================================================================
+  # 参数寻优
+  # =====================================================================
+  /v1/parameter-optimizations:
+    get:
+      tags: [参数寻优]
+      summary: 寻优任务列表
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/ParameterOptimization"
+    post:
+      tags: [参数寻优]
+      summary: 创建寻优任务
+      description: 创建即入 backtest 队列异步执行，返回 202。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParameterOptimizationStore"
+      responses:
+        "202":
+          description: 已受理
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ParameterOptimization"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/parameter-optimizations/{optimization}:
+    parameters:
+      - $ref: "#/components/parameters/OptimizationId"
+    get:
+      tags: [参数寻优]
+      summary: 寻优任务详情
+      description: 含 report（best/top/fold_details）。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/ParameterOptimization"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/parameter-optimizations/{optimization}/trials:
+    get:
+      tags: [参数寻优]
+      summary: 逐次试跑明细
+      description: walk_forward 的 in_sample/fold_index 在此查看。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OptimizationId"
+      responses:
+        "200":
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Paginated"
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/OptimizationTrial"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /v1/parameter-optimizations/{optimization}/apply:
+    post:
+      tags: [参数寻优]
+      summary: 应用寻优结果到策略实例
+      description: |
+        body：instance_id（必填）、rank（可选，Top N 名次，默认 1 = best）。
+        422：任务未完成/名次不存在/实例与任务不匹配；
+        409：实例运行中（须先 stop）；404：跨租户实例或任务。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OptimizationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [instance_id]
+              properties:
+                instance_id:
+                  type: integer
+                  minimum: 1
+                rank:
+                  type: integer
+                  minimum: 1
+                  default: 1
+      responses:
+        "200":
+          description: 应用成功，返回更新后的实例
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      application_id:
+                        type: integer
+                  - type: object
+                    properties:
+                      data:
+                        $ref: "#/components/schemas/StrategyInstance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 实例运行中
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "422":
+          description: 应用条件不满足
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  /v1/parameter-optimization-applications/{application}/rollback:
+    post:
+      tags: [参数寻优]
+      summary: 回滚寻优应用
+      description: |
+        实例 params 恢复为应用前快照。
+        409：已回滚/运行中/参数已被人工修改；422：实例已删除。
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/ApplicationId"
+      responses:
+        "200":
+          description: 回滚成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/StrategyInstance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: 回滚条件不满足
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+        "422":
+          description: 实例已删除
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Message"
+  # =====================================================================
+  # 大户爆仓
+  # =====================================================================
+  /v1/liquidation/map:
+    get:
+      tags: [大户爆仓]
+      summary: 大户爆仓密集区
+      description: 返回 Top N 密集区聚类，current_price 由后端从 spot adapter 取。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 20
+          example: BTCUSDT
+        - name: window
+          in: query
+          schema:
+            type: string
+            enum: [5m, 15m, 60m]
+            default: 5m
+        - name: top
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbol:
+                    type: string
+                  window:
+                    type: string
+                  current_price:
+                    type: string
+                    nullable: true
+                  clusters:
+                    type: array
+                    items:
+                      type: object
+  /v1/liquidation/recent:
+    get:
+      tags: [大户爆仓]
+      summary: 最近强平事件
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          schema:
+            type: string
+            maxLength: 20
+          example: BTCUSDT
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  symbol:
+                    type: string
+                  limit:
+                    type: integer
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        exchange_code:
+                          type: string
+                        symbol:
+                          type: string
+                        side:
+                          type: string
+                        price:
+                          type: string
+                        qty:
+                          type: string
+                        value_usd:
+                          type: string
+                        event_ts:
+                          type: string
+  # =====================================================================
+  # 计费
+  # =====================================================================
+  /v1/billing/summary:
+    get:
+      tags: [计费]
+      summary: 当前套餐与用量摘要
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan_code:
+                    type: string
+                  plan_name:
+                    type: string
+                  price_monthly:
+                    type: number
+                  subscription:
+                    type: object
+                    nullable: true
+                    properties:
+                      status:
+                        type: string
+                      started_at:
+                        type: string
+                        format: date-time
+                      ends_at:
+                        type: string
+                        format: date-time
+                  usage:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        used:
+                          type: integer
+                        limit:
+                          type: integer
+  /v1/billing/invoices:
+    get:
+      tags: [计费]
+      summary: 支付单列表
+      description: 本租户支付单，时间倒序。
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PaymentInvoice"
+    post:
+      tags: [计费]
+      summary: 创建支付单
+      description: body {plan_code} → 生成/复用待支付单。
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_code]
+              properties:
+                plan_code:
+                  type: string
+                  maxLength: 30
+                  description: 必须是 config('plans.plans') 中的有效套餐码
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PaymentInvoice"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /v1/billing/invoices/{ref}:
+    get:
+      tags: [计费]
+      summary: 支付单详情
+      description: 跨租户返回 404。
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: "#/components/schemas/PaymentInvoice"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # =====================================================================
+  # 支付 webhook（验签即鉴权）
+  # =====================================================================
+  /v1/billing/webhook/{channel}:
+    post:
+      tags: [支付]
+      summary: 支付通道 webhook
+      description: |
+        验签即鉴权，不挂 auth:sanctum / tenant。
+        流水线：通道解析 → 验签 → 解析 → ref 白名单 → 单飞锁 → 状态机决策 → 激活/迁移。
+        响应：200 终局（processed/idempotent_skipped/rejected）；401 签名非法；404 通道未知；500 可重试。
+      parameters:
+        - name: channel
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 支付通道码，如 btcpay
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 通道原始载荷，由通道适配器解析
+      responses:
+        "200":
+          description: 终局响应
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  reason:
+                    type: string
+                    example: unparsable
+                  result:
+                    type: string
+                    example: processed
+        "401":
+          description: 签名非法
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  reason:
+                    type: string
+                    example: invalid_signature
+        "404":
+          description: 通道未知
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+        "500":
+          description: 处理异常，触发通道重投
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: false
+                  reason:
+                    type: string
+                    example: processing_error
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum PAT
+  parameters:
+    TokenId:
+      name: token
+      in: path
+      required: true
+      schema:
+        type: integer
+    AccountId:
+      name: account
+      in: path
+      required: true
+      schema:
+        type: integer
+    InstanceId:
+      name: instance
+      in: path
+      required: true
+      schema:
+        type: integer
+    SubscriptionId:
+      name: subscription
+      in: path
+      required: true
+      schema:
+        type: integer
+    SignalId:
+      name: signal
+      in: path
+      required: true
+      schema:
+        type: integer
+    RuleId:
+      name: rule
+      in: path
+      required: true
+      schema:
+        type: integer
+    OptimizationId:
+      name: optimization
+      in: path
+      required: true
+      schema:
+        type: integer
+    ApplicationId:
+      name: application
+      in: path
+      required: true
+      schema:
+        type: integer
+  responses:
+    NotFound:
+      description: 资源不存在或跨租户
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "Resource not found."
+    ValidationError:
+      description: 参数校验失败
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: "The given data was invalid."
+              errors:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+  schemas:
+    Message:
+      type: object
+      properties:
+        message:
+          type: string
+    Paginated:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            type: object
+        links:
+          type: object
+          properties:
+            first:
+              type: string
+              nullable: true
+            last:
+              type: string
+              nullable: true
+            prev:
+              type: string
+              nullable: true
+            next:
+              type: string
+              nullable: true
+        meta:
+          type: object
+          properties:
+            current_page:
+              type: integer
+            from:
+              type: integer
+              nullable: true
+            last_page:
+              type: integer
+            path:
+              type: string
+            per_page:
+              type: integer
+            to:
+              type: integer
+              nullable: true
+            total:
+              type: integer
+    HealthResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        components:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [ok, degraded, down]
+              latency_ms:
+                type: integer
+                nullable: true
+    ApiToken:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        abilities:
+          type: array
+          items:
+            type: string
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        is_current:
+          type: boolean
+    Dashboard:
+      type: object
+      properties:
+        market_heat:
+          type: object
+          nullable: true
+        balance:
+          type: object
+          nullable: true
+        signal_feed:
+          type: object
+          nullable: true
+        alert_feed:
+          type: object
+          nullable: true
+        liquidation_map:
+          type: object
+          nullable: true
+        cached_at:
+          type: string
+          format: date-time
+          nullable: true
+        meta:
+          type: object
+          properties:
+            version:
+              type: string
+              example: v1
+    ExchangeAccount:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenant_id:
+          type: integer
+        exchange_id:
+          type: integer
+        exchange:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: integer
+            code:
+              type: string
+            name:
+              type: string
+        label:
+          type: string
+        market:
+          type: string
+          enum: [spot, futures]
+        sub_account:
+          type: string
+          nullable: true
+        api_key:
+          type: "null"
+          description: 恒为 null，明文密钥永不输出
+        api_secret:
+          type: "null"
+        passphrase:
+          type: "null"
+        dek_version:
+          type: integer
+        permissions:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [active, revoked, expired]
+        last_synced_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ExchangeAccountStore:
+      type: object
+      required: [exchange_id, label, market, api_key, api_secret]
+      properties:
+        exchange_id:
+          type: integer
+        label:
+          type: string
+          maxLength: 60
+          description: 同租户同交易所下唯一
+        market:
+          type: string
+          enum: [spot, futures]
+        sub_account:
+          type: string
+          maxLength: 60
+          nullable: true
+        api_key:
+          type: string
+          maxLength: 4096
+        api_secret:
+          type: string
+          maxLength: 4096
+        passphrase:
+          type: string
+          maxLength: 4096
+          nullable: true
+        permissions:
+          type: array
+          items:
+            type: string
+            maxLength: 40
+        status:
+          type: string
+          enum: [active, revoked, expired]
+    ExchangeAccountUpdate:
+      allOf:
+        - $ref: "#/components/schemas/ExchangeAccountStore"
+    StrategyInstance:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenant_id:
+          type: integer
+        strategy_id:
+          type: integer
+        strategy:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: integer
+            code:
+              type: string
+            name:
+              type: string
+            category:
+              type: string
+        exchange_account_id:
+          type: integer
+        exchange_account:
+          type: object
+          nullable: true
+          properties:
+            id:
+              type: integer
+            label:
+              type: string
+            market:
+              type: string
+        symbol:
+          type: string
+          maxLength: 20
+        interval:
+          type: string
+          enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d]
+        params:
+          type: object
+        allocated_capital:
+          type: string
+        leverage:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 125
+        status:
+          type: string
+          enum: [stopped, starting, running, paused_by_loss, paused_by_drawdown, paused_by_consecutive_losses, error]
+        breaker_state:
+          type: string
+          nullable: true
+        realized_pnl:
+          type: string
+          nullable: true
+        unrealized_pnl:
+          type: string
+          nullable: true
+        max_drawdown_pct:
+          type: string
+          nullable: true
+        consecutive_losses:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        stopped_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    StrategyInstanceStore:
+      type: object
+      required: [strategy_id, exchange_account_id, symbol, interval, allocated_capital]
+      properties:
+        strategy_id:
+          type: integer
+        exchange_account_id:
+          type: integer
+          description: 必须属于当前租户
+        symbol:
+          type: string
+          maxLength: 20
+          pattern: "^[A-Z0-9]{2,20}$"
+          description: 同租户同策略下唯一
+        interval:
+          type: string
+          enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d]
+        params:
+          type: object
+        allocated_capital:
+          type: number
+          exclusiveMinimum: 0
+        leverage:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 125
+    StrategyInstanceUpdate:
+      type: object
+      properties:
+        strategy_id:
+          type: integer
+        exchange_account_id:
+          type: integer
+        symbol:
+          type: string
+          maxLength: 20
+          pattern: "^[A-Z0-9]{2,20}$"
+        interval:
+          type: string
+          enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d]
+        params:
+          type: object
+        allocated_capital:
+          type: number
+          exclusiveMinimum: 0
+        leverage:
+          type: integer
+          nullable: true
+          minimum: 1
+          maximum: 125
+    SignalSubscription:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenant_id:
+          type: integer
+        name:
+          type: string
+        symbols:
+          type: array
+          items:
+            type: string
+        intervals:
+          type: array
+          items:
+            type: string
+            enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d]
+        ai_prompter:
+          type: string
+          enum: [deepseek, openai, qwen, local]
+        ai_model:
+          type: string
+          nullable: true
+        rule_fallback_enabled:
+          type: boolean
+        channels:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        auto_execute:
+          type: boolean
+        execution_instance_id:
+          type: integer
+          nullable: true
+        execution_notional:
+          type: string
+          nullable: true
+        execution_min_confidence:
+          type: integer
+          minimum: 0
+          maximum: 100
+        execution_daily_limit:
+          type: integer
+          minimum: 0
+          maximum: 65535
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SignalSubscriptionStore:
+      type: object
+      required: [name, symbols, intervals, ai_prompter, channels]
+      properties:
+        name:
+          type: string
+          maxLength: 60
+        symbols:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            maxLength: 20
+            pattern: "^[A-Z0-9]{2,20}$"
+        intervals:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d]
+        ai_prompter:
+          type: string
+          enum: [deepseek, openai, qwen, local]
+        ai_model:
+          type: string
+          maxLength: 40
+          nullable: true
+        rule_fallback_enabled:
+          type: boolean
+        channels:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            maxLength: 40
+        active:
+          type: boolean
+        auto_execute:
+          type: boolean
+        execution_instance_id:
+          type: integer
+          description: auto_execute=true 时必填，且必须属于当前租户
+        execution_notional:
+          type: number
+          exclusiveMinimum: 0
+          nullable: true
+        execution_min_confidence:
+          type: integer
+          minimum: 0
+          maximum: 100
+        execution_daily_limit:
+          type: integer
+          minimum: 0
+          maximum: 65535
+    SignalSubscriptionUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 60
+        symbols:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            maxLength: 20
+            pattern: "^[A-Z0-9]{2,20}$"
+        intervals:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d]
+        ai_prompter:
+          type: string
+          enum: [deepseek, openai, qwen, local]
+        ai_model:
+          type: string
+          maxLength: 40
+          nullable: true
+        rule_fallback_enabled:
+          type: boolean
+        channels:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            maxLength: 40
+        active:
+          type: boolean
+        auto_execute:
+          type: boolean
+        execution_instance_id:
+          type: integer
+        execution_notional:
+          type: number
+          exclusiveMinimum: 0
+          nullable: true
+        execution_min_confidence:
+          type: integer
+          minimum: 0
+          maximum: 100
+        execution_daily_limit:
+          type: integer
+          minimum: 0
+          maximum: 65535
+    Signal:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenant_id:
+          type: integer
+        subscription_id:
+          type: integer
+          nullable: true
+        symbol:
+          type: string
+        interval:
+          type: string
+        direction:
+          type: string
+        entry_price:
+          type: string
+          nullable: true
+        exit_price:
+          type: string
+          nullable: true
+        stop_loss:
+          type: string
+          nullable: true
+        confidence:
+          type: integer
+        source:
+          type: string
+          enum: [ai, rule_fallback]
+        rationale:
+          type: string
+          nullable: true
+        raw_payload:
+          type: object
+          nullable: true
+        triggered_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    SignalExecutionResult:
+      type: object
+      properties:
+        signal_id:
+          type: integer
+        instance_id:
+          type: integer
+        client_order_id:
+          type: string
+        exchange_order_id:
+          type: string
+          nullable: true
+        symbol:
+          type: string
+        side:
+          type: string
+        type:
+          type: string
+        quantity:
+          type: string
+        notional:
+          type: string
+        reference_price:
+          type: string
+        status:
+          type: string
+        filled_qty:
+          type: string
+        avg_fill_price:
+          type: string
+    RiskRule:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenant_id:
+          type: integer
+        strategy_instance_id:
+          type: integer
+          nullable: true
+        rule_type:
+          type: string
+          enum: [max_loss_per_trade, max_daily_loss, max_drawdown, consecutive_losses]
+        threshold_value:
+          type: string
+        threshold_unit:
+          type: string
+        cooldown_minutes:
+          type: integer
+        auto_recover:
+          type: boolean
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ParameterOptimization:
+      type: object
+      properties:
+        id:
+          type: integer
+        tenant_id:
+          type: integer
+        strategy_code:
+          type: string
+        symbol:
+          type: string
+        interval:
+          type: string
+        from_utc:
+          type: string
+          format: date-time
+        to_utc:
+          type: string
+          format: date-time
+        mode:
+          type: string
+          enum: [grid, walk_forward]
+        folds:
+          type: integer
+        objective:
+          type: string
+        grid:
+          type: object
+        base_params:
+          type: object
+        top_n:
+          type: integer
+        assumptions:
+          type: object
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        progress_pct:
+          type: number
+          nullable: true
+        best_params:
+          type: object
+          nullable: true
+        best_score:
+          type: string
+          nullable: true
+        report:
+          type: object
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        finished_at:
+          type: string
+          format: date-time
+          nullable: true
+        applied_instance_id:
+          type: integer
+          nullable: true
+        applied_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ParameterOptimizationStore:
+      type: object
+      required: [strategy_code, symbol, interval, from_utc, to_utc, grid]
+      properties:
+        strategy_code:
+          type: string
+          description: 必须是 config('backtest.strategies') 中的策略码
+        symbol:
+          type: string
+          maxLength: 20
+          pattern: "^[A-Z0-9]{2,20}$"
+        interval:
+          type: string
+          enum: [1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d]
+        from_utc:
+          type: string
+          format: date
+        to_utc:
+          type: string
+          format: date
+          description: 必须晚于 from_utc
+        grid:
+          type: object
+          minProperties: 1
+        base_params:
+          type: object
+        mode:
+          type: string
+          enum: [grid, walk_forward]
+          default: grid
+        folds:
+          type: integer
+          minimum: 2
+          maximum: 52
+          default: 3
+        objective:
+          type: string
+          description: 必须是 config('optimization.objectives') 中的目标
+          default: total_return_pct
+        top_n:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+        fee_rate:
+          type: number
+          minimum: 0
+          maximum: 0.01
+        slippage_bps:
+          type: integer
+          minimum: 0
+          maximum: 100
+        initial_capital:
+          type: number
+          exclusiveMinimum: 0
+    OptimizationTrial:
+      type: object
+      properties:
+        id:
+          type: integer
+        optimization_id:
+          type: integer
+        fold_index:
+          type: integer
+          nullable: true
+        params:
+          type: object
+        in_sample:
+          type: boolean
+        status:
+          type: string
+        score:
+          type: string
+          nullable: true
+        metrics:
+          type: object
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+    OptimizationApplication:
+      type: object
+      properties:
+        id:
+          type: integer
+        optimization_id:
+          type: integer
+        strategy_instance_id:
+          type: integer
+        rank:
+          type: integer
+        params_before:
+          type: object
+        params_after:
+          type: object
+        applied_by:
+          type: integer
+          nullable: true
+        applied_at:
+          type: string
+          format: date-time
+        rolled_back_at:
+          type: string
+          format: date-time
+          nullable: true
+        optimization:
+          type: object
+          nullable: true
+        instance:
+          type: object
+          nullable: true
+    PaymentInvoice:
+      type: object
+      properties:
+        ref:
+          type: string
+        plan_code:
+          type: string
+        channel_code:
+          type: string
+        currency:
+          type: string
+        chain:
+          type: string
+        amount_usdt:
+          type: string
+        paid_amount_usdt:
+          type: string
+          nullable: true
+        pay_address:
+          type: string
+          nullable: true
+        pay_uri:
+          type: string
+          nullable: true
+        status:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        confirmed_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time

@@ -6,6 +6,9 @@
 
 - [架构方案（完整）](.trae/documents/币圈交易SaaS平台架构方案.md)
 - [架构总览](docs/architecture.md)
+- [API 契约（OpenAPI 3.0）](docs/api-contract.yaml)
+- [运维部署文档](docs/operations.md)
+- [海外节点 Runbook](docs/overseas-node-runbook.md)
 - [ADR 记录](docs/adr/)
 - [踩坑记录](docs/pitfalls.md)
 - [功能矩阵 & 路线图](#功能矩阵--路线图)
@@ -784,7 +787,7 @@ php artisan test --group=mysql         # 只跑 @group mysql（需真实 MySQL�
 php artisan test tests/Unit            # 纯逻辑组：不启动 Laravel/不连任何服务，断网可跑
 ```
 
-当前规模（2026-10-21 本机实测，Redis 在线）：**847 passed / 10 skipped / 1 incomplete / 3314 assertions，约 82 秒**（default 组必跑，redis 组真实执行，mysql 组自动 skip）。P5.5 基线（2026-10-15）：157 passed / 3 skipped / 588 assertions；154 项旧 POC 断言迁移映射见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)。
+当前规模（2026-10-21 本机实测，Redis 在线）：**866 passed / 10 skipped / 1 incomplete / 3352 assertions，约 104 秒**（default 组必跑，redis 组真实执行，mysql 组自动 skip）。P5.5 基线（2026-10-15）：157 passed / 3 skipped / 588 assertions；154 项旧 POC 断言迁移映射见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)。
 
 分组约定：
 

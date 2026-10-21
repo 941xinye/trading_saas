@@ -123,6 +123,25 @@ market:feed（协程，不下单）
 - `config/alerts.php` 定义规则（rate/max/sum 三种类型），默认 4 条：订单失败率 > 10%、队列积压 > 1000、存在熔断实例、自动跟单跳过率 > 50%；
 - `php artisan ops:alerts:check` 每分钟调度（`routes/console.php`），命中后通过 `alerts.channels` 投递（默认 log，可配 telegram/mail/wechat_work），同规则冷却 `ALERTS_COOLDOWN_MINUTES`（默认 15 分钟）去重。
 
+## API 契约
+
+完整接口契约见 [docs/api-contract.yaml](api-contract.yaml)（OpenAPI 3.0）。
+
+| 域 | 端点 | 说明 |
+|---|---|---|
+| 系统 | `GET /v1/health`、`GET /v1/metrics` | 公开探活与 Prometheus 指标 |
+| 令牌 | `/v1/tokens` CRUD | Sanctum 个人访问令牌管理 |
+| 仪表盘 | `GET /v1/dashboard` | 5 类面板数据单接口聚合 |
+| 交易所账户 | `/v1/exchange-accounts` CRUD | 密钥 AES-256-GCM 加密，读接口永不明文 |
+| 策略实例 | `/v1/strategy-instances` CRUD + start/stop | 运行中禁止改配/删除（409） |
+| 信号订阅 | `/v1/signal-subscriptions` CRUD | 自动跟单须绑定执行实例 |
+| 信号 | `GET /v1/signals`、`POST /v1/signals/{id}/execute` | 只读列表 + 人工一键下单 |
+| 风控规则 | `/v1/risk-rules` CRUD | POC 阶段写操作为骨架（202） |
+| 参数寻优 | `/v1/parameter-optimizations` | 创建即异步入队（202）+ apply/rollback |
+| 大户爆仓 | `GET /v1/liquidation/map|recent` | 市场级数据，无租户隔离 |
+| 计费 | `/v1/billing/summary|invoices` | 套餐用量与支付单管理 |
+| 支付 webhook | `POST /v1/billing/webhook/{channel}` | 验签即鉴权，幂等处理 |
+
 ## P8 ClickHouse 历史归档（spec 004，2026-10-19 核心落地）
 
 **双进程模型不变**：归档是纯旁路——`archive:*` 系列为独立 artisan 命令进程（无协程、无 WS，constitution III），禁止进入 market:feed 行情协程进程；P1-P5 代码零 import 指向 `App\Domain\Archive`（T028 导入闭包 gate 终检 PASS）。
