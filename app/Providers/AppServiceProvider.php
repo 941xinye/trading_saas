@@ -22,7 +22,10 @@ use App\Domain\Tenancy\TenantKeyResolver;
 use App\Models\User;
 use App\Support\AesGcmCrypt;
 use App\Support\KeyResolver;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -67,6 +70,16 @@ class AppServiceProvider extends ServiceProvider
         // 用 Filament Platform 面板的 authMiddleware 链 can:platform-admin 校验。
         Gate::define('platform-admin', function (User $user): bool {
             return $user->getAttribute('role') === 'platform_admin';
+        });
+
+        // API 限流基线：按租户聚合（平台用户按 user id），避免单租户打满影响其他租户。
+        RateLimiter::for('api', function (Request $request): Limit {
+            $user = $request->user();
+            $key = $user?->tenant_id !== null
+                ? 'tenant:'.$user->tenant_id
+                : 'user:'.($user?->id ?? $request->ip());
+
+            return Limit::perMinute((int) config('app.api_rate_limit_per_minute', 120))->by($key);
         });
     }
 }

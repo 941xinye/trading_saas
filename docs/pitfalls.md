@@ -1,6 +1,6 @@
-# 踩坑记录（P1–spec 008 实测，共 47 条，按领域分组）
+# 踩坑记录（P1–迭代 A 实测，共 48 条，按领域分组）
 
-> 共 47 条，按领域分组。原始编号保留在标题中便于交叉引用。
+> 共 48 条，按领域分组。原始编号保留在标题中便于交叉引用。
 
 ---
 
@@ -445,6 +445,17 @@
   - 零方差向量改为恒定净值 `[1000, 1000, 1000]`（三个收益样本全 0），与 `PerformanceCalculatorTest::test_golden_vector_zero_variance_sharpe_null` 对齐
   - 净值曲线的首个数据点若等于初始资金，必然引入一个 0 收益样本；构造边界向量时先手算收益序列
   - 位置：`app/Domain/Backtest/Services/PerformanceCalculator.php`
+
+### 48. 骨架缺 jobs/failed_jobs/job_batches 与 personal_access_tokens 迁移（#48，迭代 A）
+
+- **现象**：
+  - `QUEUE_CONNECTION=redis` 下任务正常投递，但任一 Job 失败时抛 `SQLSTATE[42S02]: Base table or view not found: failed_jobs`，原始业务异常被掩盖；`queue:failed` 也无数据可查。
+  - `auth:sanctum` 在测试中用 `Sanctum::actingAs` 可绕过数据库，但真实 `createToken()` 因缺 `personal_access_tokens` 表直接报错。
+- **根因**：项目骨架未包含 Laravel 默认的队列基建与 Sanctum 令牌迁移；`QUEUE_FAILED_DRIVER` 默认 `database-uuids`，失败回调必须写 `failed_jobs`。
+- **规避**：
+  - 补 `2026_10_21_000010_create_jobs_tables.php`（jobs / job_batches / failed_jobs）与 `2026_10_21_000011_create_personal_access_tokens_table.php`
+  - 健康检查把 `failed_jobs` 缺失视为 queue 检查 failed（`HealthCheckService::checkQueue()`）
+  - 位置：`database/migrations/`、`app/Support/Health/HealthCheckService.php`
 
 ---
 

@@ -11,6 +11,7 @@ use App\Domain\Exchange\ExchangeManager;
 use App\Domain\Risk\Breaker\BreakerStateMachine;
 use App\Domain\Risk\Breaker\CircuitBreaker;
 use App\Domain\Risk\Contracts\PositionRiskMonitor;
+use App\Domain\Risk\PlatformKillSwitch;
 use App\Domain\Risk\RiskGuard;
 use App\Domain\Risk\Rules\ConsecutiveLossRule;
 use App\Domain\Risk\Rules\MaxDailyLossRule;
@@ -59,6 +60,7 @@ class StrategyRunner
         private readonly AesGcmCrypt $crypt,
         private readonly PendingOrderRecovery $pendingOrderRecovery,
         private readonly PositionRiskMonitor $positionRiskMonitor,
+        private readonly PlatformKillSwitch $killSwitch,
     ) {}
 
     /**
@@ -230,6 +232,7 @@ class StrategyRunner
             (string) $instance->allocated_capital,
             $tenantId,
             $instanceId,
+            $this->killSwitch,
         );
 
         // 暂停态在进程重启后必须保留：只有 starting/stopped 等非暂停态推进为 running。

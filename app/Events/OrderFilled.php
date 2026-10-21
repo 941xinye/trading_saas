@@ -9,7 +9,7 @@ use Illuminate\Foundation\Events\Dispatchable;
 /**
  * 订单成交事件（租户级）。
  *
- * 由 PlaceOrderJob 落库后、或进程 B 收到交易所 WS order trade 推送时触发。
+ * 由 OrderExecutor 落库成交回报后、或进程 B 收到交易所 WS order trade 推送时触发。
  * side ∈ {buy, sell}，filledQty 为字符串以保留精度（decimal 字段统一字符串化，
  * 避免浮点丢失，沿用 CRM 的 BigDecimal 处理约定）。
  *

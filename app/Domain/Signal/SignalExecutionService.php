@@ -7,6 +7,7 @@ namespace App\Domain\Signal;
 use App\Domain\Exchange\Contracts\ExchangeAdapter;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\ExchangeManager;
+use App\Domain\Risk\PlatformKillSwitch;
 use App\Domain\Signal\Exceptions\SignalExecutionException;
 use App\Domain\Strategy\OrderExecutor;
 use App\Models\Signal;
@@ -36,6 +37,7 @@ final class SignalExecutionService
         private readonly KeyResolver $keyResolver,
         private readonly AesGcmCrypt $crypt,
         private readonly OrderExecutor $executor,
+        private readonly PlatformKillSwitch $killSwitch,
     ) {}
 
     /**
@@ -55,6 +57,11 @@ final class SignalExecutionService
      */
     public function execute(Signal $signal, StrategyInstance $instance, string $notional): array
     {
+        // 平台级急停优先于一切信号执行：信号单均为开仓单，无平仓语义
+        if ($this->killSwitch->isActive()) {
+            throw new SignalExecutionException('平台已启用全局急停，禁止执行开仓信号。');
+        }
+
         $tenantId = (int) $signal->tenant_id;
 
         if ($tenantId !== (int) $instance->tenant_id) {

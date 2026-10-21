@@ -41,6 +41,9 @@ return [
 
     'debug' => (bool) env('APP_DEBUG', false),
 
+    // API 限流：每租户每分钟请求数（throttle:api）
+    'api_rate_limit_per_minute' => (int) env('API_RATE_LIMIT_PER_MINUTE', 120),
+
     /*
     |--------------------------------------------------------------------------
     | Application URL

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\V1\BillingController;
 use App\Http\Controllers\Api\V1\BillingWebhookController;
+use App\Http\Controllers\Api\V1\ApiTokenController;
 use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\ExchangeAccountController;
+use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\LiquidationController;
 use App\Http\Controllers\Api\V1\OptimizationController;
 use App\Http\Controllers\Api\V1\RiskRuleController;
@@ -21,10 +23,24 @@ use Illuminate\Support\Facades\Route;
  *
  * 路由名前缀：api.*（沿用 CRM 约定，避免与 Filament 路由冲突）。
  */
-Route::middleware(['auth:sanctum', 'tenant'])
+// 公开探活：无需认证，供负载均衡/监控系统调用
+Route::get('v1/health', HealthController::class)->name('api.health');
+
+Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])
     ->prefix('v1')
     ->name('api.')
     ->group(function (): void {
+        // 个人访问令牌：只能管理当前用户自己的 token
+        Route::get('tokens', [ApiTokenController::class, 'index'])->name('tokens.index');
+        Route::post('tokens', [ApiTokenController::class, 'store'])
+            ->middleware('throttle:10,1')
+            ->name('tokens.store');
+        Route::delete('tokens/current', [ApiTokenController::class, 'destroyCurrent'])
+            ->name('tokens.current.destroy');
+        Route::delete('tokens/{token}', [ApiTokenController::class, 'destroy'])
+            ->whereNumber('token')
+            ->name('tokens.destroy');
+
         // Dashboard 聚合接口（方案 §7：5 类面板数据单接口聚合）
         Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
 
@@ -80,4 +96,5 @@ Route::middleware(['auth:sanctum', 'tenant'])
 // api 组天然豁免 CSRF（ValidateCsrfToken 仅作用于 web 组），无需额外放行（T030 核对结论）。
 // ---------------------------------------------------------------------
 Route::post('v1/billing/webhook/{channel}', BillingWebhookController::class)
+    ->middleware('throttle:120,1')
     ->name('api.billing.webhook');

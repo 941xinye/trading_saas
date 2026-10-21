@@ -54,6 +54,7 @@ class RiskGuard implements RiskGuardContract
         private readonly string $allocatedCapital,
         ?int $tenantId = null,
         ?int $instanceId = null,
+        private readonly ?PlatformKillSwitch $killSwitch = null,
     ) {
         $this->metrics = new BreakerMetrics(peakEquity: $allocatedCapital);
 
@@ -73,6 +74,11 @@ class RiskGuard implements RiskGuardContract
         // 关键约束：熔断只停开新仓，平仓动作永远放行
         if ($action === 'close') {
             return $this->decide(true, 'close_allowed');
+        }
+
+        // 平台级急停优先于实例熔断：只停开新仓，平仓已在上面放行
+        if ($this->killSwitch?->isActive() === true) {
+            return $this->decide(false, 'platform_kill_switch');
         }
 
         $state = $this->breaker->state();

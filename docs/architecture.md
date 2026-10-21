@@ -36,14 +36,14 @@ app/
 │   ├── Middleware/BootstrapTenancy.php
 │   ├── Controllers/Api/V1/
 │   └── Resources/
-├── Filament/{Admin,Platform}/   ← 两套 Filament 面板（含回测绩效页、计费页）
-├── Jobs/ {AiAnalyze, DispatchNotification, RiskNotification, RenewalReminder, PlaceOrder*, CancelOrder*, CloseBar*}  ← * 为 P1 骨架
+├── Filament/{Admin,Platform}/   ← 两套 Filament 面板（含回测绩效页、计费页、Platform 全局急停页）
+├── Jobs/ {AiAnalyze, AutoExecuteSignal, DispatchNotification, RiskNotification, RenewalReminder}
 ├── Events/ {BarClosed, SignalGenerated, OrderFilled, BreakerTripped, BreakerAlert}
-├── Console/Commands/            ← 39 个命令（market:feed / archive:* / backtest:* / payment:* / reconcile:* / risk:* / 5×poc:verify 等）
+├── Console/Commands/            ← 40 个命令（market:feed / archive:* / backtest:* / payment:* / reconcile:* / risk:* / ops:kill-switch / 5×poc:verify 等）
 ├── Models/                      ← 23 个 Eloquent（租户级表挂 BelongsToTenant）
-└── Support/AesGcmCrypt.php     ← AES-256-GCM 封装
-config/ {exchange, strategy, ai, risk, plans, notifications, tenancy, liquidation, payment, archive, backtest, optimization, reconcile, octane, reverb, filament}.php
-database/migrations/            ← 36 张表
+└── Support/ {AesGcmCrypt.php, Health/HealthCheckService.php}  ← AES-256-GCM 封装 + 生产探活
+config/ {exchange, strategy, ai, risk, plans, notifications, tenancy, liquidation, payment, archive, backtest, optimization, reconcile, health, octane, reverb, filament}.php
+database/migrations/            ← 41 个迁移（业务表 + 队列 jobs/job_batches/failed_jobs + personal_access_tokens）
 routes/ {api.php, channels.php, web.php}
 ```
 
