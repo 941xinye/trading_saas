@@ -11,9 +11,14 @@ use App\Domain\Backtest\Models\BacktestRun;
 use App\Domain\Backtest\Models\BacktestSimulatedTrade;
 use App\Domain\Backtest\Services\BacktestRunService;
 use App\Domain\Tenancy\TenantContext;
+use App\Filament\Admin\Pages\BacktestPerformancePage;
+use App\Models\StrategyInstance;
 use App\Models\Tenant;
 use App\Models\User;
+use Filament\Facades\Filament;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Livewire\Livewire;
 use Tests\TestCase;
 
 /**
@@ -147,6 +152,78 @@ final class BacktestPerformancePageTest extends TestCase
         // 交易明细行（decimal cast：price/qty 12 位、fee 8 位）
         $response->assertSee('101.000000000000');
         $response->assertSee('0.25250000');
+        // 已完成回测可落地实盘
+        $response->assertSee('落地实盘');
+    }
+
+    // ------------------------------------------------------------------
+    // 落地实盘（回测 → 策略实例）
+    // ------------------------------------------------------------------
+
+    public function test_create_instance_from_completed_run(): void
+    {
+        $strategyId = $this->createStrategy();
+        $accountId = $this->createAccount($this->tenantA->id);
+
+        TenantContext::initialize($this->tenantA->id);
+        $this->actingAs($this->userA);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+
+        Livewire::test(BacktestPerformancePage::class)
+            ->set('selectedRunId', $this->runA->id)
+            ->callAction('createInstance', data: [
+                'exchange_account_id' => $accountId,
+                'allocated_capital' => '1500',
+                'leverage' => null,
+            ])
+            ->assertHasNoActionErrors();
+
+        $instance = StrategyInstance::query()->firstOrFail();
+        self::assertSame($this->tenantA->id, $instance->tenant_id);
+        self::assertSame($strategyId, $instance->strategy_id);
+        self::assertSame($accountId, $instance->exchange_account_id);
+        self::assertSame('BTCUSDT', $instance->symbol);
+        self::assertSame('1m', $instance->interval);
+        self::assertSame('stopped', $instance->status);
+        self::assertSame(0, bccomp((string) $instance->allocated_capital, '1500', 8));
+        self::assertSame([
+            'lower_price' => '90',
+            'upper_price' => '110',
+            'grid_count' => 5,
+            'investment_amount' => '1000',
+        ], $instance->params);
+    }
+
+    public function test_create_instance_rejects_duplicate_strategy_symbol(): void
+    {
+        $strategyId = $this->createStrategy();
+        $accountId = $this->createAccount($this->tenantA->id);
+
+        StrategyInstance::query()->create([
+            'tenant_id' => $this->tenantA->id,
+            'strategy_id' => $strategyId,
+            'exchange_account_id' => $accountId,
+            'symbol' => 'BTCUSDT',
+            'interval' => '1m',
+            'params' => [],
+            'allocated_capital' => '1000',
+            'status' => 'stopped',
+        ]);
+
+        TenantContext::initialize($this->tenantA->id);
+        $this->actingAs($this->userA);
+        Filament::setCurrentPanel(Filament::getPanel('admin'));
+
+        Livewire::test(BacktestPerformancePage::class)
+            ->set('selectedRunId', $this->runA->id)
+            ->callAction('createInstance', data: [
+                'exchange_account_id' => $accountId,
+                'allocated_capital' => '1500',
+                'leverage' => null,
+            ])
+            ->assertHasNoActionErrors();
+
+        self::assertSame(1, StrategyInstance::query()->count());
     }
 
     // ------------------------------------------------------------------
@@ -195,6 +272,45 @@ final class BacktestPerformancePageTest extends TestCase
     // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
+
+    private function createStrategy(): int
+    {
+        return (int) DB::table('strategies')->insertGetId([
+            'code' => 'spot_grid',
+            'name' => '现货网格',
+            'category' => 'spot',
+            'risk_profile' => 'conservative',
+            'default_params' => json_encode([]),
+            'enabled' => 1,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
+
+    private function createAccount(int $tenantId): int
+    {
+        $exchangeId = (int) DB::table('exchanges')->insertGetId([
+            'code' => 'binance-bt-page-990091',
+            'name' => 'Binance',
+            'base_url' => 'https://example.invalid',
+            'ws_url' => 'wss://example.invalid',
+            'markets' => json_encode(['spot']),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        return (int) DB::table('exchange_accounts')->insertGetId([
+            'tenant_id' => $tenantId,
+            'exchange_id' => $exchangeId,
+            'label' => 'bt-page-account',
+            'market' => 'spot',
+            'encrypted_api_key' => 'seed',
+            'encrypted_api_secret' => 'seed',
+            'permissions' => json_encode(['spot']),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+    }
 
     private function createCompletedRun(int $tenantId, string $symbol, string $returnPct): BacktestRun
     {

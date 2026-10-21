@@ -365,12 +365,12 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 | 等价性（US2） | 回测与实跑共用同一策略构造入口 + 决策序列 100% 一致（fixture 4 笔）；净值误差 < 1% 且方向可解释（回测含费 ≤ 实跑毛收益） | [quickstart](specs/008-backtest-engine/quickstart.md) |
 | 异步队列（US3） | RunBacktestJob（backtest 队列，tries=1）+ Redis 单飞锁（`SET NX EX120` + Lua token 释放，不可用降级）+ 租户并发上限 + `backtest:reap-stale`（running 超时 → failed/reaped，每 5m 调度）+ `backtest:run`（默认 dispatch，`--sync` 调试） | [worker 样板](deploy/supervisor/worker-backtest.conf.example) |
 | 假设可配置（US4） | MatchingAssumptions：initial_capital / fee_rate / slippage_bps 可配并校验；报告显式展示假设 + 未建模项声明（bar 级撮合、futures 资金费率）；净值已扣手续费 | — |
-| 回测绩效页（US5） | Admin「策略」组 →【回测绩效】（slug `backtest-performance`）：run 列表 10s 轮询 + 发起表单（实例或 inline DSL、区间、资金/费率/滑点）+ 详情四区（净值曲线/指标卡/假设/交易明细）；跨租户零串扰 | — |
+| 回测绩效页（US5） | Admin「策略」组 →【回测绩效】（slug `backtest-performance`）：run 列表 10s 轮询 + 发起表单（实例或 inline DSL、区间、资金/费率/滑点）+ 详情四区（净值曲线/指标卡/假设/交易明细）+ 已完成 run「落地实盘」一键创建 stopped 实例（参数快照/交易对/周期预填，资金可覆盖，同策略同交易对去重）；跨租户零串扰 | — |
 | POC 命令 | `poc:verify-backtest`（A~J 十组 55 项离线断言：撮合/驱动/绩效/等价/生命周期/并发/隔离/性能/红线/报告持久化） | [quickstart](specs/008-backtest-engine/quickstart.md) |
 
 **实测结果**：
 - 离线断言 PASS：`php artisan poc:verify-backtest` → **55/55 ALL CHECKS PASSED**；H 组性能：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（两轮实测，预算 30s，SC-001）。
-- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **801 passed / 10 skipped / 1 incomplete / 3102 assertions**（2026-10-21 复测，含 P11 参数寻优与结果应用闭环；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
+- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **803 passed / 10 skipped / 1 incomplete / 3122 assertions**（2026-10-21 复测，含 P11 参数寻优闭环与回测落地实盘；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
 - 等价性：BacktestEquivalenceTest — fixture 决策序列（bar/side/qty）100% 一致，净值 ≤ 实跑毛收益。
 - 报告零重算：BacktestReportReloadTest + J 组 DB::listen — 二次读取 backtest_* 写查询 0。
 - 红线：BacktestNoExchangeCallTest + I 组静态扫描 — Runner 依赖面不含 exchange/adapter，零交易所调用。
@@ -661,6 +661,7 @@ php artisan backtest:run spot_grid BTCUSDT 5m --tenant=1 --from=2026-07-01 --to=
     --params='{"lower_price":"100","upper_price":"120","grid_count":10,"qty_per_grid":"0.1"}' --sync
 
 # 4. 回测绩效页点检：/admin →「策略」组 →「回测绩效」（slug backtest-performance）
+#    已完成 run 详情页点「落地实盘」→ 选账户/资金 → 生成 stopped 策略实例（不自动启动）
 
 # 5. 参数寻优（grid / walk-forward；--dry-run 只打印不落库）
 php artisan backtest:optimize spot_grid BTCUSDT 1m --tenant=1 \

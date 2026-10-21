@@ -75,7 +75,7 @@ routes/ {api.php, channels.php, web.php}
 | P6 多所现货 | 三家适配器共享 `ExchangeSigning` 签名域；错误码统一翻译 + 限频退避 | [001 OKX](../specs/001-okx-spot-adapter/spec.md) / [002 Bybit](../specs/002-bybit-spot-adapter/spec.md) / [003 Bitget](../specs/003-bitget-spot-adapter/spec.md) |
 | P7 Custom DSL | 受限 YAML 四段（entry/exit/filter/risk）+ 沙箱解释器 + Filament 编辑器 + 预览（不含手续费滑点）+ 售卖门控 | [006 DSL](../specs/006-custom-dsl-strategy/spec.md) |
 | P9 支付 | `PaymentGatewayInterface` 通道抽象（BTCPay 首发）+ webhook 幂等 + 激活事务 + 续费提醒 + 计费页/API | [007 支付网关](../specs/007-payment-gateway-billing/spec.md) / [BTCPay PoC](p9-btcpay-poc-plan.md) |
-| P10 回测 | `BacktestRunner` 回放驱动（不依赖交易所）+ bar 级撮合 + 9 指标 + 报告持久化零重算 + 绩效页 | [008 回测引擎](../specs/008-backtest-engine/spec.md) |
+| P10 回测 | `BacktestRunner` 回放驱动（不依赖交易所）+ bar 级撮合 + 9 指标 + 报告持久化零重算 + 绩效页 + 已完成 run「落地实盘」（参数快照预填创建 stopped 实例） | [008 回测引擎](../specs/008-backtest-engine/spec.md) |
 | P11 参数寻优 | `ParameterGrid`（白名单 + 上限）+ `ParameterOptimizer`（grid / walk-forward OOS 均值）+ `RunOptimizationJob`（backtest 队列）+ REST API / Filament 参数寻优页 + 双表持久化 + 结果应用闭环（Top N 任选应用、应用历史/回滚、实例反查，`applyToInstance` / `rollbackApplication`） | [README 功能矩阵](../README.md#功能矩阵--路线图) |
 
 ## P8 ClickHouse 历史归档（spec 004，2026-10-19 核心落地）

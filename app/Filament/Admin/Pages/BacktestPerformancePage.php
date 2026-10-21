@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Filament\Admin\Pages;
 
+use App\Domain\Backtest\Contracts\BacktestRunStatus;
 use App\Domain\Backtest\Dto\BacktestRunRequest;
 use App\Domain\Backtest\Dto\MatchingAssumptions;
 use App\Domain\Backtest\Exceptions\BacktestConcurrencyException;
@@ -13,7 +14,8 @@ use App\Domain\Backtest\Models\BacktestRun;
 use App\Domain\Backtest\Models\BacktestSimulatedTrade;
 use App\Domain\Backtest\Services\BacktestRunService;
 use App\Domain\Tenancy\TenantContext;
-use App\Filament\Admin\Widgets\EquityCurveWidget;
+use App\Models\ExchangeAccount;
+use App\Models\Strategy;
 use App\Models\StrategyInstance;
 use BackedEnum;
 use Filament\Actions\Action;
@@ -136,6 +138,34 @@ class BacktestPerformancePage extends Page
                 ->action(function (array $data): void {
                     $this->createAndDispatch($data);
                 }),
+            Action::make('createInstance')
+                ->label('落地实盘')
+                ->icon('heroicon-o-rocket-launch')
+                ->color('success')
+                ->visible(fn (): bool => $this->canCreateInstance())
+                ->modalHeading('从回测创建策略实例')
+                ->modalDescription('以回测的参数快照 / 交易对 / 周期预填实例，保存为 stopped，需手动启动。')
+                ->modalSubmitActionLabel('创建实例')
+                ->schema([
+                    Select::make('exchange_account_id')
+                        ->label('交易所账户')
+                        ->options(fn (): array => $this->accountOptions())
+                        ->required(),
+                    TextInput::make('allocated_capital')
+                        ->label('分配资金 (USDT)')
+                        ->numeric()
+                        ->default(fn (): ?string => $this->defaultCapital())
+                        ->required(),
+                    TextInput::make('leverage')
+                        ->label('杠杆（合约策略可选）')
+                        ->numeric()
+                        ->minValue(1)
+                        ->maxValue(125)
+                        ->nullable(),
+                ])
+                ->action(function (array $data): void {
+                    $this->createInstanceFromRun($data);
+                }),
         ];
     }
 
@@ -220,7 +250,7 @@ class BacktestPerformancePage extends Page
     // ------------------------------------------------------------------
 
     /**
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
      */
     private function createAndDispatch(array $data): void
     {
@@ -262,7 +292,7 @@ class BacktestPerformancePage extends Page
     }
 
     /**
-     * @param array<string, mixed> $data
+     * @param  array<string, mixed>  $data
      * @return array{0: string, 1: array<string, mixed>, 2: string, 3: string}
      */
     private function resolveTarget(array $data): array
@@ -299,6 +329,140 @@ class BacktestPerformancePage extends Page
             (string) $instance->symbol,
             (string) $instance->interval,
         ];
+    }
+
+    // ------------------------------------------------------------------
+    // 落地实盘（回测 → 策略实例）
+    // ------------------------------------------------------------------
+
+    /**
+     * 详情任务是否为可落地的已完成回测。
+     */
+    public function canCreateInstance(): bool
+    {
+        return $this->selectedRun?->status === BacktestRunStatus::Completed;
+    }
+
+    /**
+     * 本租户交易所账户下拉选项。
+     *
+     * @return array<int, string>
+     */
+    public function accountOptions(): array
+    {
+        return ExchangeAccount::query()
+            ->where('tenant_id', $this->tenantId())
+            ->orderBy('id')
+            ->get()
+            ->mapWithKeys(fn (ExchangeAccount $account): array => [
+                (int) $account->id => sprintf('#%d %s (%s)', $account->id, $account->label, $account->market),
+            ])
+            ->all();
+    }
+
+    /**
+     * 分配资金默认取回测初始资金快照。
+     */
+    public function defaultCapital(): ?string
+    {
+        $capital = $this->selectedRun?->assumptions['initial_capital'] ?? null;
+
+        return $capital !== null ? (string) $capital : null;
+    }
+
+    /**
+     * 以回测快照创建 stopped 策略实例（不自动启动）。
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function createInstanceFromRun(array $data): void
+    {
+        $run = $this->selectedRun;
+        if ($run === null) {
+            $this->notifyInstanceError('请先选择回测任务');
+
+            return;
+        }
+
+        if ($run->status !== BacktestRunStatus::Completed) {
+            $this->notifyInstanceError('仅已完成的回测可以落地实盘');
+
+            return;
+        }
+
+        $strategy = Strategy::query()->where('code', (string) $run->strategy_code)->first();
+        if ($strategy === null) {
+            $this->notifyInstanceError(sprintf('未找到策略定义 %s，请先初始化策略表', $run->strategy_code));
+
+            return;
+        }
+
+        $account = ExchangeAccount::query()
+            ->where('tenant_id', $this->tenantId())
+            ->find((int) ($data['exchange_account_id'] ?? 0));
+        if ($account === null) {
+            $this->notifyInstanceError('交易所账户不存在或不属于当前租户');
+
+            return;
+        }
+
+        $capital = (string) ($data['allocated_capital'] ?? '');
+        if (! is_numeric($capital) || bccomp($capital, '0', 8) <= 0) {
+            $this->notifyInstanceError('分配资金必须大于 0');
+
+            return;
+        }
+
+        $duplicated = StrategyInstance::query()
+            ->where('tenant_id', $this->tenantId())
+            ->where('strategy_id', $strategy->id)
+            ->where('symbol', $run->symbol)
+            ->exists();
+        if ($duplicated) {
+            $this->notifyInstanceError('同策略同交易对已存在实例，请先调整或删除');
+
+            return;
+        }
+
+        $params = (array) ($run->params_snapshot ?? []);
+        // 回测快照中的上下文键不属于实例参数
+        unset($params['tenant_id'], $params['symbol'], $params['allocated_capital']);
+
+        $leverage = isset($data['leverage']) && $data['leverage'] !== ''
+            ? (int) $data['leverage']
+            : null;
+
+        $instance = StrategyInstance::query()->create([
+            'tenant_id' => $this->tenantId(),
+            'strategy_id' => $strategy->id,
+            'exchange_account_id' => $account->id,
+            'symbol' => (string) $run->symbol,
+            'interval' => (string) $run->interval,
+            'params' => $params,
+            'allocated_capital' => $capital,
+            'leverage' => $leverage,
+            'status' => 'stopped',
+        ]);
+
+        Notification::make()
+            ->success()
+            ->title(sprintf('策略实例 #%d 已创建', $instance->id))
+            ->body(sprintf(
+                '%s / %s / %s，已保存为 stopped，可在「策略实例」页启动',
+                $strategy->name,
+                $instance->symbol,
+                $instance->interval,
+            ))
+            ->send();
+    }
+
+    private function notifyInstanceError(string $message): void
+    {
+        Notification::make()
+            ->danger()
+            ->title('落地实盘失败')
+            ->body($message)
+            ->send();
     }
 
     private function toUtc(mixed $value): \DateTimeImmutable
