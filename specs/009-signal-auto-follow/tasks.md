@@ -67,10 +67,10 @@
 - [x] T021 [US3] `execution_daily_limit` 日上限统计（`sig_` 前缀 + pending/submitted/partial/filled + 当日 + 按实例）；0 = 不限
 - [x] T022 [US3] 测试 `...::test_daily_limit_blocks_further_auto_orders`
 - [x] T023 [US3] 单笔名义额上限（`max_notional`）与实例 `allocated_capital` 校验
-- [ ] T024 [US3] 补测 `execution_daily_limit=0` 时连续执行不拦截
-- [ ] T025 [US3] 单日自动跟单**资金总额**上限（FR-027）：`config/signal.php` 增 `execution.daily_notional_cap`，Job 内按当日 `sig_` 订单求和
+- [x] T024 [US3] 补测 `execution_daily_limit=0` 时连续执行不拦截
+- [x] T025 [US3] 单日自动跟单**资金总额**上限（FR-027）：`config/signal.php` 增 `execution.daily_notional_cap`，Job 内按当日 `sig_` 订单 `notional` 求和
 
-**Checkpoint**: 频率与单笔金额受限；组合级资金上限待补
+**Checkpoint**: 频率与单笔金额受限；组合级资金上限已补
 
 ---
 
@@ -78,10 +78,10 @@
 
 - [x] T026 [US4] 结构化日志：入队 / 跳过 / 拒绝（warning）/ 非预期异常（error）/ 成功（含 cid、side、notional、status）
 - [x] T027 [US4] 平台急停命令与 Platform 面板按钮（`ops:kill-switch`、`/platform/ops-control`）覆盖信号执行路径
-- [ ] T028 [US4] 自动跟单审计表 `signal_auto_follow_audits` 与回放工具（FR-028）
-- [ ] T029 [US4] 自动跟单成交结果主动通知租户（FR-030）
+- [x] T028 [US4] 自动跟单审计表 `signal_auto_follow_audits` 与回放工具（FR-028）
+- [x] T029 [US4] 自动跟单成交结果主动通知租户（FR-030）
 
-**Checkpoint**: 可排障；审计/通知待补
+**Checkpoint**: 可排障；审计/通知已补
 
 ---
 
@@ -103,9 +103,9 @@
 - [x] T036 [P] 测试 TTL 过期拒绝（`test_expired_signal_is_skipped`）
 - [x] T037 [P] 测试现货账户 short 信号自动拦截（`test_spot_account_rejects_short_signal`）
 - [x] T038 [P] 测试重复投递与幂等语义（`test_pending_order_with_same_client_order_id_blocks_replay`、`test_failed_order_with_same_client_order_id_allows_retry`）
-- [ ] T039 [P] 测试队列/Redis 故障时信号落库不受影响（入队异常降级）
-- [ ] T040 订阅配置版本号（FR-029）：入队携带版本、执行前比对
-- [ ] T041 同步文档：README 功能矩阵标注自动跟单「已实现/缺口」，`docs/architecture.md` 补链路图
+- [x] T039 [P] 测试队列/Redis 故障时信号落库不受影响（入队异常降级）
+- [x] T040 订阅配置版本号（FR-029）：入队携带版本、执行前比对
+- [x] T041 同步文档：README 功能矩阵标注自动跟单「已实现/缺口」，`docs/architecture.md` 补链路图
 
 ---
 

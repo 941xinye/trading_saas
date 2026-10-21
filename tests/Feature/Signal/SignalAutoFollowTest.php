@@ -9,12 +9,15 @@ use App\Domain\Exchange\Contracts\ExchangeAdapter;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\ExchangeManager;
 use App\Domain\Risk\PlatformKillSwitch;
+use App\Domain\Signal\SignalAutoFollowAudit;
 use App\Domain\Signal\SignalAutoTrader;
 use App\Domain\Signal\SignalExecutionService;
 use App\Domain\Tenancy\TenantContext;
 use App\Jobs\AutoExecuteSignalJob;
+use App\Jobs\NotifyAutoFollowExecutedJob;
 use App\Models\MeterEvent;
 use App\Models\Signal;
+use App\Models\SignalSubscription;
 use App\Support\AesGcmCrypt;
 use App\Support\KeyResolver;
 use Illuminate\Support\Facades\DB;
@@ -273,6 +276,11 @@ final class SignalAutoFollowTest extends TestCase
 
         self::assertTrue($trader->maybeQueue($signal, $subscription));
         Queue::assertPushedOn('orders', AutoExecuteSignalJob::class);
+        self::assertDatabaseHas('signal_auto_follow_audits', [
+            'tenant_id' => self::TENANT_ID,
+            'signal_id' => (int) $signal->id,
+            'decision' => 'queued',
+        ]);
 
         $disabled = (object) array_merge((array) $subscription, ['auto_execute' => 0]);
 
@@ -442,13 +450,153 @@ final class SignalAutoFollowTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // FR-027 / FR-028 / FR-029 / FR-030 补测
+    // ------------------------------------------------------------------
+
+    public function test_daily_notional_cap_blocks_further_auto_orders(): void
+    {
+        config(['signal.execution.daily_notional_cap' => '150']);
+
+        DB::table('strategy_orders')->insert([
+            'tenant_id' => self::TENANT_ID,
+            'strategy_instance_id' => $this->instanceId,
+            'client_order_id' => 'sig_990_'.$this->instanceId,
+            'symbol' => 'BTCUSDT',
+            'side' => 'buy',
+            'type' => 'market',
+            'quantity' => '1',
+            'notional' => '100',
+            'status' => 'filled',
+            'filled_qty' => '1',
+            'avg_fill_price' => '100',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription(['execution_notional' => '100']);
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(1, DB::table('strategy_orders')
+            ->where('strategy_instance_id', $this->instanceId)
+            ->count());
+        self::assertDatabaseHas('signal_auto_follow_audits', [
+            'tenant_id' => self::TENANT_ID,
+            'signal_id' => (int) $signal->id,
+            'decision' => 'skipped',
+            'reason' => 'daily_notional_cap_reached',
+        ]);
+    }
+
+    public function test_zero_daily_limit_allows_consecutive_executions(): void
+    {
+        $this->mockAdapter();
+
+        $subscriptionId = $this->createSubscription(['execution_daily_limit' => 0]);
+
+        $first = $this->createSignal();
+        $second = $this->createSignal();
+
+        $this->runJob($first, $subscriptionId);
+        $this->runJob($second, $subscriptionId);
+
+        self::assertSame(2, DB::table('strategy_orders')
+            ->where('strategy_instance_id', $this->instanceId)
+            ->whereRaw("substr(client_order_id, 1, 4) = 'sig_'")
+            ->count());
+    }
+
+    public function test_config_version_mismatch_is_skipped(): void
+    {
+        $this->mockAdapter(expectOrder: false);
+
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription();
+
+        // 订阅当前版本 1，Job 携带入队时版本 2（期间配置被改过）→ 执行前比对不一致
+        $this->runJob($signal, $subscriptionId, configVersion: 2);
+
+        self::assertSame(0, DB::table('strategy_orders')
+            ->where('strategy_instance_id', $this->instanceId)
+            ->count());
+        self::assertDatabaseHas('signal_auto_follow_audits', [
+            'tenant_id' => self::TENANT_ID,
+            'signal_id' => (int) $signal->id,
+            'decision' => 'skipped',
+            'reason' => 'config_version_changed',
+        ]);
+    }
+
+    public function test_execution_is_audited(): void
+    {
+        $this->mockAdapter();
+
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription();
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertDatabaseHas('signal_auto_follow_audits', [
+            'tenant_id' => self::TENANT_ID,
+            'signal_id' => (int) $signal->id,
+            'subscription_id' => $subscriptionId,
+            'instance_id' => $this->instanceId,
+            'decision' => 'executed',
+            'client_order_id' => "sig_{$signal->id}_{$this->instanceId}",
+        ]);
+    }
+
+    public function test_successful_execution_dispatches_notification_job(): void
+    {
+        Queue::fake();
+
+        $this->mockAdapter();
+
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription();
+
+        $this->runJob($signal, $subscriptionId);
+
+        Queue::assertPushedOn('notifications', NotifyAutoFollowExecutedJob::class);
+    }
+
+    public function test_model_update_bumps_execution_config_version(): void
+    {
+        $subscriptionId = $this->createSubscription();
+
+        $model = SignalSubscription::query()->withoutGlobalScopes()->findOrFail($subscriptionId);
+        self::assertSame(1, (int) $model->execution_config_version);
+
+        $model->execution_notional = '250';
+        $model->save();
+        self::assertSame(2, (int) SignalSubscription::query()->withoutGlobalScopes()->find($subscriptionId)->execution_config_version);
+
+        $model = SignalSubscription::query()->withoutGlobalScopes()->findOrFail($subscriptionId);
+        $model->name = 'renamed';
+        $model->save();
+        self::assertSame(2, (int) SignalSubscription::query()->withoutGlobalScopes()->find($subscriptionId)->execution_config_version);
+    }
+
+    // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
 
-    private function runJob(Signal $signal, int $subscriptionId, ?int $tenantId = null): void
-    {
-        (new AutoExecuteSignalJob($tenantId ?? self::TENANT_ID, (int) $signal->id, $subscriptionId))
-            ->handle(app(SignalExecutionService::class));
+    private function runJob(
+        Signal $signal,
+        int $subscriptionId,
+        ?int $tenantId = null,
+        ?int $configVersion = null,
+    ): void {
+        (new AutoExecuteSignalJob(
+            $tenantId ?? self::TENANT_ID,
+            (int) $signal->id,
+            $subscriptionId,
+            $configVersion,
+        ))->handle(
+            app(SignalExecutionService::class),
+            app(SignalAutoFollowAudit::class),
+        );
     }
 
     private function mockAdapter(bool $expectOrder = true): ExchangeAdapter

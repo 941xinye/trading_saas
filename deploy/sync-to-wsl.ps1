@@ -1,4 +1,4 @@
-# 一键同步 Windows 工作树到 WSL 开发 clone
+﻿# 一键同步 Windows 工作树到 WSL 开发 clone
 # ========================================================
 #
 # 背景：项目同时维护 Windows 主仓（IDE 开发）与 WSL Ubuntu-22.04 clone（PHP 8.4 + Swoole 实跑）。
@@ -21,6 +21,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# 兼容 -File 传参被当成单个逗号串的情况
+$Paths = @($Paths | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $tarFile = Join-Path $env:TEMP "crypto-sync-$(Get-Date -Format 'yyyyMMdd-HHmmss').tar"
 
@@ -58,9 +60,12 @@ if ($DryRun) {
     exit 0
 }
 
-# ---- 2. 复制 tar 到 WSL + 解到 clone ----
-$wslTarPath = $tarFile -replace '\\', '/' -replace '^([A-Z]):', '/mnt/$($Matches[1].ToLower())'
-$wslCmd = @"
+# ---- 2. 生成 WSL 侧脚本（LF）并执行（多行脚本直接传给 bash -c 会被 wsl.exe 拆行） ----
+$wslTarPath = '/mnt/' + $tarFile.Substring(0, 1).ToLower() + ($tarFile.Substring(2) -replace '\\', '/')
+$wslScript = Join-Path $env:TEMP "crypto-sync-$(Get-Date -Format 'yyyyMMdd-HHmmss').sh"
+$wslScriptPath = '/mnt/' + $wslScript.Substring(0, 1).ToLower() + ($wslScript.Substring(2) -replace '\\', '/')
+
+$scriptBody = @"
 set -e
 cd $WslRepoPath
 # 先删旧目录避免残留
@@ -69,15 +74,18 @@ for p in $($Paths -join ' '); do
 done
 tar -xf $wslTarPath
 # 统一转 LF（坑：脚本从 Windows 过去带 CRLF 会让 bash shebang 炸）
-find $($Paths -join ' ') -type f -name '*.php' -o -name '*.sh' -o -name '*.json' -o -name '*.yml' -o -name '*.md' | xargs -I{} sed -i 's/\r$//' {}
+find $($Paths -join ' ') -type f \( -name '*.php' -o -name '*.sh' -o -name '*.json' -o -name '*.yml' -o -name '*.md' \) -print0 | xargs -0 -r sed -i 's/\r$//'
 rm -f $wslTarPath
 echo OK
 "@
+$scriptBody = $scriptBody -replace "`r`n", "`n"
+[System.IO.File]::WriteAllText($wslScript, $scriptBody, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "==> Extracting into WSL clone $WslRepoPath ..." -ForegroundColor Cyan
-wsl -d $WslDistro -u $WslUser -- bash -c $wslCmd
+wsl -d $WslDistro -u $WslUser -- bash $wslScriptPath
 if ($LASTEXITCODE -ne 0) { throw "WSL extract failed" }
 
-Remove-Item $tarFile -Force
+Remove-Item $wslScript -Force -ErrorAction SilentlyContinue
+Remove-Item $tarFile -Force -ErrorAction SilentlyContinue
 Write-Host "==> Done." -ForegroundColor Green
 Write-Host "    Next step in WSL: cd $WslRepoPath && composer dump-autoload -o && php artisan test" -ForegroundColor Yellow

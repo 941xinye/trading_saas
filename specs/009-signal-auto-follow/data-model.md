@@ -13,12 +13,14 @@
 | `execution_notional` | decimal(20,8) nullable | null | 单笔名义额（USDT）；空 = 用 `signal.execution.default_notional` |
 | `execution_min_confidence` | unsignedTinyInteger | 0 | 最低置信度 0–100；0 = 不过滤 |
 | `execution_daily_limit` | unsignedSmallInteger | 20 | 实例当日 `sig_` 订单上限；0 = 不限 |
+| `execution_config_version` | unsignedInteger | 1 | 执行配置版本号；执行相关字段变更时模型自动 +1，用于入队与执行间隔版本比对 |
 
 索引：`idx_ss_tenant_auto_execute (tenant_id, auto_execute)`
 
 模型 `App\Models\SignalSubscription`：
-- `fillable` 含上述 5 字段
-- casts：`auto_execute => boolean`、`execution_notional => decimal:8`、`execution_min_confidence => integer`
+- `fillable` 含上述 5 字段（`execution_config_version` 不入 fillable，防止批量赋值）
+- casts：`auto_execute => boolean`、`execution_notional => decimal:8`、`execution_min_confidence => integer`、`execution_config_version => integer`
+- `booted()` 监听 `updating`：`auto_execute` / `execution_instance_id` / `execution_notional` / `execution_min_confidence` / `execution_daily_limit` 任一变更即版本 +1
 
 **约束语义**：
 - `auto_execute=1` 时 `execution_instance_id` 必须 > 0（Filament 必填；Job 二次防御）
@@ -55,6 +57,7 @@
 | `strategy_instance_id` | 日上限按实例统计 |
 | `status` | pending/submitted/partial/filled 视为有效占用；failed 可重放 |
 | `quantity` / `avg_fill_price` / `fee` | 成交回写 |
+| `notional` | 名义额快照：下单按 `qty × 参考价`，成交后回写 `filled_qty × avg_fill_price`；日资金总额上限按此汇总 |
 | `created_at` | 当日计数边界（`now()->startOfDay()`） |
 
 **幂等键**：`sig_{signalId}_{instanceId}`
@@ -70,6 +73,7 @@
 | `signal.execution.ttl_minutes` | 15 | 信号可执行窗口 |
 | `signal.execution.default_notional` | `'100'` | 未配置订阅名义额时的默认值 |
 | `signal.execution.max_notional` | `'10000'` | 单笔名义额硬上限 |
+| `signal.execution.daily_notional_cap` | `'0'`（env `SIGNAL_EXECUTION_DAILY_NOTIONAL_CAP`） | 租户单日自动跟单资金总额上限；0 = 不限；人工一键下单同计入 |
 
 ## 6. 状态流
 
@@ -97,9 +101,12 @@
         └─ 成功 ──> info + 订单回写
 ```
 
-## 7. 数据保留与审计（缺口）
+## 7. 审计表 signal_auto_follow_audits（已实现）
 
-当前无专用审计表，决策依据仅存在应用日志。FR-028 建议新增 `signal_auto_follow_audits`：
+迁移：`database/migrations/2026_10_21_000014_create_signal_auto_follow_audits_table.php`
+
+append-only，记录自动跟单每个决策节点；写失败仅 warning，不影响主链路。
+回放：`php artisan signal:auto-follow-trace {signalId} [--tenant=]` 输出审计链 + 关联订单。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|

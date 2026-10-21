@@ -15,5 +15,8 @@ return [
         'default_notional' => (string) env('SIGNAL_EXECUTION_NOTIONAL', '100'),
         // 单次执行名义额上限（USDT）
         'max_notional' => (string) env('SIGNAL_EXECUTION_MAX_NOTIONAL', '10000'),
+        // 单日自动跟单资金总额上限（USDT/租户/自然日，按 sig_ 订单名义额汇总）
+        // 0 = 不限；人工一键下单同样计入（共用 sig_ 前缀，防止绕过总额度）
+        'daily_notional_cap' => (string) env('SIGNAL_EXECUTION_DAILY_NOTIONAL_CAP', '0'),
     ],
 ];

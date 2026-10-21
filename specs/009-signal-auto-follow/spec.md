@@ -160,10 +160,10 @@
 **接口与缺口登记**
 
 - **FR-026** `[已实现]` 订阅 REST 写接口：`POST/PATCH/DELETE /v1/signal-subscriptions` 支持创建、更新、删除，自动跟单字段与 Filament 同语义校验；开启自动跟单必须绑定本租户实例；跨租户一律 404/422
-- **FR-027** `[未实现]` 租户级/平台级单日自动跟单**资金总额**上限（现仅有单笔名义额、实例分配资金、笔数上限）
-- **FR-028** `[未实现]` 自动跟单决策审计表与回放工具（现仅日志，无法按信号/订阅回溯完整决策链）
-- **FR-029** `[未实现]` 订阅配置版本号或乐观锁（入队与执行之间只靠二次校验，无版本比对）
-- **FR-030** `[未实现]` 自动跟单成交结果对租户的主动通知（当前仅落库 + 日志）
+- **FR-027** `[已实现]` 租户级单日自动跟单**资金总额**上限：`signal.execution.daily_notional_cap` 按租户当日 `sig_` 有效订单 `notional` 汇总比对（0 = 不限；人工一键下单同计入）
+- **FR-028** `[已实现]` 自动跟单决策审计表 `signal_auto_follow_audits`（append-only）与回放命令 `signal:auto-follow-trace {signalId}`
+- **FR-029** `[已实现]` 订阅配置版本号 `execution_config_version`：执行字段变更自动 +1，入队携带、执行前比对，不一致跳过
+- **FR-030** `[已实现]` 自动跟单成交结果主动通知：`NotifyAutoFollowExecutedJob`（notifications 队列）按订阅渠道投递
 
 ### Key Entities *(include if feature involves data)*
 

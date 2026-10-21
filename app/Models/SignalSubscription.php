@@ -43,7 +43,27 @@ class SignalSubscription extends Model
         'execution_notional' => 'decimal:8',
         'execution_min_confidence' => 'integer',
         'execution_daily_limit' => 'integer',
+        'execution_config_version' => 'integer',
     ];
+
+    /**
+     * 自动跟单配置变更即自增版本号（FR-029：入队与执行之间做版本比对）。
+     */
+    protected static function booted(): void
+    {
+        static::updating(function (self $subscription): void {
+            if ($subscription->isDirty([
+                'auto_execute',
+                'execution_instance_id',
+                'execution_notional',
+                'execution_min_confidence',
+                'execution_daily_limit',
+            ])) {
+                $subscription->execution_config_version =
+                    (int) ($subscription->getOriginal('execution_config_version') ?? 1) + 1;
+            }
+        });
+    }
 
     public function signals(): HasMany
     {

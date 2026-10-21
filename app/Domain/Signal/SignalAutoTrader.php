@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Domain\Signal;
 
 use App\Jobs\AutoExecuteSignalJob;
-use App\Models\Signal;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -22,12 +21,17 @@ use Illuminate\Support\Facades\Log;
  */
 final class SignalAutoTrader
 {
+    public function __construct(
+        private readonly SignalAutoFollowAudit $audit,
+    ) {}
+
     /**
      * 订阅级前置判定（不查库，仅用已经加载的订阅行）。
      *
+     * @param  object  $signal  SignalPipeline 回填持久化信息的 DTO（Signals\Contracts\Signal），或 signals 模型
      * @param  object  $subscription  signal_subscriptions 行（DB::table 裸对象或模型）
      */
-    public function isEligible(Signal $signal, object $subscription): bool
+    public function isEligible(object $signal, object $subscription): bool
     {
         if ((int) ($subscription->auto_execute ?? 0) !== 1) {
             return false;
@@ -54,26 +58,55 @@ final class SignalAutoTrader
      *
      * @return bool 是否已入队
      */
-    public function maybeQueue(Signal $signal, object $subscription): bool
+    public function maybeQueue(object $signal, object $subscription): bool
     {
         if (! $this->isEligible($signal, $subscription)) {
             return false;
         }
 
+        $tenantId = $this->resolveTenantId($signal);
+        $signalId = $this->resolveSignalId($signal);
+
         AutoExecuteSignalJob::dispatch(
-            (int) $signal->tenant_id,
-            (int) $signal->id,
+            $tenantId,
+            $signalId,
             (int) $subscription->id,
+            (int) ($subscription->execution_config_version ?? 1),
+        );
+
+        $this->audit->record(
+            $tenantId,
+            $signalId,
+            (int) $subscription->id,
+            (int) $subscription->execution_instance_id,
+            SignalAutoFollowAudit::DECISION_QUEUED,
         );
 
         Log::info('信号自动跟单已入队', [
-            'signal_id' => (int) $signal->id,
+            'signal_id' => $signalId,
             'subscription_id' => (int) $subscription->id,
             'instance_id' => (int) $subscription->execution_instance_id,
             'direction' => (string) $signal->direction,
             'confidence' => (float) $signal->confidence,
+            'config_version' => (int) ($subscription->execution_config_version ?? 1),
         ]);
 
         return true;
+    }
+
+    /**
+     * DTO 用 tenantId，模型用 tenant_id。
+     */
+    private function resolveTenantId(object $signal): int
+    {
+        return (int) ($signal->tenantId ?? $signal->tenant_id ?? 0);
+    }
+
+    /**
+     * DTO 用 persistedId（落库回填），模型用 id。
+     */
+    private function resolveSignalId(object $signal): int
+    {
+        return (int) ($signal->persistedId ?? $signal->id ?? 0);
     }
 }

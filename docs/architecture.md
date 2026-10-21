@@ -78,6 +78,29 @@ routes/ {api.php, channels.php, web.php}
 | P10 回测 | `BacktestRunner` 回放驱动（不依赖交易所）+ bar 级撮合 + 9 指标 + 报告持久化零重算 + 绩效页 + 已完成 run「落地实盘」（参数快照预填创建 stopped 实例） | [008 回测引擎](../specs/008-backtest-engine/spec.md) |
 | P11 参数寻优 | `ParameterGrid`（白名单 + 上限）+ `ParameterOptimizer`（grid / walk-forward OOS 均值）+ `RunOptimizationJob`（backtest 队列）+ REST API / Filament 参数寻优页 + 双表持久化 + 结果应用闭环（Top N 任选应用、应用历史/回滚、实例反查，`applyToInstance` / `rollbackApplication`） | [README 功能矩阵](../README.md#功能矩阵--路线图) |
 
+## 信号自动跟单链路（spec 009，2026-10-21 缺口收口）
+
+```text
+market:feed（协程，不下单）
+  └─ ai 队列 → SignalPipeline（指标 → AI/规则兜底 → 价差守卫）
+        ├─ signals 落库（neutral 不落库）
+        ├─ SignalDispatcher → 通知渠道
+        └─ SignalAutoTrader::maybeQueue（仅订阅 auto_execute=1；DTO 携带 persistedId/tenantId）
+              └─ AutoExecuteSignalJob（orders 队列，tries=1，携带 execution_config_version）
+                    ├─ 二次校验：订阅 active / 租户 / 实例 running / 同交易对 / long|short
+                    │   / 最低置信度 / 日笔数上限 / 单日资金总额上限 / 配置版本一致
+                    ├─ SignalExecutionService → OrderExecutor（先落库后下单，cid=sig_{signal}_{instance} 幂等）
+                    ├─ signal_auto_follow_audits（queued/skipped/rejected/executed/failed，append-only）
+                    └─ NotifyAutoFollowExecutedJob（notifications 队列，按订阅 channels 投递）
+```
+
+| 机制 | 落点 |
+|---|---|
+| 资金安全 | `signal.execution.daily_notional_cap` 按租户当日 `sig_` 有效订单 `notional` 汇总；`strategy_orders.notional` 下单快照、成交后回写实际值；0 = 不限 |
+| 配置一致性 | `signal_subscriptions.execution_config_version`：执行字段变更模型自动 +1，入队携带、Job 内比对，不一致跳过并审计 |
+| 可回放 | `signal:auto-follow-trace {signalId} [--tenant=]` 输出审计链 + 关联订单表 |
+| 故障降级 | 入队异常、审计写失败、通知投递失败均只记日志，不影响信号落库与已成交订单 |
+
 ## P8 ClickHouse 历史归档（spec 004，2026-10-19 核心落地）
 
 **双进程模型不变**：归档是纯旁路——`archive:*` 系列为独立 artisan 命令进程（无协程、无 WS，constitution III），禁止进入 market:feed 行情协程进程；P1-P5 代码零 import 指向 `App\Domain\Archive`（T028 导入闭包 gate 终检 PASS）。

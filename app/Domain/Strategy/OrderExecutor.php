@@ -107,11 +107,14 @@ class OrderExecutor
             }
         }
 
+        // 名义额快照（自动跟单单日资金上限按此汇总；成交后回写实际值）
+        $notional = bccomp($refPrice, '0', 12) === 1 ? bcmul($qty, $refPrice, 8) : null;
+
         // 幂等落库：unique(tenant_id, client_order_id)
         $leverage = isset($decision['leverage']) ? (int) $decision['leverage'] : null;
         $reduceOnly = (bool) ($decision['reduce_only'] ?? false);
 
-        $rowId = $this->insertPendingRow($tenantId, $instance, $symbol, $side, $clientOrderId, $qty, $leverage, $reduceOnly);
+        $rowId = $this->insertPendingRow($tenantId, $instance, $symbol, $side, $clientOrderId, $qty, $notional, $leverage, $reduceOnly);
         if ($rowId === null) {
             // DB 不可用或该 cid 已有生效行：未发起交易所调用，归还本次冻结（已结算的旧 meter 不受影响）
             $this->quotaGuard->release($meter);
@@ -143,7 +146,12 @@ class OrderExecutor
         // 交易所已受理（new/partial/filled）：配额结算保留
         $this->quotaGuard->settle($meter);
 
-        $this->updateRow($rowId, [
+        $filledNotional = null;
+        if (bccomp((string) $order->filledQty, '0', 12) === 1 && $order->avgFillPrice !== null) {
+            $filledNotional = bcmul((string) $order->filledQty, (string) $order->avgFillPrice, 8);
+        }
+
+        $values = [
             'exchange_order_id' => $order->exchangeOrderId,
             'status' => $order->status,
             'filled_qty' => $order->filledQty,
@@ -152,7 +160,12 @@ class OrderExecutor
             'placed_at' => $order->placedAt !== null
                 ? date('Y-m-d H:i:s', $order->placedAt) : now(),
             'filled_at' => $order->filledAt !== null ? date('Y-m-d H:i:s', $order->filledAt) : null,
-        ]);
+        ];
+        if ($filledNotional !== null) {
+            $values['notional'] = $filledNotional;
+        }
+
+        $this->updateRow($rowId, $values);
 
         return $order;
     }
@@ -168,6 +181,7 @@ class OrderExecutor
         string $side,
         string $clientOrderId,
         string $qty,
+        ?string $notional,
         ?int $leverage,
         bool $reduceOnly,
     ): ?int {
@@ -180,6 +194,7 @@ class OrderExecutor
                 'side' => $side,
                 'type' => 'market',
                 'quantity' => $qty,
+                'notional' => $notional,
                 'leverage' => $leverage,
                 'reduce_only' => $reduceOnly,
                 'status' => 'pending',
