@@ -185,6 +185,12 @@ nc -vz api.bitget.com 443 && nc -vz ws.bitget.com 443     # Bitget 主网
 
 ### 8.1 验收矩阵
 
+> **半自动化入口（2026-10-22 增补）**：下表 11 项已脚本化为 [deploy/acceptance.sh](../deploy/acceptance.sh)，
+> 在节点项目根执行 `bash deploy/acceptance.sh` 逐项跑批，自动判定 PASS/FAIL/SKIP 并把证据
+> 日志与 summary.txt 落到 `storage/acceptance/<时间戳>/`。下单项（5/7/9）需 `.env` 配好 key 后
+> 逐项确认（或 `--yes`）；第 1 项 kill -9 破坏性验收需显式 `--with-destructive`；第 11 项为
+> 半自动（基线自动跑 → 人工制造 drift → 复跑）。全部 PASS 后按下表逐行销账。
+
 | # | 验收项 | 命令 / 操作 | 通过标准 | 销账 |
 |---|---|---|---|---|
 | 1 | supervisor kill -9 自愈 | 第 4 节验收 #1 | 10s 内重新 RUNNING，hydrate 日志正常 | P5.5 待办 |
