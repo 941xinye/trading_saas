@@ -54,7 +54,7 @@ routes/ {api.php, channels.php, web.php}
 | 阶段 | 范围 | 验证目标 | 状态 |
 |---|---|---|---|
 | **P1 策略+下单闭环** | BinanceSpotAdapter + SpotGridStrategy + RiskGuard 最小版 | K线订阅→onBar→RiskGuard→placeOrder→onFill→崩溃恢复 | ✅ 全链路 PASS（2026-10-13）：行情/环境装配/真实下单成交/崩溃恢复双写幂等 |
-| **P2 AI 信号闭环** | BarAggregator + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher | bar close→AI 分析→Signal 落库→多渠道分发；AI 失败兜底 | ✅ 全链路 PASS（2026-10-13）：DeepSeek 真实信号 #7 落库、42/42 断言、15min 去重生效 |
+| **P2 AI 信号闭环** | BarAggregator + DeepSeekAdapter + RuleEngineFallback + SignalDispatcher + `SignalExecutionService`（人工一键下单） | bar close→AI 分析→Signal 落库→多渠道分发；AI 失败兜底；信号页/API 按信号方向市价下单（running 实例 + TTL + 幂等） | ✅ 全链路 PASS（2026-10-13）：DeepSeek 真实信号 #7 落库、42/42 断言、15min 去重生效；信号执行 6 项测试全绿（2026-10-21） |
 | **P3 多租户计费** | tenancy 中间件 + plans + TwoPhaseMeter + 订阅状态机 + DEK 轮换 | 两租户同跑策略，数据严格隔离；配额扣减；订阅状态机 | ✅ 双验证 PASS（2026-10-14）：62/62 离线断言（含 10 进程抢 3 配额并发）+ 双租户同 WS 实跑 meter 独立 |
 | **P4 高级风控** | 4 维度 Rule 全实现 + 熔断状态机 + HALF_OPEN 探测 + 自动恢复窗口 | 模拟连亏→熔断→通知→冷却→HALF_OPEN→探测单→CLOSED/重置 | ✅ 全链路 PASS（2026-10-14）：35/35 离线断言（4 维度触发/HALF_OPEN 双路径/事件分发/4 渠道通知/跨日重置/崩溃恢复/去重/命令幂等）+ risk:status/risk:recover 命令验证 |
 | **P5 大户爆仓数据** | subscribeLiquidationStream + 实时聚类 + LiquidationMapService + 面板展示 | 实时显示 BTC/ETH 大户爆仓密集区 | ✅ 离线 PASS（2026-10-14）：15/15 断言（DTO/聚类/Redis ZSET+HASH/三档窗口隔离/eviction/MapService）；真实 fstream 实跑阻塞于 WSL 对 Binance 主网网络不可达，命令保留待补测 |

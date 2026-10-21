@@ -46,6 +46,8 @@ Route::middleware(['auth:sanctum', 'tenant'])
         Route::apiResource('signal-subscriptions', SignalSubscriptionController::class)
             ->parameters(['signal-subscriptions' => 'subscription']);
         Route::apiResource('signals', SignalController::class)->only(['index', 'show']);
+        Route::post('signals/{signal}/execute', [SignalController::class, 'execute'])
+            ->name('signals.execute');
 
         // 风控规则
         Route::apiResource('risk-rules', RiskRuleController::class)

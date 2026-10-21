@@ -370,7 +370,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **实测结果**：
 - 离线断言 PASS：`php artisan poc:verify-backtest` → **55/55 ALL CHECKS PASSED**；H 组性能：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（两轮实测，预算 30s，SC-001）。
-- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **803 passed / 10 skipped / 1 incomplete / 3122 assertions**（2026-10-21 复测，含 P11 参数寻优闭环与回测落地实盘；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
+- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **809 passed / 10 skipped / 1 incomplete / 3149 assertions**（2026-10-21 复测，含 P11 参数寻优闭环、回测落地实盘与信号一键下单；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
 - 等价性：BacktestEquivalenceTest — fixture 决策序列（bar/side/qty）100% 一致，净值 ≤ 实跑毛收益。
 - 报告零重算：BacktestReportReloadTest + J 组 DB::listen — 二次读取 backtest_* 写查询 0。
 - 红线：BacktestNoExchangeCallTest + I 组静态扫描 — Runner 依赖面不含 exchange/adapter，零交易所调用。
@@ -443,6 +443,7 @@ walk-forward（folds=2、2 组合、8 trials）两折均选中 `grid_count=5`，
 | **P9 支付网关 + 计费 UI ✅ 我方实现已交付（2026-10-20，spec 007；离线轨道已验证，真实 BTCPay 链路待节点）** | 通道抽象层（Registry 不降级）+ fake 离线通道（仅 local/testing）+ BtcPayChannel（验签纯函数已单测）；TRC20-USDT 支付单（decimal:8 bcmath 金额/同套餐不堆叠/TTL 过期清扫）；webhook 固定流水线（验签失败 401 + rejected 审计、processed_key 唯一幂等、Redis 单飞锁降级、状态机只进不退）；激活单事务接线 P3 provision；续费提醒 7/3/1 档 + past_due→suspended 既有流转；Filament 计费页（当前套餐/当日用量/Invoice 列表/升级 3 步出支付信息）+ Billing REST API（双租户隔离） | `poc:verify-payment` 35/35 全绿（建单→验签→状态推进→激活→配额生效→幂等重放→伪造签名拒绝→提醒判定，webhook 单请求 <200ms）；SC-001~006 平台侧全部离线验收；真实 USDT 收单闭环（B1~B3/C1~C2）待节点按 [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) 执行后销账 | ~~支付回调幂等~~（已落地：processed_key 唯一 + 条件更新）、汇率/税额（不做，见已知边界）、**通道合规（数字货币 SaaS 品类受限，BTCPay 自托管为基线，Stripe 申报远期并行）** | P3 |
 | **P10 回测引擎 + 绩效分析 ✅ 已完成（2026-10-21，spec 008；P4 参数调优建议不在本期）** | 历史回放（HistoricalQuery 分页→策略驱动，CH/MySQL 路由复用）；策略绩效 9 指标（Sharpe/最大回撤/胜率/盈亏比/年化等）；撮合假设可配置并在报告显式标注；异步队列 + 单飞锁 + 崩溃收割；Filament「回测绩效」页（列表/发起/详情四区） | `poc:verify-backtest` 55/55 全绿；1 年 5m（105,120 bar）端到端 **6.577–9.079s** < 30s（SC-001）；fixture 决策序列 100% 一致 + 净值误差 < 1%（SC-002）；报告二次查看零重算（SC-003）；零交易所调用（SC-005）；双租户零串扰（SC-006）；真实 testnet 长期净值对照待海外节点 | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
 | **P11 参数寻优 ✅ 已完成（2026-10-21，P10 延伸）** | 参数网格展开（显式值 / min-max-step + 策略白名单 + 200 组上限）；grid 全区间逐组合选优；walk-forward 分折训练/样本外 OOS 均值排名；REST API（创建 202 入队 / 详情 / trials）+ Filament 参数寻优页 + `backtest:optimize` 命令；双表持久化（含请求快照）、租户隔离 | 23 项新增测试全绿；30min 1m fixture grid 3 组合实测选优与 walk-forward 分折输出符合预期；全量回归 788 passed / 0 failed | 过拟合（walk-forward 缓解但非消除）、组合数增长带来的队列耗时 | P10 |
+| **P2 延伸：信号执行 ✅ 已完成（2026-10-21）** | 人工确认的一键下单（REST API + Filament「策略 → 信号」页）：long→buy / short→sell 市价；仅 running 且同交易对实例、15 分钟执行窗口、名义额上限且不超过实例分配资金；现货拒绝做空；凭据解密失败拒绝；`client_order_id=sig_{signal}_{instance}` 幂等，复用 OrderExecutor 权益/日配额闸门与先落库后下单 | 新增 5 项 API + 1 项页面测试全绿（17 + 10 断言）；全量回归 809 passed / 0 failed；自动跟单为后续阶段 | 真实资金误操作（人工确认 + 幂等双保险）、名义额/资金上限 | P1, P2 |
 
 > **执行顺序说明（2026-10-18 决策）**：P8 先于 P7。理由：①kline_bars/liquidation_events 持续增长，归档越晚迁移窗口越大、历史校验越难；②P10 回测与 P7 的回测预览都依赖 P8 的 `HistoricalQuery`。阶段编号保持不动（P7/P8 仅为标识）；P7 的表达力设计可与 P8 实现并行做 specify（纯文档阶段）。
 > **P9 前置注记（2026-10-18 合规调研结论）**：
@@ -557,9 +558,14 @@ php artisan poc:signal-setup --tenant=1 --symbol=BTCUSDT --interval=5m --channel
 # 3. 两个长驻进程（分开启动，AI 慢调用只在 queue worker，不进行情协程进程）
 php artisan market:feed                                              # 1m WS → 5m 聚合 → 投 Job
 php artisan queue:work redis --queue=ai,notifications --tries=2      # AI 调用 + 通知发送
+
+# 4.（可选）人工确认的一键下单：API 或「策略 → 信号」页右上角「执行信号」
+curl -X POST /api/v1/signals/{id}/execute -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" -d '{"instance_id":1,"notional":"100"}'
+# long→buy / short→sell 市价；需 running 实例 + 15 分钟执行窗口；client_order_id=sig_{signal}_{instance} 幂等
 ```
 
-无 key 或 AI 故障时链路自动降级到 RuleEngineFallback，不影响运行；可选 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 开启 Telegram 渠道。**P2 信号铁律：只分析通知，不触发下单。**
+无 key 或 AI 故障时链路自动降级到 RuleEngineFallback，不影响运行；可选 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 开启 Telegram 渠道。**P2 分析链路仍不自动下单**；执行需人工确认（API / 信号页），自动跟单为后续阶段。
 
 ### POC 验证（P3 多租户计费）
 
