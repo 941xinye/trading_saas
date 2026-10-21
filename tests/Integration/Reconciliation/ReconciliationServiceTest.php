@@ -292,6 +292,36 @@ class ReconciliationServiceTest extends TestCase
     }
 
     /**
+     * 护栏：合约实例不进入对账范围（现货语义会误判 critical 误暂停，2026-10-22）。
+     */
+    public function test_reconcileable_instance_ids_excludes_futures_market(): void
+    {
+        $now = now();
+        $exchangeId = (int) DB::table('exchange_accounts')->where('id', $this->ids['account_a'])->value('exchange_id');
+        $strategyId = (int) DB::table('strategy_instances')->where('id', $this->ids['instance_a'])->value('strategy_id');
+
+        $futuresAccount = (int) DB::table('exchange_accounts')->insertGetId([
+            'tenant_id' => $this->ids['tenant_a'], 'exchange_id' => $exchangeId, 'label' => 'poc-futures',
+            'market' => 'futures', 'encrypted_api_key' => 'k', 'encrypted_api_secret' => 's',
+            'dek_version' => 1, 'permissions' => json_encode(['futures_trading']), 'status' => 'active',
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+        $futuresInstance = (int) DB::table('strategy_instances')->insertGetId([
+            'tenant_id' => $this->ids['tenant_a'], 'strategy_id' => $strategyId,
+            'exchange_account_id' => $futuresAccount, 'symbol' => 'ETHUSDT', 'interval' => '1m',
+            'params' => json_encode([]), 'allocated_capital' => '1000', 'status' => 'running',
+            'breaker_state' => 'closed', 'position_snapshot' => json_encode([]), 'realized_pnl' => '0',
+            'created_at' => $now, 'updated_at' => $now,
+        ]);
+
+        $ids = $this->service->reconcileableInstanceIds();
+
+        static::assertContains($this->ids['instance_a'], $ids);
+        static::assertContains($this->ids['instance_b'], $ids);
+        static::assertNotContains($futuresInstance, $ids);
+    }
+
+    /**
      * 最小双租户脚手架：exchanges / strategies / accounts / instances / 账本快照 / 成交单。
      *
      * @return array{tenant_a:int,tenant_b:int,instance_a:int,instance_b:int,account_a:int,account_b:int}

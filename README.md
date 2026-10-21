@@ -482,6 +482,7 @@ walk-forward（folds=2、2 组合、8 trials）两折均选中 `grid_count=5`，
 | A2 | ~~售卖能力超出代码~~ **P5.5 步骤 2 已还**：SpotDca 完整落地；套餐白名单硬闸门先查 `config('strategy.implemented')`，pro/free 仅保留已实装的 spot_grid/spot_dca，合约骨架策略全部摘出白名单 | P0/P1 盘点 |
 | A3 | ~~drawdown 缺真实净值口径~~ **P5.5 步骤 1 已产数据**：每次成功对账写 `balance_snapshots` 净值序列（算法切换留待后续；本期只产数据） | P4 已知边界 |
 | A4 | ~~合约策略为骨架且缺仓位级风控~~ **spec 005 已还**：FuturesGridStrategy 完整实现（6 决策 + reduceOnly + 崩溃恢复）；PositionRiskMonitor 三档风控（warning/reduce/emergency_close）+ 强平价计算器；paused_by_position_risk 状态；testnet 真实链路待海外节点补测 | P0/P5 盘点 |
+| A5 | ~~合约实例纳入口径错误对账范围~~ **2026-10-22 已加护栏**：`reconcileableInstanceIds` 仅扫 spot 实例（合约账户 getBalance 返回保证金资产，现货口径会恒判 critical 误暂停，本地实例 9 stopped 故未爆）；**合约原生对账未做**（getPosition 签名持仓 vs 成交签名净额），待立项 spec | 建议3 复核发现 |
 
 **B. 功能占位 / 未实测**
 

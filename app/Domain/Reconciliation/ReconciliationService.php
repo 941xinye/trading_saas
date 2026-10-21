@@ -255,14 +255,20 @@ class ReconciliationService
     /**
      * 全部应对账实例（running / 两种 paused；stopped/error/starting 不打扰）。
      *
+     * 护栏（2026-10-22）：仅现货实例。对账口径为现货语义（getBalance assets[base]
+     * vs 成交净额）；合约账户 getBalance 返回保证金资产、assets[base] 恒为 0，
+     * 会被误判 critical 误暂停。合约原生对账（getPosition vs 签名净额）待后续 spec。
+     *
      * @return int[]
      */
     public function reconcileableInstanceIds(): array
     {
-        return DB::table('strategy_instances')
-            ->whereIn('status', ['running', 'paused_by_breaker', 'paused_by_reconcile'])
-            ->orderBy('id')
-            ->pluck('id')
+        return DB::table('strategy_instances as si')
+            ->join('exchange_accounts as ea', 'ea.id', '=', 'si.exchange_account_id')
+            ->whereIn('si.status', ['running', 'paused_by_breaker', 'paused_by_reconcile'])
+            ->where('ea.market', 'spot')
+            ->orderBy('si.id')
+            ->pluck('si.id')
             ->map(static fn ($id): int => (int) $id)
             ->all();
     }
