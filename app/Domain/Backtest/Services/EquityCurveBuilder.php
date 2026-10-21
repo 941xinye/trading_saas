@@ -11,7 +11,8 @@ use App\Domain\Strategy\Contracts\StrategyInterface;
 /**
  * 净值曲线构建器（spec 008 T022 / contracts/backtest-runner-contract.md §3）。
  *
- * 净值 = initialCapital + realizedPnl + 未实现盈亏（bcmath 中间 12 位，落账 8 位）。
+ * 净值 = initialCapital + realizedPnl + 未实现盈亏 − 累计手续费（bcmath 中间 12 位，落账 8 位）。
+ * 累计手续费由 Runner 在每笔模拟成交后经 addFee() 注入（US4-2：费率上调 → 净值下降）。
  * 持仓读取唯一入口 = `$strategy->getState()->positionSnapshot`（FR-003 推论：不读私有属性）。
  *
  * 持仓格式兼容：
@@ -23,9 +24,20 @@ final class EquityCurveBuilder
     /** @var EquityPoint[] */
     private array $points = [];
 
+    /** 累计手续费（已成交笔的手续费合计） */
+    private string $cumulativeFee = '0';
+
     public function __construct(
         private readonly string $initialCapital,
     ) {
+    }
+
+    /**
+     * 登记一笔手续费（Matcher 产出后由 Runner 调用）。
+     */
+    public function addFee(string $fee): void
+    {
+        $this->cumulativeFee = bcadd($this->cumulativeFee, $fee, 12);
     }
 
     public function mark(StrategyInterface $strategy, ExchangeKline $bar): EquityPoint
@@ -34,6 +46,7 @@ final class EquityCurveBuilder
         $unrealized = $this->unrealizedPnl($state->positionSnapshot, $bar->close);
 
         $equity = bcadd(bcadd($this->initialCapital, $state->realizedPnl, 12), $unrealized, 12);
+        $equity = bcsub($equity, $this->cumulativeFee, 12);
         $equity = bcadd($equity, '0', 8);
 
         $point = new EquityPoint($bar->openTime, $equity);
@@ -51,6 +64,7 @@ final class EquityCurveBuilder
     public function reset(): void
     {
         $this->points = [];
+        $this->cumulativeFee = '0';
     }
 
     private function unrealizedPnl(?array $snapshot, string $markPrice): string

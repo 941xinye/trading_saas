@@ -44,6 +44,9 @@ final class BacktestRunService
         $this->validateRange($fromUtc, $toUtc);
         $this->validateStrategy($tenantId, $strategyCode);
 
+        // 口径说明按策略生成（futures_grid 追加资金费率免责，US4-3），随快照持久化
+        $assumptions = $assumptions->forStrategy($strategyCode);
+
         $this->checkConcurrency($tenantId);
 
         $run = DB::transaction(function () use ($tenantId, $strategyCode, $params, $symbol, $interval, $fromUtc, $toUtc, $assumptions): BacktestRun {

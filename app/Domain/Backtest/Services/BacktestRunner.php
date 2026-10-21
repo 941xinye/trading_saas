@@ -140,6 +140,7 @@ final class BacktestRunner
         }
 
         $fill = $this->matcher->fill($decision, $bar, $request->assumptions);
+        $this->equity->addFee($fill->fee);
 
         $prevRealizedPnl = $strategy->getState()->realizedPnl;
         $strategy->onFill($this->filledOrder($cid, $request->symbol, $fill));

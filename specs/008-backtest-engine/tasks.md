@@ -128,11 +128,11 @@
 
 ### Tests for User Story 4
 
-- [ ] T039 [P] [US4] Integration 测试 `tests/Integration/Backtest/BacktestAssumptionsTest.php`：fee_rate 0.001 vs 0.002 双跑，断言 total_fee 倍率与收益差一致；报告 assumptions JSON 快照与发起参数一致；futures_grid 报告含 funding 免责标注；默认参数来源 config/backtest.php
+- [x] T039 [P] [US4] Integration 测试 `tests/Integration/Backtest/BacktestAssumptionsTest.php`：fee_rate 0.001 vs 0.002 双跑，断言 total_fee 倍率与收益差一致；报告 assumptions JSON 快照与发起参数一致；futures_grid 报告含 funding 免责标注；默认参数来源 config/backtest.php
 
 ### Implementation for User Story 4
 
-- [ ] T040 [US4] MatchingAssumptions 校验规则落地（initial_capital>0、fee_rate∈[0,0.01]、slippage_bps∈[0,100]）于 BacktestRunRequest 构造层；narrative 文案生成（口径说明：bar 收盘价±bps、未建模项列表）
+- [x] T040 [US4] MatchingAssumptions 校验规则落地（initial_capital>0、fee_rate∈[0,0.01]、slippage_bps∈[0,100]）于 BacktestRunRequest 构造层；narrative 文案生成（口径说明：bar 收盘价±bps、未建模项列表）
 
 **Checkpoint**: US4 完整（页面假设区展示在 Phase 7 落地）
 
