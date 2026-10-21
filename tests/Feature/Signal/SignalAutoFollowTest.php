@@ -8,6 +8,7 @@ use App\Domain\Billing\QuotaGuard;
 use App\Domain\Exchange\Contracts\ExchangeAdapter;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\ExchangeManager;
+use App\Domain\Risk\PlatformKillSwitch;
 use App\Domain\Signal\SignalAutoTrader;
 use App\Domain\Signal\SignalExecutionService;
 use App\Domain\Tenancy\TenantContext;
@@ -18,6 +19,7 @@ use App\Support\AesGcmCrypt;
 use App\Support\KeyResolver;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Redis;
 use Mockery;
 use Tests\TestCase;
 
@@ -31,15 +33,21 @@ final class SignalAutoFollowTest extends TestCase
 {
     private const TENANT_ID = 990501;
 
+    private const OTHER_TENANT_ID = 990502;
+
     private const EXCHANGE_ID = 990601;
 
     private const DEK = 'kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk';
 
     private int $accountId;
 
+    private int $accountOtherId;
+
     private int $strategyId;
 
     private int $instanceId;
+
+    private int $otherInstanceId;
 
     protected function setUp(): void
     {
@@ -47,16 +55,21 @@ final class SignalAutoFollowTest extends TestCase
 
         $now = now();
 
-        DB::table('tenants')->insert([
-            'id' => self::TENANT_ID,
-            'name' => 'poc-auto-follow',
-            'slug' => 'poc-auto-follow',
-            'exchange_dek' => 'test-dek',
-            'status' => 'active',
-            'plan_code' => 'pro',
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]);
+        foreach ([
+            [self::TENANT_ID, 'poc-auto-follow'],
+            [self::OTHER_TENANT_ID, 'poc-auto-follow-other'],
+        ] as [$tenantId, $slug]) {
+            DB::table('tenants')->insert([
+                'id' => $tenantId,
+                'name' => $slug,
+                'slug' => $slug,
+                'exchange_dek' => 'test-dek',
+                'status' => 'active',
+                'plan_code' => 'pro',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
 
         DB::table('exchanges')->insert([
             'id' => self::EXCHANGE_ID,
@@ -102,6 +115,31 @@ final class SignalAutoFollowTest extends TestCase
             'tenant_id' => self::TENANT_ID,
             'strategy_id' => $this->strategyId,
             'exchange_account_id' => $this->accountId,
+            'symbol' => 'BTCUSDT',
+            'interval' => '5m',
+            'params' => json_encode([]),
+            'allocated_capital' => '1000',
+            'status' => 'running',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $this->accountOtherId = (int) DB::table('exchange_accounts')->insertGetId([
+            'tenant_id' => self::OTHER_TENANT_ID,
+            'exchange_id' => self::EXCHANGE_ID,
+            'label' => 'auto-follow-account-other',
+            'market' => 'spot',
+            'encrypted_api_key' => $cipher,
+            'encrypted_api_secret' => $cipher,
+            'permissions' => json_encode(['spot']),
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+
+        $this->otherInstanceId = (int) DB::table('strategy_instances')->insertGetId([
+            'tenant_id' => self::OTHER_TENANT_ID,
+            'strategy_id' => $this->strategyId,
+            'exchange_account_id' => $this->accountOtherId,
             'symbol' => 'BTCUSDT',
             'interval' => '5m',
             'params' => json_encode([]),
@@ -241,17 +279,179 @@ final class SignalAutoFollowTest extends TestCase
         self::assertFalse($trader->maybeQueue($signal, $disabled));
     }
 
+    public function test_platform_kill_switch_blocks_auto_order(): void
+    {
+        $this->mockAdapter(expectOrder: false);
+
+        $connection = Mockery::mock();
+        $connection->shouldReceive('exists')->with(PlatformKillSwitch::KEY)->andReturn(1);
+        Redis::shouldReceive('connection')->andReturn($connection);
+
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription();
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(0, DB::table('strategy_orders')
+            ->where('strategy_instance_id', $this->instanceId)
+            ->count());
+    }
+
+    public function test_subscription_of_other_tenant_is_skipped(): void
+    {
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription([
+            'tenant_id' => self::OTHER_TENANT_ID,
+            'execution_instance_id' => $this->otherInstanceId,
+        ]);
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(0, DB::table('strategy_orders')->count());
+    }
+
+    public function test_subscription_pointing_to_foreign_instance_is_skipped(): void
+    {
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription([
+            'execution_instance_id' => $this->otherInstanceId,
+        ]);
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(0, DB::table('strategy_orders')->count());
+    }
+
+    public function test_expired_signal_is_skipped(): void
+    {
+        $signal = $this->createSignal(['triggered_at' => now()->subMinutes(16)]);
+        $subscriptionId = $this->createSubscription();
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(0, DB::table('strategy_orders')
+            ->where('strategy_instance_id', $this->instanceId)
+            ->count());
+    }
+
+    public function test_spot_account_rejects_short_signal(): void
+    {
+        $signal = $this->createSignal(['direction' => 'short']);
+        $subscriptionId = $this->createSubscription();
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(0, DB::table('strategy_orders')
+            ->where('strategy_instance_id', $this->instanceId)
+            ->count());
+    }
+
+    public function test_zero_daily_limit_means_unlimited(): void
+    {
+        foreach ([1, 2, 3] as $i) {
+            DB::table('strategy_orders')->insert([
+                'tenant_id' => self::TENANT_ID,
+                'strategy_instance_id' => $this->instanceId,
+                'client_order_id' => "sig_90{$i}_{$this->instanceId}",
+                'symbol' => 'BTCUSDT',
+                'side' => 'buy',
+                'type' => 'market',
+                'quantity' => '1',
+                'status' => 'filled',
+                'filled_qty' => '1',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $this->mockAdapter();
+
+        $signal = $this->createSignal();
+        $subscriptionId = $this->createSubscription(['execution_daily_limit' => 0]);
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(4, DB::table('strategy_orders')
+            ->where('strategy_instance_id', $this->instanceId)
+            ->count());
+    }
+
+    public function test_pending_order_with_same_client_order_id_blocks_replay(): void
+    {
+        $this->mockAdapter(expectOrder: false);
+
+        $signal = $this->createSignal();
+        $clientOrderId = "sig_{$signal->id}_{$this->instanceId}";
+
+        DB::table('strategy_orders')->insert([
+            'tenant_id' => self::TENANT_ID,
+            'strategy_instance_id' => $this->instanceId,
+            'client_order_id' => $clientOrderId,
+            'symbol' => 'BTCUSDT',
+            'side' => 'buy',
+            'type' => 'market',
+            'quantity' => '1',
+            'status' => 'pending',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $subscriptionId = $this->createSubscription();
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(1, DB::table('strategy_orders')
+            ->where('client_order_id', $clientOrderId)
+            ->count());
+        self::assertSame('pending', DB::table('strategy_orders')
+            ->where('client_order_id', $clientOrderId)
+            ->value('status'));
+    }
+
+    public function test_failed_order_with_same_client_order_id_allows_retry(): void
+    {
+        $this->mockAdapter();
+
+        $signal = $this->createSignal();
+        $clientOrderId = "sig_{$signal->id}_{$this->instanceId}";
+
+        DB::table('strategy_orders')->insert([
+            'tenant_id' => self::TENANT_ID,
+            'strategy_instance_id' => $this->instanceId,
+            'client_order_id' => $clientOrderId,
+            'symbol' => 'BTCUSDT',
+            'side' => 'buy',
+            'type' => 'market',
+            'quantity' => '1',
+            'status' => 'failed',
+            'error_message' => 'previous failure',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $subscriptionId = $this->createSubscription();
+
+        $this->runJob($signal, $subscriptionId);
+
+        self::assertSame(1, DB::table('strategy_orders')
+            ->where('client_order_id', $clientOrderId)
+            ->count());
+        self::assertSame('filled', DB::table('strategy_orders')
+            ->where('client_order_id', $clientOrderId)
+            ->value('status'));
+    }
+
     // ------------------------------------------------------------------
     // 辅助
     // ------------------------------------------------------------------
 
-    private function runJob(Signal $signal, int $subscriptionId): void
+    private function runJob(Signal $signal, int $subscriptionId, ?int $tenantId = null): void
     {
-        (new AutoExecuteSignalJob(self::TENANT_ID, (int) $signal->id, $subscriptionId))
+        (new AutoExecuteSignalJob($tenantId ?? self::TENANT_ID, (int) $signal->id, $subscriptionId))
             ->handle(app(SignalExecutionService::class));
     }
 
-    private function mockAdapter(): void
+    private function mockAdapter(bool $expectOrder = true): ExchangeAdapter
     {
         $adapter = Mockery::mock(ExchangeAdapter::class);
         $adapter->shouldReceive('symbolFilters')->andReturn([
@@ -260,30 +460,37 @@ final class SignalAutoFollowTest extends TestCase
             'min_notional' => '5',
         ]);
         $adapter->shouldReceive('alignToStep')->andReturnUsing(fn ($qty) => $qty);
-        $adapter->shouldReceive('placeOrder')->andReturnUsing(
-            fn ($symbol, $side, $type, $qty, $price, $stop, $opts) => new ExchangeOrder(
-                exchangeOrderId: 'ex-auto-1',
-                clientOrderId: (string) ($opts['clientOrderId'] ?? ''),
-                symbol: $symbol,
-                side: $side,
-                type: 'market',
-                quantity: $qty,
-                price: null,
-                stopPrice: null,
-                leverage: null,
-                reduceOnly: false,
-                status: 'filled',
-                filledQty: $qty,
-                avgFillPrice: '100',
-                fee: '0.1',
-                placedAt: time(),
-                filledAt: time(),
-            ),
-        );
+
+        if ($expectOrder) {
+            $adapter->shouldReceive('placeOrder')->andReturnUsing(
+                fn ($symbol, $side, $type, $qty, $price, $stop, $opts) => new ExchangeOrder(
+                    exchangeOrderId: 'ex-auto-1',
+                    clientOrderId: (string) ($opts['clientOrderId'] ?? ''),
+                    symbol: $symbol,
+                    side: $side,
+                    type: 'market',
+                    quantity: $qty,
+                    price: null,
+                    stopPrice: null,
+                    leverage: null,
+                    reduceOnly: false,
+                    status: 'filled',
+                    filledQty: $qty,
+                    avgFillPrice: '100',
+                    fee: '0.1',
+                    placedAt: time(),
+                    filledAt: time(),
+                ),
+            );
+        } else {
+            $adapter->shouldNotReceive('placeOrder');
+        }
 
         $this->mock(ExchangeManager::class, function ($mock) use ($adapter): void {
             $mock->shouldReceive('adapter')->andReturn($adapter);
         });
+
+        return $adapter;
     }
 
     /**

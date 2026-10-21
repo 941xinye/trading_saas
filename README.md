@@ -384,7 +384,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **实测结果**：
 - 离线断言 PASS：`php artisan poc:verify-backtest` → **55/55 ALL CHECKS PASSED**；H 组性能：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（两轮实测，预算 30s，SC-001）。
-- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **816 passed / 10 skipped / 1 incomplete / 3167 assertions**（2026-10-21 复测，含 P11 参数寻优闭环、回测落地实盘、信号一键下单与自动跟单；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
+- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **847 passed / 10 skipped / 1 incomplete / 3314 assertions / 81.77s**（2026-10-21 复测，含 P11 参数寻优闭环、回测落地实盘、信号一键下单与自动跟单、订阅 REST 写接口、上线运维基线；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
 - 等价性：BacktestEquivalenceTest — fixture 决策序列（bar/side/qty）100% 一致，净值 ≤ 实跑毛收益。
 - 报告零重算：BacktestReportReloadTest + J 组 DB::listen — 二次读取 backtest_* 写查询 0。
 - 红线：BacktestNoExchangeCallTest + I 组静态扫描 — Runner 依赖面不含 exchange/adapter，零交易所调用。
@@ -457,7 +457,8 @@ walk-forward（folds=2、2 组合、8 trials）两折均选中 `grid_count=5`，
 | **P9 支付网关 + 计费 UI ✅ 我方实现已交付（2026-10-20，spec 007；离线轨道已验证，真实 BTCPay 链路待节点）** | 通道抽象层（Registry 不降级）+ fake 离线通道（仅 local/testing）+ BtcPayChannel（验签纯函数已单测）；TRC20-USDT 支付单（decimal:8 bcmath 金额/同套餐不堆叠/TTL 过期清扫）；webhook 固定流水线（验签失败 401 + rejected 审计、processed_key 唯一幂等、Redis 单飞锁降级、状态机只进不退）；激活单事务接线 P3 provision；续费提醒 7/3/1 档 + past_due→suspended 既有流转；Filament 计费页（当前套餐/当日用量/Invoice 列表/升级 3 步出支付信息）+ Billing REST API（双租户隔离） | `poc:verify-payment` 35/35 全绿（建单→验签→状态推进→激活→配额生效→幂等重放→伪造签名拒绝→提醒判定，webhook 单请求 <200ms）；SC-001~006 平台侧全部离线验收；真实 USDT 收单闭环（B1~B3/C1~C2）待节点按 [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) 执行后销账 | ~~支付回调幂等~~（已落地：processed_key 唯一 + 条件更新）、汇率/税额（不做，见已知边界）、**通道合规（数字货币 SaaS 品类受限，BTCPay 自托管为基线，Stripe 申报远期并行）** | P3 |
 | **P10 回测引擎 + 绩效分析 ✅ 已完成（2026-10-21，spec 008；P4 参数调优建议不在本期）** | 历史回放（HistoricalQuery 分页→策略驱动，CH/MySQL 路由复用）；策略绩效 9 指标（Sharpe/最大回撤/胜率/盈亏比/年化等）；撮合假设可配置并在报告显式标注；异步队列 + 单飞锁 + 崩溃收割；Filament「回测绩效」页（列表/发起/详情四区） | `poc:verify-backtest` 55/55 全绿；1 年 5m（105,120 bar）端到端 **6.577–9.079s** < 30s（SC-001）；fixture 决策序列 100% 一致 + 净值误差 < 1%（SC-002）；报告二次查看零重算（SC-003）；零交易所调用（SC-005）；双租户零串扰（SC-006）；真实 testnet 长期净值对照待海外节点 | 回测精度（撮合假设、滑点、手续费）、参数过拟合、与真实下单语义一致 | P1, P7, P8 |
 | **P11 参数寻优 ✅ 已完成（2026-10-21，P10 延伸）** | 参数网格展开（显式值 / min-max-step + 策略白名单 + 200 组上限）；grid 全区间逐组合选优；walk-forward 分折训练/样本外 OOS 均值排名；REST API（创建 202 入队 / 详情 / trials）+ Filament 参数寻优页 + `backtest:optimize` 命令；双表持久化（含请求快照）、租户隔离 | 23 项新增测试全绿；30min 1m fixture grid 3 组合实测选优与 walk-forward 分折输出符合预期；全量回归 788 passed / 0 failed | 过拟合（walk-forward 缓解但非消除）、组合数增长带来的队列耗时 | P10 |
-| **P2 延伸：信号执行 ✅ 已完成（2026-10-21）** | 人工确认的一键下单（REST API + Filament「策略 → 信号」页）：long→buy / short→sell 市价；仅 running 且同交易对实例、15 分钟执行窗口、名义额上限且不超过实例分配资金；现货拒绝做空；凭据解密失败拒绝；`client_order_id=sig_{signal}_{instance}` 幂等，复用 OrderExecutor 权益/日配额闸门与先落库后下单。**订阅级自动跟单**：`auto_execute` + 执行实例 + 最低置信度 + 当日信号单上限，Pipeline 落库后投递 orders 队列 `AutoExecuteSignalJob`，Job 内二次校验并复用同一执行服务 | 新增 5 项 API + 1 项页面 + 6 项自动跟单 Job + 1 项订阅表单测试全绿（17 + 10 + 11 + 7 断言）；全量回归 816 passed / 0 failed | 真实资金误操作（人工确认/订阅开关 + 幂等 + 日上限）、名义额/资金上限、自动跟单追单风险（TTL + 置信度 + 实例 running） | P1, P2 |
+| **P2 延伸：信号执行 ✅ 已完成（2026-10-21）** | 人工确认的一键下单（REST API + Filament「策略 → 信号」页）：long→buy / short→sell 市价；仅 running 且同交易对实例、15 分钟执行窗口、名义额上限且不超过实例分配资金；现货拒绝做空；凭据解密失败拒绝；`client_order_id=sig_{signal}_{instance}` 幂等，复用 OrderExecutor 权益/日配额闸门与先落库后下单。**订阅级自动跟单**：`auto_execute` + 执行实例 + 最低置信度 + 当日信号单上限，Pipeline 落库后投递 orders 队列 `AutoExecuteSignalJob`，Job 内二次校验并复用同一执行服务 | 新增 5 项信号执行 API + 9 项订阅 REST + 1 项页面 + 14 项自动跟单安全/幂等 + 1 项订阅表单测试全绿；全量回归 **847 passed / 0 failed**（2026-10-21） | 真实资金误操作（人工确认/订阅开关 + 幂等 + 日上限）、名义额/资金上限、自动跟单追单风险（TTL + 置信度 + 实例 running） | P1, P2 |
+| **上线运维基线 ✅ 已完成（2026-10-21，迭代 A）** | ①`GET /api/v1/health` 深度探活（DB/Redis 为 critical，CH/queue 为 optional，down→503）②API 按租户限流（`throttle:api`，默认 120 次/分钟）+ webhook 独立限流 ③`ops:kill-switch on/off/status` 平台级急停，只停开新仓、平仓与 reduceOnly 放行，覆盖策略 RiskGuard 与信号执行 ④补齐 `jobs/job_batches/failed_jobs` 迁移（默认 `QUEUE_FAILED_DRIVER=database-uuids` 的前置依赖）⑤删除 3 个 `Not implemented` 死代码 Job ⑥Sanctum 个人访问令牌管理（列表/签发/吊销/注销当前 token，明文只回一次，跨用户 404）⑦Platform 面板「运维 → 全局急停」页（状态/原因/操作人展示，启用与解除 Action） | 新增 14 项测试（health 3 + kill switch 3 + token 6 + 面板 2）；全量回归 **830 passed / 3257 assertions / 0 failed** | Redis 故障时急停 fail-open（交易侧本已降级）、公开探活不返回连接信息、限流按租户聚合 | P1, P2, P5.5 |
 
 > **执行顺序说明（2026-10-18 决策）**：P8 先于 P7。理由：①kline_bars/liquidation_events 持续增长，归档越晚迁移窗口越大、历史校验越难；②P10 回测与 P7 的回测预览都依赖 P8 的 `HistoricalQuery`。阶段编号保持不动（P7/P8 仅为标识）；P7 的表达力设计可与 P8 实现并行做 specify（纯文档阶段）。
 > **P9 前置注记（2026-10-18 合规调研结论）**：
@@ -781,7 +782,7 @@ php artisan test --group=mysql         # 只跑 @group mysql（需真实 MySQL�
 php artisan test tests/Unit            # 纯逻辑组：不启动 Laravel/不连任何服务，断网可跑
 ```
 
-当前规模（2026-10-21 本机实测，Redis 在线）：**781 passed / 10 skipped / 1 incomplete / 2982 assertions，约 2.5 分钟**（default 组必跑，redis 组真实执行，mysql 组自动 skip）。P5.5 基线（2026-10-15）：157 passed / 3 skipped / 588 assertions；154 项旧 POC 断言迁移映射见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)。
+当前规模（2026-10-21 本机实测，Redis 在线）：**847 passed / 10 skipped / 1 incomplete / 3314 assertions，约 82 秒**（default 组必跑，redis 组真实执行，mysql 组自动 skip）。P5.5 基线（2026-10-15）：157 passed / 3 skipped / 588 assertions；154 项旧 POC 断言迁移映射见 [P5.5 计划](docs/p5.5-hardening-plan.md#步骤-3-迁移映射附录验收标准-1逐条映射无遗漏丢弃写明理由)。
 
 分组约定：
 
@@ -814,6 +815,18 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | 进程 B 必须独立启动 | Octane worker 内长连接阻塞 HTTP | [ADR-0001](docs/adr/0001-dual-process-model.md) |
 | 时钟统一 UTC 存储，前端按 tenant timezone 展示 | 避免本地时钟漂移 | [架构 §9.6](.trae/documents/币圈交易SaaS平台架构方案.md#96-时钟与时间序列) |
 
+## 运维基线（2026-10-21）
+
+| 能力 | 使用方式 | 行为 |
+|---|---|---|
+| 深度探活 | `GET /api/v1/health` | DB/Redis 为 critical（失败→503 down）；ClickHouse/队列为 optional（失败→200 degraded）；不返回异常原文 |
+| API 限流 | `throttle:api` | 默认 120 次/分钟/租户（`API_RATE_LIMIT_PER_MINUTE`）；平台用户按 user id；webhook 独立 120 次/分钟/IP |
+| 全局急停 | Platform 面板「运维 → 全局急停」，或 `php artisan ops:kill-switch on --reason="..." --actor=ops` / `off` / `status` | 只停开新仓：策略 `RiskGuard::check('open')` 与信号执行（含自动跟单）被拒，平仓/reduceOnly 放行 |
+| 队列失败审计 | `failed_jobs` 表 | 默认 `QUEUE_FAILED_DRIVER=database-uuids`；健康检查统计近 24h 失败数，超过 `HEALTH_FAILED_JOBS_THRESHOLD` 降级 |
+| 访问令牌 | `GET/POST /api/v1/tokens`、`DELETE /api/v1/tokens/{id}`、`DELETE /api/v1/tokens/current` | 仅管理当前用户自己的 token；列表不返回哈希，明文只在创建响应返回一次；签发独立限流 10 次/分钟 |
+
+> 急停状态存 Redis `platform:kill_switch`；Redis 不可用时 `isActive()` fail-open（此时熔断状态机本身也不可用，交易链路已处于降级态）。
+
 ## 文档索引
 
 | 文档 | 说明 |
@@ -827,7 +840,7 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 | [ADR-0003 AES-256-GCM](docs/adr/0003-aes-256-gcm-api-key-encryption.md) | 为什么 GCM 而非 CBC |
 | [ADR-0004 熔断状态机](docs/adr/0004-circuit-breaker-state-machine.md) | 四维度 Rule + HALF_OPEN 探测 |
 | [ADR-0005 ClickHouse 冷层](docs/adr/0005-clickhouse-cold-tier.md) | 自托管单节点 + MergeTree batch_id + 零依赖 HTTP + 隔离下沉 |
-| [踩坑记录](docs/pitfalls.md) | 实测踩坑 47 条（#1–28 P1–P5.5 / #29–33 B7+P8 归档回填 / #34–38 spec 005 合约 / #39–42 spec 006 DSL / #43 spec 005 单飞锁修复 / #44–47 spec 008 回测；覆盖 Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号、CH 行哈希/lightweight delete、保证金率公式语义、命令自动发现目录、bcmath 截断 vs 展示值、净值扣费、零方差向量等）持续追加 |
+| [踩坑记录](docs/pitfalls.md) | 实测踩坑 48 条（#1–28 P1–P5.5 / #29–33 B7+P8 归档回填 / #34–38 spec 005 合约 / #39–42 spec 006 DSL / #43 spec 005 单飞锁修复 / #44–47 spec 008 回测 / #48 队列基建缺失迁移；覆盖 Swoole/Guzzle/协程/PSR-4、残次聚合桶、两阶段计量 Lua、DEK 轮换、HALF_OPEN 死锁、Filament $view 非 static、phpredis zAdd 签名、futures wsBaseUrl 覆盖、主网网络不可达、TTL 去重键测试污染、phpredis 前缀 keys()、PHPUnit 12 DataProvider、空 testsuite 目录 CI exit 2、broadcasting 配置缺失静默失败、Blade @json 嵌套括号、CH 行哈希/lightweight delete、保证金率公式语义、命令自动发现目录、bcmath 截断 vs 展示值、净值扣费、零方差向量等）持续追加 |
 | [spec-kit constitution](.specify/memory/constitution.md) | v1.0.0 七条原则（SDD 优先/金融精度/协程隔离/崩溃恢复幂等/计费语义/测试隔离/PSR-4 与基类对齐），约束所有 plan/analyze 阶段（spec 008 复核无需修订） |
 | [specs/](specs/) | spec-kit SDD feature 规格：001 OKX / 002 Bybit / 003 Bitget 现货适配器 / 004 ClickHouse 历史归档 / 005 合约网格+仓位风控 / 006 自定义 DSL / 007 支付网关+计费 UI / 008 回测引擎+绩效分析（各含 spec/plan/tasks/research/data-model/contracts/quickstart） |
 
