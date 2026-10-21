@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Risk\Breaker;
 
+use App\Domain\Observability\MetricsStore;
 use App\Events\BreakerTripped;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -69,6 +70,7 @@ class CircuitBreaker
 
         $eventId = $this->persistEvent($from, self::STATE_OPEN, $ruleType, $triggerValue, $thresholdValue, 'pause_strategy');
         $this->syncInstanceRow(self::STATE_OPEN, 'paused_by_breaker');
+        $this->recordBreakerGauge(1);
         $this->dispatchBreakerEvent($from, self::STATE_OPEN, $ruleType, $eventId);
     }
 
@@ -136,6 +138,7 @@ class CircuitBreaker
 
         $eventId = $this->persistEvent($from, self::STATE_CLOSED, 'recovered', '0', '0', 'resume_strategy');
         $this->syncInstanceRow(self::STATE_CLOSED, 'running');
+        $this->recordBreakerGauge(0);
         $this->dispatchBreakerEvent($from, self::STATE_CLOSED, 'recovered', $eventId);
     }
 
@@ -175,6 +178,21 @@ class CircuitBreaker
     private function redis(): \Illuminate\Redis\Connections\Connection
     {
         return Redis::connection('default');
+    }
+
+    /**
+     * 熔断开仓指标（1=open/half_open，0=closed）。
+     */
+    private function recordBreakerGauge(int $open): void
+    {
+        try {
+            app(MetricsStore::class)->gauge('trading_breaker_open', [
+                'tenant_id' => $this->tenantId,
+                'instance_id' => $this->instanceId,
+            ], $open);
+        } catch (Throwable) {
+            // 指标降级不影响熔断
+        }
     }
 
     private function key(): string

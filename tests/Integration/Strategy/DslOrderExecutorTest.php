@@ -9,6 +9,7 @@ use App\Domain\Exchange\Contracts\ExchangeAdapter;
 use App\Domain\Exchange\Contracts\ExchangeKline;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
 use App\Domain\Exchange\Contracts\ExchangeTicker;
+use App\Domain\Observability\MetricsStore;
 use App\Domain\Strategy\Contracts\StrategyContext;
 use App\Domain\Strategy\Custom\DslStrategy;
 use App\Domain\Strategy\OrderExecutor;
@@ -39,7 +40,7 @@ class DslOrderExecutorTest extends TestCase
     public function test_open_then_close_round_trip_persists_orders_once(): void
     {
         $adapter = $this->recordingAdapter();
-        $executor = new OrderExecutor($this->mockQuotaGuard());
+        $executor = new OrderExecutor($this->mockQuotaGuard(), app(MetricsStore::class));
         $strategy = $this->strategy();
 
         // 1. onBar → shouldOpen（qty_pct 0.5 @110 = 4.54545454）
@@ -88,7 +89,7 @@ class DslOrderExecutorTest extends TestCase
     public function test_replaying_same_client_order_id_does_not_create_second_row(): void
     {
         $adapter = $this->recordingAdapter();
-        $executor = new OrderExecutor($this->mockQuotaGuard());
+        $executor = new OrderExecutor($this->mockQuotaGuard(), app(MetricsStore::class));
         $strategy = $this->strategy();
 
         $strategy->onBar($this->bar(1_760_000_040_000, '110'));

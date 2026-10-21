@@ -8,6 +8,7 @@ use App\Domain\Archive\Contracts\ArchiveStore;
 use App\Domain\Archive\Contracts\HistoricalQuery;
 use App\Domain\Archive\Services\HistoricalQueryService;
 use App\Domain\Archive\Stores\ClickHouseStore;
+use App\Domain\Observability\MetricsStore;
 use App\Domain\Payment\Contracts\PaymentChannelRegistry;
 use App\Domain\Payment\PaymentChannelManager;
 use App\Domain\Risk\Breaker\IsolatedLiquidationPriceCalculator;
@@ -59,6 +60,9 @@ class AppServiceProvider extends ServiceProvider
 
         // spec 007 支付通道注册表（bind 非 singleton：Octane 长驻禁 static 缓存）
         $this->app->bind(PaymentChannelRegistry::class, fn ($app) => new PaymentChannelManager($app));
+
+        // 可观测性指标存储（singleton：Redis 连接复用，fail-open 降级）
+        $this->app->singleton(MetricsStore::class);
     }
 
     /**

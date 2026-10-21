@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\ExchangeAccountController;
 use App\Http\Controllers\Api\V1\HealthController;
 use App\Http\Controllers\Api\V1\LiquidationController;
+use App\Http\Controllers\Api\V1\MetricsController;
 use App\Http\Controllers\Api\V1\OptimizationController;
 use App\Http\Controllers\Api\V1\RiskRuleController;
 use App\Http\Controllers\Api\V1\SignalController;
@@ -25,6 +26,9 @@ use Illuminate\Support\Facades\Route;
  */
 // 公开探活：无需认证，供负载均衡/监控系统调用
 Route::get('v1/health', HealthController::class)->name('api.health');
+
+// 公开指标：无需认证，供 Prometheus 等监控系统抓取
+Route::get('v1/metrics', MetricsController::class)->name('api.metrics');
 
 Route::middleware(['auth:sanctum', 'tenant', 'throttle:api'])
     ->prefix('v1')

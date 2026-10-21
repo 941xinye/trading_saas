@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Domain\Signal;
 
+use App\Domain\Observability\MetricsStore;
 use App\Jobs\AutoExecuteSignalJob;
 use Illuminate\Support\Facades\Log;
 
@@ -23,6 +24,7 @@ final class SignalAutoTrader
 {
     public function __construct(
         private readonly SignalAutoFollowAudit $audit,
+        private readonly MetricsStore $metrics,
     ) {}
 
     /**
@@ -60,11 +62,17 @@ final class SignalAutoTrader
      */
     public function maybeQueue(object $signal, object $subscription): bool
     {
+        $tenantId = $this->resolveTenantId($signal);
+        $source = (string) ($signal->source ?? 'unknown');
+
         if (! $this->isEligible($signal, $subscription)) {
+            $this->metrics->increment('trading_signals_total', [
+                'tenant_id' => $tenantId, 'source' => $source, 'decision' => 'skipped',
+            ]);
+
             return false;
         }
 
-        $tenantId = $this->resolveTenantId($signal);
         $signalId = $this->resolveSignalId($signal);
 
         AutoExecuteSignalJob::dispatch(
@@ -73,6 +81,10 @@ final class SignalAutoTrader
             (int) $subscription->id,
             (int) ($subscription->execution_config_version ?? 1),
         );
+
+        $this->metrics->increment('trading_signals_total', [
+            'tenant_id' => $tenantId, 'source' => $source, 'decision' => 'queued',
+        ]);
 
         $this->audit->record(
             $tenantId,

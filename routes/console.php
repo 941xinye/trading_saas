@@ -41,3 +41,8 @@ Schedule::command('backtest:reap-stale')
     ->everyFiveMinutes()
     ->timezone('UTC')
     ->withoutOverlapping(5);
+
+// 系统告警评估：每分钟跑一次，命中则投递（冷却去重）
+Schedule::command('ops:alerts:check')
+    ->everyMinute()
+    ->withoutOverlapping(1);

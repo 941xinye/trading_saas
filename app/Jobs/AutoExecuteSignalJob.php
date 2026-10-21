@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
+use App\Domain\Observability\MetricsStore;
 use App\Domain\Signal\Exceptions\SignalExecutionException;
 use App\Domain\Signal\SignalAutoFollowAudit;
 use App\Domain\Signal\SignalExecutionService;
@@ -53,18 +54,18 @@ class AutoExecuteSignalJob implements ShouldQueue
         $this->onQueue('orders');
     }
 
-    public function handle(SignalExecutionService $execution, SignalAutoFollowAudit $audit): void
+    public function handle(SignalExecutionService $execution, SignalAutoFollowAudit $audit, MetricsStore $metrics): void
     {
         TenantContext::initialize($this->tenantId);
 
         try {
-            $this->execute($execution, $audit);
+            $this->execute($execution, $audit, $metrics);
         } finally {
             TenantContext::clear();
         }
     }
 
-    private function execute(SignalExecutionService $execution, SignalAutoFollowAudit $audit): void
+    private function execute(SignalExecutionService $execution, SignalAutoFollowAudit $audit, MetricsStore $metrics): void
     {
         $subscription = DB::table('signal_subscriptions')
             ->where('id', $this->subscriptionId)
@@ -73,21 +74,21 @@ class AutoExecuteSignalJob implements ShouldQueue
             ->first();
 
         if ($subscription === null || (int) $subscription->auto_execute !== 1) {
-            $this->skip($audit, null, 'subscription_inactive');
+            $this->skip($audit, $metrics, null, 'subscription_inactive');
 
             return;
         }
 
         $instanceId = (int) $subscription->execution_instance_id;
         if ($instanceId <= 0) {
-            $this->skip($audit, null, 'instance_missing');
+            $this->skip($audit, $metrics, null, 'instance_missing');
 
             return;
         }
 
         if ($this->configVersion !== null
             && (int) ($subscription->execution_config_version ?? 1) !== $this->configVersion) {
-            $this->skip($audit, $instanceId, 'config_version_changed');
+            $this->skip($audit, $metrics, $instanceId, 'config_version_changed');
 
             return;
         }
@@ -97,20 +98,20 @@ class AutoExecuteSignalJob implements ShouldQueue
             ->find($this->signalId);
 
         if ($signal === null) {
-            $this->skip($audit, $instanceId, 'signal_missing');
+            $this->skip($audit, $metrics, $instanceId, 'signal_missing');
 
             return;
         }
 
         if (! in_array((string) $signal->direction, ['long', 'short'], true)) {
-            $this->skip($audit, $instanceId, 'direction_invalid');
+            $this->skip($audit, $metrics, $instanceId, 'direction_invalid');
 
             return;
         }
 
         $minConfidence = (int) ($subscription->execution_min_confidence ?? 0);
         if ($minConfidence > 0 && (float) $signal->confidence < $minConfidence) {
-            $this->skip($audit, $instanceId, 'confidence_below_min');
+            $this->skip($audit, $metrics, $instanceId, 'confidence_below_min');
 
             return;
         }
@@ -120,19 +121,19 @@ class AutoExecuteSignalJob implements ShouldQueue
             ->find($instanceId);
 
         if ($instance === null) {
-            $this->skip($audit, $instanceId, 'instance_missing');
+            $this->skip($audit, $metrics, $instanceId, 'instance_missing');
 
             return;
         }
 
         if ((string) $instance->status !== 'running') {
-            $this->skip($audit, $instanceId, 'instance_not_running');
+            $this->skip($audit, $metrics, $instanceId, 'instance_not_running');
 
             return;
         }
 
         if ($this->dailyLimitReached($subscription, $instanceId)) {
-            $this->skip($audit, $instanceId, 'daily_limit_reached');
+            $this->skip($audit, $metrics, $instanceId, 'daily_limit_reached');
 
             return;
         }
@@ -142,7 +143,7 @@ class AutoExecuteSignalJob implements ShouldQueue
 
         $cap = (string) config('signal.execution.daily_notional_cap', '0');
         if (bccomp($cap, '0', 8) === 1 && $this->dailyNotionalExceeded($notional)) {
-            $this->skip($audit, $instanceId, 'daily_notional_cap_reached', $notional);
+            $this->skip($audit, $metrics, $instanceId, 'daily_notional_cap_reached', $notional);
 
             return;
         }
@@ -167,6 +168,11 @@ class AutoExecuteSignalJob implements ShouldQueue
                 sprintf('sig_%d_%d', (int) $signal->id, $instanceId),
                 $notional,
             );
+            $metrics->increment('trading_signals_total', [
+                'tenant_id' => $this->tenantId,
+                'source' => (string) $signal->source,
+                'decision' => 'rejected',
+            ]);
 
             return;
         } catch (Throwable $e) {
@@ -185,6 +191,11 @@ class AutoExecuteSignalJob implements ShouldQueue
                 sprintf('sig_%d_%d', (int) $signal->id, $instanceId),
                 $notional,
             );
+            $metrics->increment('trading_signals_total', [
+                'tenant_id' => $this->tenantId,
+                'source' => (string) $signal->source,
+                'decision' => 'failed',
+            ]);
 
             throw $e;
         }
@@ -213,6 +224,12 @@ class AutoExecuteSignalJob implements ShouldQueue
             $result['reference_price'],
         );
 
+        $metrics->increment('trading_signals_total', [
+            'tenant_id' => $this->tenantId,
+            'source' => (string) $signal->source,
+            'decision' => 'executed',
+        ]);
+
         $this->notifyExecuted($subscription, $signal, $result, $instanceId);
     }
 
@@ -221,6 +238,7 @@ class AutoExecuteSignalJob implements ShouldQueue
      */
     private function skip(
         SignalAutoFollowAudit $audit,
+        MetricsStore $metrics,
         ?int $instanceId,
         string $reason,
         ?string $notional = null,
@@ -235,6 +253,12 @@ class AutoExecuteSignalJob implements ShouldQueue
             null,
             $notional,
         );
+
+        $metrics->increment('trading_signals_total', [
+            'tenant_id' => $this->tenantId,
+            'source' => 'unknown',
+            'decision' => 'skipped',
+        ]);
 
         Log::info('自动跟单跳过：'.$reason, [
             'signal_id' => $this->signalId,

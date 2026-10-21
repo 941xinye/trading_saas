@@ -9,6 +9,7 @@ use App\Domain\Billing\Metering\QuotaExceededException;
 use App\Domain\Billing\QuotaGuard;
 use App\Domain\Exchange\Contracts\ExchangeAdapter;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
+use App\Domain\Observability\MetricsStore;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -29,8 +30,10 @@ use Throwable;
  */
 class OrderExecutor
 {
-    public function __construct(private readonly QuotaGuard $quotaGuard)
-    {
+    public function __construct(
+        private readonly QuotaGuard $quotaGuard,
+        private readonly MetricsStore $metrics,
+    ) {
     }
 
     /**
@@ -67,11 +70,17 @@ class OrderExecutor
             Log::warning('下单被权益拦截', [
                 'tenant' => $tenantId, 'instance' => $instance->id, 'reason' => $e->getMessage(),
             ]);
+            $this->metrics->increment('trading_orders_total', [
+                'tenant_id' => $tenantId, 'side' => $side, 'status' => 'entitlement_denied',
+            ]);
 
             return $this->failedOrder($symbol, $side, $clientOrderId, $qty, 'entitlement_denied');
         } catch (QuotaExceededException $e) {
             Log::warning('下单被日配额拦截', [
                 'tenant' => $tenantId, 'instance' => $instance->id, 'used' => $e->used, 'limit' => $e->limit,
+            ]);
+            $this->metrics->increment('trading_orders_total', [
+                'tenant_id' => $tenantId, 'side' => $side, 'status' => 'daily_order_quota_exceeded',
             ]);
 
             return $this->failedOrder($symbol, $side, $clientOrderId, $qty, 'daily_order_quota_exceeded');
@@ -85,6 +94,9 @@ class OrderExecutor
                 'instance' => $instance->id, 'symbol' => $symbol, 'raw_qty' => $decision['qty'],
             ]);
             $this->quotaGuard->release($meter);
+            $this->metrics->increment('trading_orders_total', [
+                'tenant_id' => $tenantId, 'side' => $side, 'status' => 'quantity_aligned_to_zero',
+            ]);
 
             return $this->failedOrder($symbol, $side, $clientOrderId, $qty, 'quantity_aligned_to_zero');
         }
@@ -118,6 +130,9 @@ class OrderExecutor
         if ($rowId === null) {
             // DB 不可用或该 cid 已有生效行：未发起交易所调用，归还本次冻结（已结算的旧 meter 不受影响）
             $this->quotaGuard->release($meter);
+            $this->metrics->increment('trading_orders_total', [
+                'tenant_id' => $tenantId, 'side' => $side, 'status' => 'db_insert_failed',
+            ]);
 
             return null; // 落库失败且无既有行（DB 不可用）
         }
@@ -139,12 +154,18 @@ class OrderExecutor
             ]);
             // 交易所未受理：冲正配额
             $this->quotaGuard->release($meter);
+            $this->metrics->increment('trading_orders_total', [
+                'tenant_id' => $tenantId, 'side' => $side, 'status' => 'failed',
+            ]);
 
             return $this->failedOrder($symbol, $side, $clientOrderId, $qty, $e->getMessage());
         }
 
         // 交易所已受理（new/partial/filled）：配额结算保留
         $this->quotaGuard->settle($meter);
+        $this->metrics->increment('trading_orders_total', [
+            'tenant_id' => $tenantId, 'side' => $side, 'status' => (string) $order->status,
+        ]);
 
         $filledNotional = null;
         if (bccomp((string) $order->filledQty, '0', 12) === 1 && $order->avgFillPrice !== null) {

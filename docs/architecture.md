@@ -101,6 +101,28 @@ market:feed（协程，不下单）
 | 可回放 | `signal:auto-follow-trace {signalId} [--tenant=]` 输出审计链 + 关联订单表 |
 | 故障降级 | 入队异常、审计写失败、通知投递失败均只记日志，不影响信号落库与已成交订单 |
 
+## 生产可观测性（2026-10-21）
+
+三层观测能力，全部 fail-open（Redis 不可用时降级不影响业务）。
+
+### 结构化日志
+
+- `config/logging.php` 新增 `json` 通道（Monolog JsonFormatter，每行一条 JSON）；
+- `StructuredContextProcessor` 为每条日志注入 `env` / `tenant_id` / `request_id`；
+- 生产环境 `LOG_STACK=json`，request_id 基于 Laravel Context 惰性生成，Octane 请求/Job 结束自动重置。
+
+### 指标端点
+
+- `GET /api/v1/metrics` 公开端点，输出 Prometheus 文本格式（`text/plain; version=0.0.4`）；
+- `MetricsStore`（Redis hash 存储）+ `MetricsRegistry`（指标元数据登记）；
+- 当前暴露指标：`trading_orders_total{tenant_id,side,status}`、`trading_signals_total{tenant_id,source,decision}`、`trading_queue_backlog{queue}`、`trading_breaker_open{tenant_id,instance_id}`；
+- 埋点：OrderExecutor 各返回分支、SignalAutoTrader/AutoExecuteSignalJob 决策分支、CircuitBreaker trip/recover。
+
+### 告警
+
+- `config/alerts.php` 定义规则（rate/max/sum 三种类型），默认 4 条：订单失败率 > 10%、队列积压 > 1000、存在熔断实例、自动跟单跳过率 > 50%；
+- `php artisan ops:alerts:check` 每分钟调度（`routes/console.php`），命中后通过 `alerts.channels` 投递（默认 log，可配 telegram/mail/wechat_work），同规则冷却 `ALERTS_COOLDOWN_MINUTES`（默认 15 分钟）去重。
+
 ## P8 ClickHouse 历史归档（spec 004，2026-10-19 核心落地）
 
 **双进程模型不变**：归档是纯旁路——`archive:*` 系列为独立 artisan 命令进程（无协程、无 WS，constitution III），禁止进入 market:feed 行情协程进程；P1-P5 代码零 import 指向 `App\Domain\Archive`（T028 导入闭包 gate 终检 PASS）。

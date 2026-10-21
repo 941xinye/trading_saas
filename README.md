@@ -384,7 +384,7 @@ kline_bars / signals / strategy_orders / liquidation_events 四类时序数据�
 
 **实测结果**：
 - 离线断言 PASS：`php artisan poc:verify-backtest` → **55/55 ALL CHECKS PASSED**；H 组性能：105,120 根 5m bar（365 天）端到端 **6.577–9.079s**（两轮实测，预算 30s，SC-001）。
-- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **854 passed / 10 skipped / 1 incomplete / 3333 assertions / 32.76s**（2026-10-21 复测，含 P11 参数寻优闭环、回测落地实盘、信号一键下单与自动跟单（日资金总额上限 / 决策审计回放 / 成交通知 / 配置版本 / 入队故障降级）、订阅 REST 写接口、上线运维基线；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
+- 单元 35 / 集成 25 / Feature 13 全绿；全量回归 **866 passed / 10 skipped / 1 incomplete / 3351 assertions / 41.59s**（2026-10-21 复测，含 P11 参数寻优闭环、回测落地实盘、信号一键下单与自动跟单（日资金总额上限 / 决策审计回放 / 成交通知 / 配置版本 / 入队故障降级）、订阅 REST 写接口、生产可观测性（结构化 JSON 日志 / Prometheus 指标端点 / 告警规则）、上线运维基线；spec 008 交付时 `FuturesBreakerSemanticsTest` 2 项失败已于 2026-10-21 修复为 Redis 熔断键用例间串场，属测试隔离问题，非产品缺陷）。
 - 等价性：BacktestEquivalenceTest — fixture 决策序列（bar/side/qty）100% 一致，净值 ≤ 实跑毛收益。
 - 报告零重算：BacktestReportReloadTest + J 组 DB::listen — 二次读取 backtest_* 写查询 0。
 - 红线：BacktestNoExchangeCallTest + I 组静态扫描 — Runner 依赖面不含 exchange/adapter，零交易所调用。

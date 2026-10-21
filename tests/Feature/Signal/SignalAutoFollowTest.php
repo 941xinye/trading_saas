@@ -596,6 +596,7 @@ final class SignalAutoFollowTest extends TestCase
         ))->handle(
             app(SignalExecutionService::class),
             app(SignalAutoFollowAudit::class),
+            app(\App\Domain\Observability\MetricsStore::class),
         );
     }
 

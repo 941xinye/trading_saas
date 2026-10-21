@@ -7,6 +7,7 @@ namespace Tests\Integration\Strategy;
 use App\Domain\Billing\QuotaGuard;
 use App\Domain\Exchange\Contracts\ExchangeAdapter;
 use App\Domain\Exchange\Contracts\ExchangeOrder;
+use App\Domain\Observability\MetricsStore;
 use App\Domain\Strategy\OrderExecutor;
 use App\Models\MeterEvent;
 use Illuminate\Support\Facades\DB;
@@ -51,7 +52,7 @@ class FuturesOrderExecutorTest extends TestCase
             },
         );
 
-        $executor = new OrderExecutor($this->mockQuotaGuard());
+        $executor = new OrderExecutor($this->mockQuotaGuard(), app(MetricsStore::class));
         $instance = $this->instanceRow();
 
         $executor->place(self::TENANT_ID, $instance, $adapter, [
@@ -78,7 +79,7 @@ class FuturesOrderExecutorTest extends TestCase
             fn ($symbol, $side, $type, $qty, $price, $stop, $opts) => $this->filledOrder($symbol, $side, $qty, $opts['clientOrderId'] ?? 'cid'),
         );
 
-        $executor = new OrderExecutor($this->mockQuotaGuard());
+        $executor = new OrderExecutor($this->mockQuotaGuard(), app(MetricsStore::class));
         $instance = $this->instanceRow();
 
         $executor->place(self::TENANT_ID, $instance, $adapter, [
@@ -110,7 +111,7 @@ class FuturesOrderExecutorTest extends TestCase
             fn ($symbol, $side, $type, $qty, $price, $stop, $opts) => $this->filledOrder($symbol, $side, $qty, $opts['clientOrderId'] ?? 'cid'),
         );
 
-        $executor = new OrderExecutor($this->mockQuotaGuard());
+        $executor = new OrderExecutor($this->mockQuotaGuard(), app(MetricsStore::class));
         $instance = $this->instanceRow();
 
         $executor->place(self::TENANT_ID, $instance, $adapter, [
