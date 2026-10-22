@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-22
 
-**Status**: Implemented（2026-10-22，T001-T025 全部完成。测试统计：`--group=redis` 全量 91 passed / 465 assertions——FuturesReconciliationTest 11 用例（含 hedge 合成）、ReconciliationServiceTest 10 用例（含护栏反转）、BinanceFuturesAdapterTest 17 用例（含 getPositions 覆写）；现货零回归。quickstart.md 11 场景矩阵逐项有用例对应；testnet 手动场景无条件执行，以自动化层为准。实施提交号见本提交补记）
+**Status**: Implemented（2026-10-22，T001-T025 全部完成。测试统计：`--group=redis` 全量 91 passed / 465 assertions——FuturesReconciliationTest 11 用例（含 hedge 合成）、ReconciliationServiceTest 10 用例（含护栏反转）、BinanceFuturesAdapterTest 17 用例（含 getPositions 覆写）；现货零回归。quickstart.md 11 场景矩阵逐项有用例对应；testnet 手动场景无条件执行，以自动化层为准。实施提交 08e152e）
 
 **Plan 产物**：[research.md](research.md) / [data-model.md](data-model.md) / [contracts.md](contracts.md) / [quickstart.md](quickstart.md) / [plan.md](plan.md) / [tasks.md](tasks.md)（25 任务，6 阶段）
 

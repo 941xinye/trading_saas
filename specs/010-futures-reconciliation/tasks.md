@@ -110,7 +110,7 @@
 - [x] T022 全量验证：`php artisan test --group=redis` 全绿（无 group 的全量套件可选跑）；核对 quickstart.md 第一节 11 场景矩阵逐项有用例对应——✅ 91 passed（465 assertions）；11/11 场景覆盖（ok-long/ok-short/drift/critical-flat/critical-反向/hedge/unknown/ticker 降级/breaker 正交/扫描范围/幂等）
 - [x] T023 [P] 更新 README.md 技术债表 A5 行：状态改为已销（引用 spec 010 与本批测试），operations.md §9.5 护栏注记同步更新为「已由合约原生对账接管」
 - [x] T024 [P] 更新 specs/010-futures-reconciliation/spec.md 状态为 Implemented（附测试统计与提交号）
-- [ ] T025 按仓库惯例提交（中文要点 body、conventional 风格、临时文件 + `git commit -F`）；如 quickstart.md 第二节 testnet 手动场景有条件执行则补记录，无条件注明跳过原因
+- [x] T025 按仓库惯例提交（中文要点 body、conventional 风格、临时文件 + `git commit -F`）；如 quickstart.md 第二节 testnet 手动场景有条件执行则补记录，无条件注明跳过原因——✅ 08e152e feat(reconcile) 主提交 + docs 补记提交；testnet 手动场景无条件，已在提交信息与 spec.md 状态行注明跳过
 
 ---
 
