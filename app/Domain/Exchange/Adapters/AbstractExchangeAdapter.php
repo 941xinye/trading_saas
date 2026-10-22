@@ -319,4 +319,18 @@ abstract class AbstractExchangeAdapter implements ExchangeAdapter
     {
         return null;
     }
+
+    /**
+     * getPositions 默认实现（spec 010 C1）：包装 getPosition() 的单腿语义。
+     * 支持双向持仓（hedge mode）的合约适配器 MUST 覆写本方法；
+     * 仅依赖默认实现时单向模式正确、双向模式只取第一腿。
+     *
+     * @return ExchangePosition[]
+     */
+    public function getPositions(string $symbol): array
+    {
+        $position = $this->getPosition($symbol);
+
+        return $position === null ? [] : [$position];
+    }
 }

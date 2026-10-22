@@ -202,26 +202,62 @@ class BinanceFuturesAdapter extends AbstractExchangeAdapter
 
         // positionRisk 返回数组，取第一个非零持仓
         foreach ((array) $data as $row) {
-            $posAmt = (string) ($row['positionAmt'] ?? '0');
-            if (bccomp($posAmt, '0', 8) === 0) {
+            $row = (array) $row;
+            if (bccomp((string) ($row['positionAmt'] ?? '0'), '0', 8) === 0) {
                 continue;
             }
 
-            return new ExchangePosition(
-                symbol: (string) ($row['symbol'] ?? $symbol),
-                side: bccomp($posAmt, '0', 8) === 1 ? 'long' : 'short',
-                size: ltrim($posAmt, '-'),
-                entryPrice: (string) ($row['entryPrice'] ?? '0'),
-                markPrice: (string) ($row['markPrice'] ?? '0'),
-                liquidationPrice: isset($row['liquidationPrice']) && $row['liquidationPrice'] !== '0'
-                    ? (string) $row['liquidationPrice'] : null,
-                leverage: (int) ($row['leverage'] ?? 1),
-                unrealizedPnl: (string) ($row['unRealizedProfit'] ?? '0'),
-                margin: (string) ($row['isolatedMargin'] ?? ($row['positionInitialMargin'] ?? '0')),
-            );
+            return $this->mapPositionRow($row, $symbol);
         }
 
         return null;
+    }
+
+    /**
+     * 全部非零持仓腿（spec 010 US3，contracts C1）。
+     *
+     * hedge 双向模式逐腿返回（long/short 各一腿）；单向模式恒单元素或空数组。
+     * 与 getPosition 共用 mapPositionRow，单向语义不受影响。
+     *
+     * @return ExchangePosition[]
+     */
+    public function getPositions(string $symbol): array
+    {
+        $data = $this->httpSigned('GET', '/fapi/v2/positionRisk', ['symbol' => $symbol], weight: 5);
+
+        $positions = [];
+        foreach ((array) $data as $row) {
+            $row = (array) $row;
+            if (bccomp((string) ($row['positionAmt'] ?? '0'), '0', 8) === 0) {
+                continue;
+            }
+            $positions[] = $this->mapPositionRow($row, $symbol);
+        }
+
+        return $positions;
+    }
+
+    /**
+     * positionRisk 行 → ExchangePosition（positionAmt 符号定 side，size 恒为绝对值）。
+     *
+     * @param array<string,mixed> $row
+     */
+    private function mapPositionRow(array $row, string $symbol): ExchangePosition
+    {
+        $posAmt = (string) ($row['positionAmt'] ?? '0');
+
+        return new ExchangePosition(
+            symbol: (string) ($row['symbol'] ?? $symbol),
+            side: bccomp($posAmt, '0', 8) === 1 ? 'long' : 'short',
+            size: ltrim($posAmt, '-'),
+            entryPrice: (string) ($row['entryPrice'] ?? '0'),
+            markPrice: (string) ($row['markPrice'] ?? '0'),
+            liquidationPrice: isset($row['liquidationPrice']) && $row['liquidationPrice'] !== '0'
+                ? (string) $row['liquidationPrice'] : null,
+            leverage: (int) ($row['leverage'] ?? 1),
+            unrealizedPnl: (string) ($row['unRealizedProfit'] ?? '0'),
+            margin: (string) ($row['isolatedMargin'] ?? ($row['positionInitialMargin'] ?? '0')),
+        );
     }
 
     // ------------------------------------------------------------------

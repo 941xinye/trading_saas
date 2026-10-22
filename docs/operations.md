@@ -334,10 +334,10 @@ php artisan circuit-breaker:list                # 查看熔断状态
 php artisan circuit-breaker:reset <instanceId>  # 手动恢复熔断
 ```
 
-> **对账范围（2026-10-22 起）**：`reconcile:run` 仅对**现货**实例执行。合约账户
-> getBalance 返回保证金资产（assets[base] 恒为 0），现货口径会恒判 critical 误暂停，
-> 已通过 `reconcileableInstanceIds` 市场过滤护栏排除；合约原生对账（getPosition
-> 签名持仓 vs 成交签名净额）待立项 spec（README 技术债 A5）。
+> **对账范围（2026-10-22 起，spec 010）**：`reconcile:run` 覆盖**现货与合约**实例，
+> 口径按 `exchange_accounts.market` 分流——现货走 getBalance 资产比对，合约走
+> getPositions 签名净持仓比对（hedge 双向模式多腿合成，contracts C1）。
+> 此前的现货护栏已由合约原生对账接管并移除（README 技术债 A5 已销）。
 
 ## 10. 故障排查
 

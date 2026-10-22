@@ -106,6 +106,8 @@ class ReconciliationServiceTest extends TestCase
         $report = DB::table('reconciliation_reports')->where('id', $result['id'])->first();
         $diff = json_decode((string) $report->diff_json, true);
         static::assertSame('ok', $report->status);
+        // contracts C4：现货报告 diff 恒带 market='spot' 标识
+        static::assertSame('spot', $diff['market']);
         // bcmath 字符串可能带 scale 尾零（0.000000000000），数值断言统一用 bccomp
         static::assertSame(0, bccomp($diff['base_qty']['diff'], '0', 12));
         static::assertSame(0, bccomp($diff['orders_net_qty']['diff'], '0', 12));
@@ -181,6 +183,10 @@ class ReconciliationServiceTest extends TestCase
         $result = $this->service->runForInstance($this->ids['instance_a'], '5m', $this->t0, $this->adapterA);
 
         static::assertSame('unknown', $result['status']);
+        // contracts C4：unknown 报告 diff 必含 error 与 market 标识（现货恒 spot）
+        $diff = json_decode((string) DB::table('reconciliation_reports')->where('id', $result['id'])->value('diff_json'), true);
+        static::assertSame('spot', $diff['market']);
+        static::assertArrayHasKey('error', $diff);
         static::assertSame('running', DB::table('strategy_instances')->where('id', $this->ids['instance_a'])->value('status'));
         static::assertSame(0, DB::table('balance_snapshots')->where('exchange_account_id', $this->ids['account_a'])->count());
         static::assertSame(
@@ -292,9 +298,10 @@ class ReconciliationServiceTest extends TestCase
     }
 
     /**
-     * 护栏：合约实例不进入对账范围（现货语义会误判 critical 误暂停，2026-10-22）。
+     * 全市场扫描（spec 010 US2，销技术债 A5）：futures running 实例纳入对账范围，
+     * 口径由 runForInstance 按 market 分流；stopped/error/starting 仍排除（无论现货/合约）。
      */
-    public function test_reconcileable_instance_ids_excludes_futures_market(): void
+    public function test_reconcileable_instance_ids_includes_futures_market(): void
     {
         $now = now();
         $exchangeId = (int) DB::table('exchange_accounts')->where('id', $this->ids['account_a'])->value('exchange_id');
@@ -314,11 +321,36 @@ class ReconciliationServiceTest extends TestCase
             'created_at' => $now, 'updated_at' => $now,
         ]);
 
+        // stopped/error/starting 不打扰——futures 与 spot 各造一组
+        // （strategy_instances 有 tenant+strategy+symbol 唯一约束，排除组须用独立 symbol）
+        $excluded = [];
+        $futuresSymbols = ['SOLUSDT', 'DOGEUSDT', 'XRPUSDT'];
+        $spotSymbols = ['LTCUSDT', 'ADAUSDT', 'TRXUSDT'];
+        foreach (['stopped', 'error', 'starting'] as $i => $st) {
+            $excluded[] = (int) DB::table('strategy_instances')->insertGetId([
+                'tenant_id' => $this->ids['tenant_a'], 'strategy_id' => $strategyId,
+                'exchange_account_id' => $futuresAccount, 'symbol' => $futuresSymbols[$i], 'interval' => '1m',
+                'params' => json_encode([]), 'allocated_capital' => '1000', 'status' => $st,
+                'breaker_state' => 'closed', 'position_snapshot' => json_encode([]), 'realized_pnl' => '0',
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $excluded[] = (int) DB::table('strategy_instances')->insertGetId([
+                'tenant_id' => $this->ids['tenant_a'], 'strategy_id' => $strategyId,
+                'exchange_account_id' => $this->ids['account_a'], 'symbol' => $spotSymbols[$i], 'interval' => '1m',
+                'params' => json_encode([]), 'allocated_capital' => '1000', 'status' => $st,
+                'breaker_state' => 'closed', 'position_snapshot' => json_encode([]), 'realized_pnl' => '0',
+                'created_at' => $now, 'updated_at' => $now,
+            ]);
+        }
+
         $ids = $this->service->reconcileableInstanceIds();
 
         static::assertContains($this->ids['instance_a'], $ids);
         static::assertContains($this->ids['instance_b'], $ids);
-        static::assertNotContains($futuresInstance, $ids);
+        static::assertContains($futuresInstance, $ids);
+        foreach ($excluded as $excludedId) {
+            static::assertNotContains($excludedId, $ids);
+        }
     }
 
     /**

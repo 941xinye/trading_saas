@@ -342,6 +342,11 @@ final class RecordingAdapter implements ExchangeAdapter
         return $this->record('getPosition', [$symbol], null);
     }
 
+    public function getPositions(string $symbol): array
+    {
+        return $this->record('getPositions', [$symbol], []);
+    }
+
     public function placeOrder(
         string $symbol,
         string $side,

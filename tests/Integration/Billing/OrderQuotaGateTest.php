@@ -280,6 +280,11 @@ class OrderQuotaGateTest extends TestCase
                 throw new \RuntimeException('unexpected getPosition in billing order gate test');
             }
 
+            public function getPositions(string $symbol): array
+            {
+                throw new \RuntimeException('unexpected getPositions in billing order gate test');
+            }
+
             public function cancelOrder(string $symbol, string $orderId, ?string $clientOrderId = null): bool
             {
                 throw new \RuntimeException('unexpected cancelOrder in billing order gate test');

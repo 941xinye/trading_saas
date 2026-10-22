@@ -46,6 +46,21 @@ interface ExchangeAdapter
     public function getPosition(string $symbol): ?ExchangePosition;
 
     /**
+     * 拉取指定交易对的全部非零持仓腿（合约场景，spec 010 C1）。
+     *
+     * 单向持仓模式返回 0 或 1 个元素；双向（hedge）模式可返回 2 个元素。
+     * 现货适配器恒返回空数组。
+     *
+     * AbstractExchangeAdapter 提供默认实现（包装 getPosition()）；
+     * 支持 hedge mode 的合约适配器 MUST 覆写本方法返回全部非零腿。
+     *
+     * @return ExchangePosition[] 仅含非零持仓腿；无持仓返回 []
+     *
+     * @throws Throwable 取数失败（网络/凭据/限流）——调用方按 unknown 处理
+     */
+    public function getPositions(string $symbol): array;
+
+    /**
      * 下单。
      *
      * @param  string  $symbol  交易对

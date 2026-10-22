@@ -165,7 +165,15 @@ class ReconciliationService
         $tenantId = (int) $instance->tenant_id;
         $periodKey = self::periodKey($nowSec, $period);
 
-        $adapter ??= $this->buildAdapter($instance, $tenantId);
+        // market 分流（research R1）：账户行顺带取出，避免 buildAdapter 二次查询
+        $account = DB::table('exchange_accounts')->where('id', $instance->exchange_account_id)->first();
+        $market = (string) ($account->market ?? 'spot');
+
+        $adapter ??= $this->buildAdapter($instance, $tenantId, $account);
+
+        if ($market === 'futures') {
+            return $this->reconcileFuturesPosition($instance, $tenantId, $periodKey, $now, $adapter);
+        }
 
         // ---- 取交易所真实余额；失败 → unknown（不暂停）----
         try {
@@ -208,6 +216,7 @@ class ReconciliationService
         $status = self::worst([$baseStatus, $ordersStatus]);
 
         $diff = [
+            'market' => 'spot',
             'asset' => $baseAsset,
             'price' => $price,
             'base_qty' => [
@@ -253,11 +262,114 @@ class ReconciliationService
     }
 
     /**
+     * 合约持仓口径对账（spec 010，销技术债 A5）。
+     *
+     * 交易所签名净持仓（getPositions 多腿合成）vs strategy_orders 成交签名净额，
+     * 单维度 classifyDimension 分级；铁律与现货一致：只报告 + 暂停，绝不动账。
+     *
+     * @return array{id:int,status:string}
+     */
+    private function reconcileFuturesPosition(
+        object $instance,
+        int $tenantId,
+        string $periodKey,
+        Carbon $now,
+        ExchangeAdapter $adapter,
+    ): array {
+        $instanceId = (int) $instance->id;
+        $symbol = (string) $instance->symbol;
+
+        // ---- 取交易所全部非零持仓腿；失败 → unknown（不暂停）----
+        try {
+            $legs = $adapter->getPositions($symbol);
+        } catch (Throwable $e) {
+            Log::warning('Reconcile getPositions failed, marking unknown', [
+                'instance' => $instanceId, 'error' => $e->getMessage(),
+            ]);
+
+            return $this->recordUnknown($instance, $tenantId, $periodKey, $now, $e->getMessage(), 'futures');
+        }
+
+        // 参考价（失败不致命：price='0' 降级为仅按数量分级）
+        $price = '0';
+        try {
+            $price = $adapter->getTicker($symbol)->lastPrice;
+        } catch (Throwable $e) {
+            Log::info('Reconcile ticker unavailable', [
+                'instance' => $instanceId, 'error' => $e->getMessage(),
+            ]);
+        }
+
+        // 多腿签名合成：Σ(side==='short' ? −size : +size)，bcmath 12 位中间精度
+        $exchangeNet = '0';
+        $legRows = [];
+        foreach ($legs as $leg) {
+            $signed = $leg->side === 'short' ? bcsub('0', $leg->size, 12) : $leg->size;
+            $exchangeNet = bcadd($exchangeNet, $signed, 12);
+            $legRows[] = [
+                'side' => $leg->side,
+                'size' => $leg->size,
+                'entry_price' => $leg->entryPrice,
+                'mark_price' => $leg->markPrice,
+                'leverage' => $leg->leverage,
+                'liquidation_price' => $leg->liquidationPrice,
+                'unrealized_pnl' => $leg->unrealizedPnl,
+            ];
+        }
+
+        $orders = $this->readOrderTotals($instanceId);
+        $positionDiff = bcsub($exchangeNet, $orders['net_qty'], 12);
+
+        $tolerance = (array) config('reconcile.tolerance', ['qty' => '0.000001', 'quote' => '5']);
+        $criticalQuote = (string) config('reconcile.critical_quote', '50');
+
+        $status = self::classifyDimension($positionDiff, $price, $tolerance, $criticalQuote);
+
+        $suffixes = (array) config('reconcile.quote_suffixes', ['USDT']);
+        [$baseAsset] = self::splitSymbol($symbol, $suffixes);
+
+        $diff = [
+            'market' => 'futures',
+            'asset' => $baseAsset,
+            'price' => $price,
+            'position' => [
+                'exchange_signed_qty' => bcadd($exchangeNet, '0', 8),
+                'orders_net_qty' => $orders['net_qty'],
+                'diff' => $positionDiff,
+                'status' => $status,
+                'legs' => $legRows,
+            ],
+            'tolerance' => $tolerance,
+            'critical_quote' => $criticalQuote,
+        ];
+
+        // 保证金权益快照（辅助数据，失败不致命、不影响分级）
+        try {
+            $this->writeBalanceSnapshot($tenantId, (int) $instance->exchange_account_id, $adapter->getBalance(), $now);
+        } catch (Throwable $e) {
+            Log::info('Reconcile futures equity snapshot unavailable', [
+                'instance' => $instanceId, 'error' => $e->getMessage(),
+            ]);
+        }
+
+        $reportId = $this->upsertReport($instance, $tenantId, $periodKey, $status, $diff, $now);
+
+        // 非 unknown：连续计数清零
+        $this->resetUnknownStreak($tenantId, $instanceId);
+
+        if ($status === self::STATUS_CRITICAL) {
+            $this->handleCritical($instance, $tenantId, $instanceId, $diff);
+        }
+
+        return ['id' => $reportId, 'status' => $status];
+    }
+
+    /**
      * 全部应对账实例（running / 两种 paused；stopped/error/starting 不打扰）。
      *
-     * 护栏（2026-10-22）：仅现货实例。对账口径为现货语义（getBalance assets[base]
-     * vs 成交净额）；合约账户 getBalance 返回保证金资产、assets[base] 恒为 0，
-     * 会被误判 critical 误暂停。合约原生对账（getPosition vs 签名净额）待后续 spec。
+     * 全市场扫描（spec 010 销技术债 A5）：现货与合约实例一并纳入，
+     * 口径由 runForInstance 按 exchange_accounts.market 分流——
+     * 现货走 getBalance 资产比对，合约走 getPositions 持仓口径。
      *
      * @return int[]
      */
@@ -266,7 +378,6 @@ class ReconciliationService
         return DB::table('strategy_instances as si')
             ->join('exchange_accounts as ea', 'ea.id', '=', 'si.exchange_account_id')
             ->whereIn('si.status', ['running', 'paused_by_breaker', 'paused_by_reconcile'])
-            ->where('ea.market', 'spot')
             ->orderBy('si.id')
             ->pluck('si.id')
             ->map(static fn ($id): int => (int) $id)
@@ -442,15 +553,22 @@ class ReconciliationService
         $this->notify($tenantId, $instanceId, 'critical');
     }
 
+    /**
+     * 落 unknown 报告并累计连续次数（contracts C4：diff 必含 error 与 market 标识）。
+     *
+     * @param  string  $market  实例所属市场（spot|futures），缺省 spot 兼容既有调用
+     */
     private function recordUnknown(
         object $instance,
         int $tenantId,
         string $periodKey,
         Carbon $now,
         string $error,
+        string $market = 'spot',
     ): array {
         $reportId = $this->upsertReport($instance, $tenantId, $periodKey, self::STATUS_UNKNOWN, [
             'error' => mb_substr($error, 0, 500),
+            'market' => $market,
         ], $now);
 
         $streak = $this->bumpUnknownStreak($tenantId, (int) $instance->id);
@@ -533,9 +651,9 @@ class ReconciliationService
     // 内部：适配器装配（与 StrategyRunner 同源，命令/worker 普通进程内执行）
     // ------------------------------------------------------------------
 
-    private function buildAdapter(object $instance, int $tenantId): ExchangeAdapter
+    private function buildAdapter(object $instance, int $tenantId, ?object $account = null): ExchangeAdapter
     {
-        $account = DB::table('exchange_accounts')->where('id', $instance->exchange_account_id)->first();
+        $account ??= DB::table('exchange_accounts')->where('id', $instance->exchange_account_id)->first();
         $exchange = $account === null ? null
             : DB::table('exchanges')->where('id', $account->exchange_id)->first(['code']);
         if ($account === null || $exchange === null) {

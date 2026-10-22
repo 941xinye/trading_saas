@@ -170,6 +170,104 @@ class BinanceFuturesAdapterTest extends TestCase
     }
 
     // ------------------------------------------------------------------
+    // getPositions 多腿契约（spec 010 C1）
+    // ------------------------------------------------------------------
+
+    /**
+     * 默认实现（AbstractExchangeAdapter）包装语义：单腿持仓返回单元素数组，
+     * 元素与 getPosition() 返回值一致（等值比较，DTO 按值相等）。
+     */
+    public function test_get_positions_default_wraps_single_leg(): void
+    {
+        Http::fake([
+            '*/fapi/v2/positionRisk*' => Http::response([
+                [
+                    'symbol' => 'BTCUSDT',
+                    'positionAmt' => '0.010',
+                    'entryPrice' => '61000.00',
+                    'markPrice' => '61500.00',
+                    'liquidationPrice' => '55000.00',
+                    'leverage' => '10',
+                    'unRealizedProfit' => '5.00',
+                    'isolatedMargin' => '61.00',
+                ],
+            ]),
+        ]);
+
+        $adapter = $this->adapter();
+        $positions = $adapter->getPositions('BTCUSDT');
+
+        $this->assertCount(1, $positions);
+        $this->assertEquals($adapter->getPosition('BTCUSDT'), $positions[0]);
+    }
+
+    /**
+     * 默认实现：无持仓（positionAmt 全零）返回空数组。
+     */
+    public function test_get_positions_default_returns_empty_when_flat(): void
+    {
+        Http::fake([
+            '*/fapi/v2/positionRisk*' => Http::response([
+                ['symbol' => 'BTCUSDT', 'positionAmt' => '0.000', 'entryPrice' => '0', 'leverage' => '10'],
+            ]),
+        ]);
+
+        $this->assertSame([], $this->adapter()->getPositions('BTCUSDT'));
+    }
+
+    /**
+     * 覆写实现（spec 010 US3）：positionRisk 全部非零行逐腿返回，零仓行跳过；
+     * hedge 双向持仓各腿独立成元素，side 由 positionAmt 符号决定、size 恒为绝对值。
+     */
+    public function test_get_positions_override_returns_all_non_zero_legs(): void
+    {
+        Http::fake([
+            '*/fapi/v2/positionRisk*' => Http::response([
+                ['symbol' => 'BTCUSDT', 'positionAmt' => '0.000', 'entryPrice' => '0', 'markPrice' => '60000.00', 'leverage' => '10', 'unRealizedProfit' => '0', 'isolatedMargin' => '0'],
+                [
+                    'symbol' => 'BTCUSDT',
+                    'positionAmt' => '0.500',
+                    'entryPrice' => '59000.00',
+                    'markPrice' => '60000.00',
+                    'liquidationPrice' => '45000.00',
+                    'leverage' => '5',
+                    'unRealizedProfit' => '500.00',
+                    'isolatedMargin' => '5900.00',
+                ],
+                [
+                    'symbol' => 'BTCUSDT',
+                    'positionAmt' => '-0.200',
+                    'entryPrice' => '61000.00',
+                    'markPrice' => '60000.00',
+                    'liquidationPrice' => '75000.00',
+                    'leverage' => '8',
+                    'unRealizedProfit' => '200.00',
+                    'isolatedMargin' => '1525.00',
+                ],
+            ]),
+        ]);
+
+        $positions = $this->adapter()->getPositions('BTCUSDT');
+
+        $this->assertCount(2, $positions);
+
+        $long = $positions[0];
+        $this->assertSame('long', $long->side);
+        $this->assertSame('0.500', $long->size);
+        $this->assertSame('59000.00', $long->entryPrice);
+        $this->assertSame('60000.00', $long->markPrice);
+        $this->assertSame(5, $long->leverage);
+        $this->assertSame('45000.00', $long->liquidationPrice);
+
+        $short = $positions[1];
+        $this->assertSame('short', $short->side);
+        $this->assertSame('0.200', $short->size);
+        $this->assertSame('61000.00', $short->entryPrice);
+        $this->assertSame('60000.00', $short->markPrice);
+        $this->assertSame(8, $short->leverage);
+    }
+
+    // ------------------------------------------------------------------
     // 交易
     // ------------------------------------------------------------------
 

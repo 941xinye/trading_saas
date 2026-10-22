@@ -29,8 +29,13 @@ class FakeExchangeAdapter implements ExchangeAdapter
 
     public bool $throwOnGetOrder = false;
 
+    public bool $throwOnGetPositions = false;
+
     /** @var array<string,ExchangeOrder|null> clientOrderId → 订单（null=查无此单） */
     public array $ordersByCid = [];
+
+    /** @var ExchangePosition[] 注入的持仓腿（缺省空 = 无持仓，spec 010） */
+    public array $positions = [];
 
     public function getTicker(string $symbol): ExchangeTicker
     {
@@ -58,6 +63,27 @@ class FakeExchangeAdapter implements ExchangeAdapter
     public function getPosition(string $symbol): ?ExchangePosition
     {
         return null;
+    }
+
+    public function getPositions(string $symbol): array
+    {
+        if ($this->throwOnGetPositions) {
+            throw new RuntimeException('fake getPositions failure');
+        }
+
+        return $this->positions;
+    }
+
+    /**
+     * 注入持仓腿（spec 010 测试辅助）。
+     *
+     * @param  ExchangePosition[]  $legs
+     */
+    public function setPositions(array $legs): self
+    {
+        $this->positions = $legs;
+
+        return $this;
     }
 
     public function placeOrder(

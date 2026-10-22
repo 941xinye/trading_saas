@@ -646,6 +646,11 @@ class PocVerifyBillingCommand extends Command
                 throw new \RuntimeException('unexpected getPosition in billing verify');
             }
 
+            public function getPositions(string $symbol): array
+            {
+                throw new \RuntimeException('unexpected getPositions in billing verify');
+            }
+
             public function cancelOrder(string $symbol, string $orderId, ?string $clientOrderId = null): bool
             {
                 throw new \RuntimeException('unexpected cancelOrder in billing verify');
