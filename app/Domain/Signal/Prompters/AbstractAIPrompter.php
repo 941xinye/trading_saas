@@ -278,25 +278,27 @@ abstract class AbstractAIPrompter implements AIPrompter
         $exit = $this->priceOrNull($data['exit_price'] ?? null);
         $stop = $this->priceOrNull($data['stop_loss'] ?? null);
 
-        // 方向与价位矛盾时丢弃矛盾价位（不因此报错重试，避免 token 浪费）
+        // 方向与价位矛盾时：exit 用百分比退化兜底（与 RuleEngineFallback 一致，ATR 不可用退化 0.75%），
+        // stop 置 null（signals.stop_loss 列已 nullable，安全）
+        // neutral 不持久化，exit 用百分比占位 + stop 置 null（方向无意义，但 exit_price 列 NOT NULL）
         $entryFloat = (float) $entry;
         if ($direction === 'long') {
             if ($exit !== null && (float) $exit <= $entryFloat) {
-                $exit = null;
+                $exit = $this->formatPrice($entryFloat * 1.0075);
             }
             if ($stop !== null && (float) $stop >= $entryFloat) {
                 $stop = null;
             }
         } elseif ($direction === 'short') {
             if ($exit !== null && (float) $exit >= $entryFloat) {
-                $exit = null;
+                $exit = $this->formatPrice($entryFloat * 0.9925);
             }
             if ($stop !== null && (float) $stop <= $entryFloat) {
                 $stop = null;
             }
         } else {
-            // neutral 不持久化，价位统一置空避免误导
-            $exit = null;
+            // neutral → exit 用 0.75% 百分比占位（NOT NULL 列必须有值），stop 置 null
+            $exit = $this->formatPrice($entryFloat * 1.0075);
             $stop = null;
         }
 

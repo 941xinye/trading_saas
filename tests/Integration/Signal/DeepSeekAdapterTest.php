@@ -146,6 +146,74 @@ class DeepSeekAdapterTest extends TestCase
     }
 
     /**
+     * AI 返回 long 但 exit_price < entry（方向矛盾），exit 应被替换为 1.0075 百分比兜底值。
+     */
+    public function test_long_with_backward_exit_price_uses_percent_fallback(): void
+    {
+        Http::fake([
+            '*deepseek.invalid/*' => Http::response([
+                'choices' => [[
+                    'message' => ['role' => 'assistant', 'content' => json_encode([
+                        'direction' => 'long',
+                        'entry_price' => 100.0,
+                        'exit_price' => 99.5,     // 矛盾：long 的 exit 应 > entry
+                        'stop_loss' => 99.0,
+                        'confidence' => 65,
+                        'rationale' => '均线金叉',
+                    ], JSON_UNESCAPED_UNICODE)],
+                ]],
+            ]),
+        ]);
+
+        $bars = $this->bars();
+        $signal = app(DeepSeekAdapter::class)->analyze($bars[count($bars) - 1], [
+            'tenant_id' => self::TENANT_ID,
+            'subscription_id' => 990603,
+            'historical_bars' => $bars,
+            'indicators' => app(IndicatorCalculator::class)->compute($bars),
+        ]);
+
+        static::assertSame('long', $signal->direction);
+        static::assertNotNull($signal->exitPrice);
+        static::assertGreaterThan(0, bccomp($signal->exitPrice, '100', 8), 'long exit 必须 > entry');
+        static::assertLessThanOrEqual(0, bccomp($signal->exitPrice, '100.75', 8), 'long exit 兜底为 +0.75%');
+    }
+
+    /**
+     * AI 返回 short 但 exit_price > entry（方向矛盾），exit 应被替换为 0.9925 百分比兜底值。
+     */
+    public function test_short_with_forward_exit_price_uses_percent_fallback(): void
+    {
+        Http::fake([
+            '*deepseek.invalid/*' => Http::response([
+                'choices' => [[
+                    'message' => ['role' => 'assistant', 'content' => json_encode([
+                        'direction' => 'short',
+                        'entry_price' => 100.0,
+                        'exit_price' => 101.0,    // 矛盾：short 的 exit 应 < entry
+                        'stop_loss' => 101.5,
+                        'confidence' => 70,
+                        'rationale' => '均线死叉',
+                    ], JSON_UNESCAPED_UNICODE)],
+                ]],
+            ]),
+        ]);
+
+        $bars = $this->bars();
+        $signal = app(DeepSeekAdapter::class)->analyze($bars[count($bars) - 1], [
+            'tenant_id' => self::TENANT_ID,
+            'subscription_id' => 990604,
+            'historical_bars' => $bars,
+            'indicators' => app(IndicatorCalculator::class)->compute($bars),
+        ]);
+
+        static::assertSame('short', $signal->direction);
+        static::assertNotNull($signal->exitPrice);
+        static::assertLessThan(0, bccomp($signal->exitPrice, '100', 8), 'short exit 必须 < entry');
+        static::assertGreaterThanOrEqual(0, bccomp($signal->exitPrice, '99.25', 8), 'short exit 兜底为 -0.75%');
+    }
+
+    /**
      * @return ExchangeKline[]
      */
     private function bars(): array
