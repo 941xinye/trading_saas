@@ -48,6 +48,21 @@ php -m | grep swoole   # 必须看到 swoole
 
 ## 3. 部署步骤
 
+> **一键部署（推荐）**：第 3–5 节的命令已脚本化为 [deploy/bootstrap-node.sh](../deploy/bootstrap-node.sh)，
+> 按阶段幂等执行（重复跑不会覆盖已有 `.env` / supervisor / Nginx 配置）：
+>
+> ```bash
+> sudo bash deploy/bootstrap-node.sh --stage=preflight          # 只检查，不改系统
+> sudo bash deploy/bootstrap-node.sh --stage=all \
+>   --repo=https://github.com/941xinye/trading_saas.git \
+>   --domain=trade.example.com --with-db --redis-password='<强密码>'
+> sudo bash deploy/bootstrap-node.sh --stage=verify             # 部署后自检
+> ```
+>
+> 分阶段：`deps / code / env / database / supervisor / nginx / cron / verify`。
+> 参数说明与常见报错处理见 [部署脚本使用文档](deploy-script-guide.md)。
+> 手工部署仍可按本节与第 4、5 节逐步执行。
+
 ```bash
 sudo mkdir -p /var/www/crypto-saas /var/log/crypto-saas
 sudo chown -R $USER:www-data /var/www/crypto-saas /var/log/crypto-saas
@@ -207,6 +222,144 @@ nc -vz api.bitget.com 443 && nc -vz ws.bitget.com 443     # Bitget 主网
 
 证据归档：每项截图/日志/订单号存档；全部通过后 README 技术债表 B6/B8/A1 行销账、
 P6 行「待 key」措辞移除、本清单各行标 ✅ 并注明日期。
+
+### 8.2 验收执行顺序（节点到位后按 A→G 一次跑完）
+
+> 前置：`sudo bash deploy/bootstrap-node.sh --stage=verify` 全绿（6 个 supervisor 程序 RUNNING、
+> 6 条调度在列、`/api/v1/health` 返回 ok）。每阶段结束保留 `storage/acceptance/<时间戳>/summary.txt`
+> 与截图；任一项 FAIL 时用 `--only=<n>` 单项重跑，不要全量反复跑。
+
+#### 阶段 A：部署基线（无凭据，约 10 分钟）
+
+| 步骤 | 命令 | 期望 |
+|---|---|---|
+| A1 | `sudo bash deploy/bootstrap-node.sh --stage=preflight` | 10 个交易所端点全 `OK`，时区 `UTC` |
+| A2 | `bash deploy/acceptance.sh --only=1,2 --with-destructive` | item-1 PASS（kill -9 后 12s 内 RUNNING）、item-2 PASS |
+| A3 | `sudo logrotate -f /etc/logrotate.d/crypto-saas && ls /var/log/crypto-saas/*.log.1` | 轮转文件生成 |
+
+- item-1 FAIL：`sudo supervisorctl status market-feed`，看 `$LOG_DIR/market-feed.log` 是否 `FATAL`；
+  常见原因是 PHP 路径、`swoole` 扩展或目录属主不对（脚本已统一替换，手工改过则重跑 `--stage=supervisor --force`）。
+- item-2 FAIL：`php artisan schedule:list` 无输出 = `.env` 未生效或 `config:cache` 过期，跑 `php artisan config:clear`。
+- A3 无 `.log.1`：logrotate 的 `copytruncate` 需进程有写权限，确认日志属主为 `--run-user`。
+
+#### 阶段 B：行情与公开数据（无凭据，约 15 分钟）
+
+```bash
+bash deploy/acceptance.sh --only=3,4,6,8 --liq-duration=180
+```
+
+| 判定 | 期望 | 失败处理 |
+|---|---|---|
+| item-3 B8 强平流 | `db_count>0` 且 `liquidation:*` keys `>0` | 端点可达但无事件 = 非交易时段，延长到 300s 或换 `--symbols=BTCUSDT,ETHUSDT,SOLUSDT` |
+| item-4 OKX 行情 | REST+WS PASS | 只有 REST PASS = WS 端口 8443 被拦，换机房 |
+| item-6 Bybit 行情 | testnet REST+WS PASS | 检查 `EXCHANGE_BYBIT_TESTNET=true` 是否被 `config:cache` 冻结 |
+| item-8 Bitget 行情 | REST+WS PASS | 记录连续帧日志作为 003 R-006 bar 切换语义证据 |
+
+> 阶段 B 的证据日志本身就包含 WS 帧样本，归档时无需额外抓包。
+
+#### 阶段 C：真实下单（需 key，逐项人工确认，约 20 分钟）
+
+1. 在 `.env` 填入 OKX / Bybit / Bitget 凭据后执行 `php artisan config:clear`（`config:cache` 之后改 `.env` 不生效）。
+2. 执行并逐项输入 `y` 确认：
+
+   ```bash
+   bash deploy/acceptance.sh --only=5,7,9
+   ```
+
+3. 每笔记录：交易所订单号、`clientOrderId`、成交价/数量、账户余额前后截图。
+4. 安全红线：Bitget 主网密钥只开**现货交易**、禁提现、绑 IP 白名单；单笔 10 USDT；
+   避开流动性差的时段，避免市价单滑点扩大。
+
+| 失败码 | 含义 | 处理 |
+|---|---|---|
+| `-2015` | key/IP/权限识别层 | 核对 IP 白名单、key 是否现货权限 |
+| `-1022` | 签名层 | 核对 secret、时间戳偏移（`date -u`）、`EXCHANGE_RECV_WINDOW` |
+| 401/签名错误 | passphrase 错（OKX/Bitget） | 重新生成 API key |
+
+#### 阶段 D：通知三渠道（item 10，约 10 分钟）
+
+1. 配 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`、`WECHAT_WORK_WEBHOOK`、`NOTIFY_MAIL_TO` + `MAIL_*`。
+2. 执行 `bash deploy/acceptance.sh --only=10`：已配置渠道全部 PASS，并**人工确认实际收到消息**。
+3. 落库核对：
+
+   ```bash
+   php artisan tinker --execute="echo DB::table('notifications')->where('created_at','>',now()->subMinutes(10))->count();"
+   ```
+
+- 未配置渠道抛异常并落 `failed_jobs` 属预期契约（配置缺失=failed），不是缺陷。
+- 邮件失败先查 `MAIL_*` 与 25/465/587 端口出站策略。
+
+#### 阶段 E：账实对账 drift（item 11，半自动，约 15 分钟）
+
+1. 确认 Binance testnet 实例 running，取实例 ID 并导出：
+
+   ```bash
+   export RECONCILE_INSTANCE_ID=<instanceId>
+   ```
+
+2. `bash deploy/acceptance.sh --only=11`：阶段 1 先跑基线；脚本暂停等待人工制造 drift。
+3. 在 testnet 手工转入/转出一笔资金后回车：阶段 2 复跑，期望最新报告 `status=drift|critical`，
+   实例状态变为 `paused_by_reconcile`。
+4. 资金对齐后再恢复实例：`php artisan strategy:schedule start <instanceId>`。
+   **禁止在未平账前恢复**，否则下一轮对账会再次暂停并告警。
+
+#### 阶段 F：ClickHouse 冷归档（spec 004，约 30 分钟）
+
+```bash
+# 1. 单节点 CH（仅监听本机，不暴露 8123 到公网）
+docker run -d --name clickhouse --restart unless-stopped \
+  -p 127.0.0.1:8123:8123 -v /var/lib/clickhouse:/var/lib/clickhouse \
+  clickhouse/clickhouse-server:24.8
+
+# 2. .env 配 ARCHIVE_CH_HOST/PORT/DATABASE/USER/PASSWORD 后刷新配置
+php artisan config:clear
+
+# 3. 建表 → 干跑 → 实跑一批 → 独立复检
+php artisan archive:schema
+php artisan archive:run kline_bar --max-batches=1
+php artisan archive:run kline_bar --max-batches=1 --apply
+php artisan archive:verify kline_bar
+php artisan archive:status
+```
+
+| 判定 | 期望 |
+|---|---|
+| 建表 | `archive:schema` 四张 MergeTree 表创建成功，重复执行幂等 |
+| 干跑 | 批次状态 `copied`，主库行数不变 |
+| 实跑 | `--apply` 后主库该时间片行数下降，CH 行数等于归档数 |
+| 复检 | `archive:verify` 三级校验全 `passed`，不一致批次 `failed` 并阻断删除 |
+| 降级 | `docker stop clickhouse` 后历史查询仍可走热层，`/api/v1/health` 的 CH 为 optional 不返回 503 |
+
+> 首次存量归档用 `--max-batches` 限速，确认无异常后再逐级放大；`apply` 前先跑一次备份。
+
+#### 阶段 G：支付与回测（spec 007 / 008，约 40 分钟）
+
+```bash
+php artisan poc:verify-payment       # 35 项离线基线
+php artisan poc:verify-backtest      # 55 项离线基线
+```
+
+- **BTCPay 真实收单**：按 [P9 前置 PoC 执行方案](p9-btcpay-poc-plan.md) 阶段 A/B/C 执行。
+  节点需公网 HTTPS 域名（webhook 回调），`.env` 置 `PAYMENT_CHANNEL=btcpay` + `BTCPAY_*` 四段；
+  验收 B1 真实 `InvoiceSettled` 验签通过、B2 重放 3 次只生效 1 次、B3 伪造 metadata 落 failed。
+- **回测真实数据**：
+
+  ```bash
+  php artisan backtest:run spot_grid BTCUSDT 5m \
+    --from="2025-01-01" --to="2025-04-01" --sync \
+    --params='{"lower_price":"60000","upper_price":"120000","grid_count":10,"investment_amount":"10000"}'
+  ```
+
+  记录耗时（目标 < 30s/年 5m）、9 项指标与净值曲线；与 testnet 实跑净值做对照（误差 < 1%）。
+
+#### 销账与回填
+
+全部阶段 PASS 后：
+
+1. 汇总 `storage/acceptance/<时间戳>/summary.txt`，把 §8.1 表逐行标 ✅ + 日期 + 证据路径；
+2. 更新 README「技术债与已知边界」：B6（Telegram）、B8（真实强平流）、A1 尾巴、P6「待 key」措辞；
+3. 更新 `docs/architecture.md` 对应阶段状态（spec 004 CH 冒烟、spec 007 真实收单、spec 008 真实净值对照）；
+4. 把本次新增踩坑按格式追加到 [pitfalls.md](pitfalls.md)（先更新该文件再同步项目记忆）。
 
 ## 9. 回测引擎（spec 008）运维要点
 

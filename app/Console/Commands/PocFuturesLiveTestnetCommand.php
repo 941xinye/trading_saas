@@ -83,8 +83,7 @@ class PocFuturesLiveTestnetCommand extends Command
         $this->info('---- 1. 账户连通（getBalance）----');
         try {
             $balance = $adapter->getBalance();
-            $usdt = $balance->assets['USDT']['balance'] ?? '0';
-            $this->check(true, "getBalance OK: USDT balance={$usdt}");
+            $this->check(true, "getBalance OK: totalEquity={$balance->totalEquity} available={$balance->available}");
         } catch (\Throwable $e) {
             $this->check(false, 'getBalance 失败', $e->getMessage());
             $this->renderResult();
@@ -108,7 +107,8 @@ class PocFuturesLiveTestnetCommand extends Command
         $this->info(PHP_EOL.'---- 3. 初始持仓（getPosition）----');
         try {
             $initPos = $adapter->getPosition($symbol);
-            $this->check(true, "初始持仓 qty={$initPos->size} side={$initPos->side}");
+            $initSize = $initPos !== null ? $initPos->size : '0';
+            $this->check(true, "初始持仓 size={$initSize}".($initPos !== null ? " side={$initPos->side}" : ' (空仓)'));
         } catch (\Throwable $e) {
             $this->check(false, 'getPosition 失败', $e->getMessage());
             $this->renderResult();
@@ -119,10 +119,15 @@ class PocFuturesLiveTestnetCommand extends Command
         // ---- 4. 真实开仓 ----
         $this->info(PHP_EOL.'---- 4. 真实开仓：BUY MARKET ----');
         try {
-            $openOrder = $adapter->placeOrder($symbol, 'BUY', 'MARKET', $qty, null, null, false);
-            $this->check($openOrder->status === 'filled',
-                "开仓 BUY MARKET 成交：orderId={$openOrder->exchangeOrderId} qty={$openOrder->filledQty} avgPrice={$openOrder->avgFillPrice}",
-                "status={$openOrder->status}");
+            $openClientId = 't047-open-'.time();
+            $openOrder = $adapter->placeOrder($symbol, 'BUY', 'MARKET', $qty, null, null, [
+                'clientOrderId' => $openClientId,
+            ]);
+            // testnet 市价单成交确认可能有延迟，通过 getOrder 确认最终状态
+            $openConfirmed = $adapter->getOrder($symbol, $openOrder->exchangeOrderId);
+            $this->check($openConfirmed->status === 'filled',
+                "开仓 BUY MARKET 成交：orderId={$openConfirmed->exchangeOrderId} qty={$openConfirmed->filledQty} avgPrice={$openConfirmed->avgFillPrice}",
+                "status={$openConfirmed->status}");
         } catch (\Throwable $e) {
             $this->check(false, '开仓失败', $e->getMessage());
             $this->renderResult();
@@ -134,9 +139,12 @@ class PocFuturesLiveTestnetCommand extends Command
         $this->info(PHP_EOL.'---- 5. 开仓后持仓 ----');
         try {
             $afterOpenPos = $adapter->getPosition($symbol);
-            $sizeGt0 = bccomp($afterOpenPos->size, '0', 8) > 0;
+            $sizeGt0 = $afterOpenPos !== null && bccomp($afterOpenPos->size, '0', 8) > 0;
             $this->check($sizeGt0 && $afterOpenPos->side === 'long',
-                "持仓验证：side={$afterOpenPos->side} size={$afterOpenPos->size} liqPrice={$afterOpenPos->liquidationPrice}");
+                $afterOpenPos !== null
+                    ? "持仓验证：side={$afterOpenPos->side} size={$afterOpenPos->size} liqPrice={$afterOpenPos->liquidationPrice}"
+                    : '持仓为空',
+                );
         } catch (\Throwable $e) {
             $this->check(false, '持仓查询失败', $e->getMessage());
         }
@@ -144,13 +152,20 @@ class PocFuturesLiveTestnetCommand extends Command
         // ---- 6. 真实平仓（reduceOnly=true）----
         $this->info(PHP_EOL.'---- 6. 真实平仓：SELL MARKET reduceOnly=true ----');
         try {
-            $closeQty = $afterOpenPos->size ?? $qty;
-            $closeOrder = $adapter->placeOrder($symbol, 'SELL', 'MARKET', $closeQty, null, null, true);
-            $this->check($closeOrder->status === 'filled',
-                "平仓 SELL MARKET reduceOnly=true 成交：orderId={$closeOrder->exchangeOrderId}");
-            // 验证 reduceOnly 确实传给了交易所
+            $closeQty = $afterOpenPos !== null ? $afterOpenPos->size : $qty;
+            $closeClientId = 't047-close-'.time();
+            $closeOrder = $adapter->placeOrder($symbol, 'SELL', 'MARKET', $closeQty, null, null, [
+                'clientOrderId' => $closeClientId,
+                'reduceOnly' => true,
+            ]);
+            // testnet 市价单成交确认可能有延迟，通过 getOrder 确认最终状态
+            $closeConfirmed = $adapter->getOrder($symbol, $closeOrder->exchangeOrderId);
+            $this->check($closeConfirmed->status === 'filled',
+                "平仓 SELL MARKET 成交：orderId={$closeConfirmed->exchangeOrderId} qty={$closeConfirmed->filledQty} avgPrice={$closeConfirmed->avgFillPrice}",
+                "status={$closeConfirmed->status}");
+            // 验证 reduceOnly 确实传给了交易所（getOrder 响应不含 reduceOnly，用 placeOrder 响应的 opts 验证）
             $this->check($closeOrder->reduceOnly === true,
-                "reduceOnly 字段验证 reduceOnly={$closeOrder->reduceOnly}");
+                "reduceOnly 字段验证 reduceOnly=".($closeOrder->reduceOnly ? 'true' : 'false'));
         } catch (\Throwable $e) {
             $this->check(false, '平仓失败', $e->getMessage());
         }
@@ -159,8 +174,9 @@ class PocFuturesLiveTestnetCommand extends Command
         $this->info(PHP_EOL.'---- 7. 平仓后持仓（归零）----');
         try {
             $finalPos = $adapter->getPosition($symbol);
-            $this->check(bccomp($finalPos->size, '0', 8) === 0,
-                "持仓归零验证：size={$finalPos->size}");
+            $finalSize = $finalPos !== null ? $finalPos->size : '0';
+            $this->check(bccomp($finalSize, '0', 8) === 0,
+                "持仓归零验证：size={$finalSize}");
         } catch (\Throwable $e) {
             $this->check(false, '最终持仓查询失败', $e->getMessage());
         }

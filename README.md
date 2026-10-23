@@ -839,6 +839,8 @@ CI：[.github/workflows/tests.yml](.github/workflows/tests.yml) 双 job（PHP 8.
 |---|---|
 | [完整架构方案](.trae/documents/币圈交易SaaS平台架构方案.md) | 11 节：技术选型/多租户/目录结构/数据库表/接口契约/熔断/面板聚合/POC 优先级/风险权衡 |
 | [架构总览](docs/architecture.md) | 核心决策速查 + 目录结构 + POC 路线图 |
+| [部署脚本使用文档](docs/deploy-script-guide.md) | 海外节点一键部署脚本 `deploy/bootstrap-node.sh` 的参数、阶段、幂等边界与常见报错处理 |
+| [部署与运维速查卡](docs/deploy-quick-cards.md) | 首次部署 / 日常更新 / 故障恢复三张一页纸 |
 | [P5.5 工程化加固执行计划](docs/p5.5-hardening-plan.md) | 上线前还债：账实对账 / SpotDca / 测试正式化 / 运维化，含验收标准 |
 | [P9 前置 BTCPay PoC 执行方案](docs/p9-btcpay-poc-plan.md) | 支付基线（BTCPay 自托管）收单/webhook 幂等/P3 接线的最小验证清单；**我方实现已交付（spec 007，离线轨道已验证）**，阶段 A/B/C 待节点照单执行 |
 | [ADR-0001 双进程模型](docs/adr/0001-dual-process-model.md) | 为什么 Octane + 独立 Swoole |

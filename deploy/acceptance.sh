@@ -362,7 +362,12 @@ item_11() {
     {
         echo "=== 阶段 1：基线 reconcile:run ==="
         artisan reconcile:run --period=5m
-        artisan reconcile:status "$(env_get RECONCILE_INSTANCE_ID)" 2>/dev/null || true
+        local inst="${RECONCILE_INSTANCE_ID:-$(env_get RECONCILE_INSTANCE_ID)}"
+        if [[ -n "$inst" ]]; then
+            artisan reconcile:status "$inst" 2>/dev/null || true
+        else
+            echo "未提供 RECONCILE_INSTANCE_ID，跳过 reconcile:status（不影响 rest 判定）"
+        fi
 
         echo
         echo "请手工在 Binance testnet 转入/转出一笔资金制造 drift（或确认上一笔已制造）。"
